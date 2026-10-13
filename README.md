@@ -6,7 +6,7 @@
 <p align="center"><strong>CREATIVE 2ND BRAIN</strong></p>
 <p align="center">你的材料，你的第二大腦。<br>仰望知識的星空，讓想法相遇。</p>
 
-![閱讀、連結與創作：原首頁的創作桌面](runtime/workspace/assets/brand/creative-brain-hero.png)
+![創造型第二大腦首頁：保存後的材料、入口與目前狀態](runtime/workspace/assets/brand/creative-second-brain-ui-1.png)
 
 你有沒有存下很多文章，真正要用時，卻想不起哪一篇說過甚麼？
 
@@ -30,6 +30,16 @@
 - **有方向地探索。** 評估一份新材料是否值得保存，或按你選定的主題展開研究；不會自行在背景每天執行研究。
 - **從關係找靈感。** 用「知識星雲」查看已保存知識之間的連結，不必只靠逐篇翻找。
 - **接續與維護。** 找回中斷的工作、核對某份成果、修復指定問題、整理目錄，以及安全更新工具。
+
+![知識成果：把已保存材料整理成可閱讀的成果頁](runtime/workspace/assets/brand/creative-second-brain-ui-2.png)
+
+*知識成果：回看已保存材料的重點、來源與圖像整理。*
+
+![知識星雲：以關係探索已保存的知識](runtime/workspace/assets/brand/creative-second-brain-ui-3.png)
+
+*知識星雲：查看不同材料之間的連結，從關係找到下一步。*
+
+以上為使用畫面示例；內容與數量取決於你保存的材料，新安裝的知識庫為空白。
 
 例如，你正在準備一份「怎樣學得更有效」的報告：先保存幾篇學習方法的文章，再請 AI 比較它們的共同點與分歧，最後用這些材料整理報告。日後讀到新文章，也能回頭看看它補充或挑戰了甚麼。
 
