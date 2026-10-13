@@ -1,0 +1,7 @@
+{
+  "mode": "builtin_imagegen",
+  "purpose": "Real background texture for user-requested warm-gold and silver glass UI preview",
+  "source": "Original generator output is not included; this package preserves only the bundled asset, mode, prompt and SHA-256.",
+  "sha256": "25d8387395b29aaebbdae212b24ae72608924633b6593a31fd58b8de0d39fa4e",
+  "prompt": "Use case: stylized-concept. Asset type: quiet full-page background texture for an existing premium knowledge-library HTML interface with warm-gold and silver liquid-glass buttons. Generate a wide 1536x1024 raster image, no UI, no words, no logo, no buttons, no frames. Deep charcoal almost-black field with extremely restrained, elegant wisps of champagne-gold and silver stardust, tiny crisp pale silver points and a few soft luminous threads crossing the middle/lower-left region where transparent controls will sit. Sparse, sophisticated, spacious negative space; subdued tonal variation that can be seen through clear glass, never a busy fantasy galaxy. Keep upper-left dark enough for large white text, central-left around 40-60% height has a gently luminous silver/gold band for transparent button material to reveal. Overall 85% dark with soft organic photographic dust texture, delicate grain, no large bright blobs, no purple, no violet, no blue, no pink, no saturated orange, no planet, no circles, no diagram, no illustrated interface. The existing separate knowledge-nebula card remains unchanged and will sit above this background; do not recreate that card here."
+}

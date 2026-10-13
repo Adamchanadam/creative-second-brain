@@ -1,0 +1,209 @@
+{
+  "schema": "creative_second_brain_portable_commands_v2",
+  "commands": {
+    "setup": {
+      "entry": "scripts/setup_workspace.py",
+      "requires": [
+        "--profile",
+        "--workspace",
+        "--vault",
+        "--display-name"
+      ],
+      "writes": [
+        "new workspace only"
+      ],
+      "purpose": "建立使用者選定的獨立工作區與筆記庫。"
+    },
+    "doctor": {
+      "entry": "<workspace>/tools/brain.py doctor",
+      "writes": [],
+      "purpose": "讀取本機設定和 runtime 完整性；不代表宿主、Obsidian 或圖片能力已驗收。"
+    },
+    "url": {
+      "entry": "<workspace>/tools/brain.py rail start --url <公開網址>",
+      "writes": [
+        "explicit workspace job and vault"
+      ],
+      "purpose": "保存公開文章、論文或已提交授權的 YouTube 字幕；不可把摘要或影片描述當全文。",
+      "home_title": "保存文章、論文或影片字幕",
+      "host_prompt": "$brain-url [網址]",
+      "menu_order": 2,
+      "menu_group": "收集",
+      "menu_label": "文章／論文／影片字幕"
+    },
+    "text": {
+      "entry": "<workspace>/tools/brain.py rail start --text-file <workspace-relative-file>",
+      "writes": [
+        "explicit workspace job and vault"
+      ],
+      "purpose": "保存完整文字，保留原文、來源與你的理解分層。",
+      "home_title": "保存完整文字",
+      "host_prompt": "$brain-text\n[貼上原文]",
+      "menu_order": 3,
+      "menu_group": "收集",
+      "menu_label": "完整文字"
+    },
+    "image": {
+      "entry": "<workspace>/tools/brain.py rail start --image-file <workspace-relative-file>",
+      "writes": [
+        "explicit workspace job and vault"
+      ],
+      "purpose": "把一張原圖作為知識來源，保留原圖並標示看不清的內容。",
+      "home_title": "保存一張原圖",
+      "host_prompt": "$brain-image [附上一張圖片]",
+      "menu_order": 4,
+      "menu_group": "收集",
+      "menu_label": "原圖"
+    },
+    "ask": {
+      "alias_for": "think",
+      "entry": "<workspace>/tools/brain.py think prepare --question <問題>",
+      "writes": [
+        "explicit answer or export paths"
+      ],
+      "purpose": "舊名相容入口；請改用 brain-think 形成並保存可追溯的思考紀錄。",
+      "home_title": "舊名相容：問第二大腦",
+      "host_prompt": "$brain-ask [問題]",
+      "menu_order": 5,
+      "menu_group": "相容",
+      "menu_label": "舊名"
+    },
+    "think": {
+      "entry": "<workspace>/tools/brain.py think prepare --question <問題>",
+      "writes": [
+        "explicit answer or export paths"
+      ],
+      "purpose": "根據庫內資料深入分析問題，保存可追溯的思考紀錄。",
+      "home_title": "思考並保存紀錄",
+      "host_prompt": "$brain-think [問題]",
+      "menu_order": 5,
+      "menu_group": "使用",
+      "menu_label": "思考並保存"
+    },
+    "grow": {
+      "entry": "<workspace>/tools/brain.py ask prepare --question <探索問題>",
+      "writes": [
+        "only after the selected source passes the formal rail"
+      ],
+      "purpose": "先評估你選定的探索來源能否補充知識庫；適合才進入正式保存。",
+      "home_title": "評估探索來源",
+      "host_prompt": "$brain-grow [來源]",
+      "menu_order": 7,
+      "menu_group": "探索",
+      "menu_label": "評估來源"
+    },
+    "create": {
+      "entry": "<workspace>/tools/brain.py material --query <用途>",
+      "writes": [
+        "only a user-requested new work"
+      ],
+      "purpose": "根據已保存材料製作比較、報告或創作；新作品不會自動入庫。",
+      "home_title": "用知識創作",
+      "host_prompt": "$brain-create [想做的成品]",
+      "menu_order": 6,
+      "menu_group": "使用",
+      "menu_label": "用知識創作"
+    },
+    "tidy": {
+      "entry": "<workspace>/tools/brain.py tidy --acceptance --check --json",
+      "writes": [
+        "only explicit maintenance receipts or pages"
+      ],
+      "purpose": "提出可連結、可覆核的整理建議，按需要更新知識目錄。",
+      "home_title": "整理知識與目錄",
+      "host_prompt": "$brain-tidy",
+      "menu_order": 12,
+      "menu_group": "維護",
+      "menu_label": "整理目錄"
+    },
+    "guide": {
+      "entry": "<workspace>/tools/brain.py open-home",
+      "writes": [
+        "rebuildable local reader projections only"
+      ],
+      "purpose": "查看目前使用版本，或直接開啟已同步的第二大腦首頁與成果總覽。",
+      "home_title": "開啟第二大腦首頁",
+      "host_prompt": "$brain-guide",
+      "menu_order": 1,
+      "menu_group": "入口",
+      "menu_label": "首頁／版本"
+    },
+    "nebula": {
+      "entry": "<workspace>/tools/brain.py nebula",
+      "writes": [
+        "rebuildable local reader projections only"
+      ],
+      "purpose": "直接開啟已同步的知識星雲，以關係探索已保存的知識。",
+      "home_title": "開啟知識星雲",
+      "host_prompt": "$brain-nebula",
+      "menu_order": 13,
+      "menu_group": "維護",
+      "menu_label": "知識星雲"
+    },
+    "check": {
+      "entry": "<workspace>/tools/brain.py doctor and targeted readback",
+      "writes": [],
+      "purpose": "唯讀核對指定入庫成果和完成證據；不修復或重建。",
+      "home_title": "核對指定成果",
+      "host_prompt": "$brain-check [來源或工作編號]",
+      "menu_order": 10,
+      "menu_group": "維護",
+      "menu_label": "核對成果"
+    },
+    "resume": {
+      "entry": "<workspace>/tools/brain.py context",
+      "writes": [
+        "only the identified unfinished job after current instruction"
+      ],
+      "purpose": "找回同一身份的中斷工作，保留已合格成果。",
+      "home_title": "接續中斷工作",
+      "host_prompt": "$brain-resume [來源或工作編號]",
+      "menu_order": 9,
+      "menu_group": "維護",
+      "menu_label": "接續工作"
+    },
+    "fix": {
+      "entry": "<workspace>/tools/brain.py rail inspect --job-id <id>",
+      "writes": [
+        "only the named repair target"
+      ],
+      "purpose": "修復指定知識成果、圖片或閱讀頁問題；不做全庫整理。",
+      "home_title": "修復指定問題",
+      "host_prompt": "$brain-fix [哪裏有甚麼問題]",
+      "menu_order": 11,
+      "menu_group": "維護",
+      "menu_label": "修復問題"
+    },
+    "research": {
+      "entry": "<workspace>/tools/brain.py research list; then docs/研究主題操作.md",
+      "writes": [
+        "only an explicitly chosen topic or task"
+      ],
+      "purpose": "先查看或選定研究主題，再按使用者直接要求建立、續做或調整；PUBLIC 不提供背景排程。",
+      "home_title": "研究主題",
+      "host_prompt": "$brain-research 查看目前研究主題",
+      "menu_order": 8,
+      "menu_group": "探索",
+      "menu_label": "研究主題"
+    },
+    "update": {
+      "entry": "<workspace>/tools/brain_update.py --workspace <workspace> --apply",
+      "writes": [
+        "only verified managed runtime and entry files; never private knowledge data"
+      ],
+      "purpose": "從唯一正式發布來源安全更新第二大腦，保留私人知識庫與本機設定。",
+      "home_title": "安全更新第二大腦",
+      "host_prompt": "$brain-update",
+      "menu_order": 14,
+      "menu_group": "維護",
+      "menu_label": "安全更新"
+    },
+    "compat": {
+      "entry": "<workspace>/tools/brain.py compat prepare|ingest <declared arguments>",
+      "writes": [
+        "only the explicit compatibility work item"
+      ],
+      "purpose": "依既有 prepare／ingest 契約接續已知舊輸入；預覽舊個人段落用 legacy-preview，不做原地遷移。"
+    }
+  }
+}

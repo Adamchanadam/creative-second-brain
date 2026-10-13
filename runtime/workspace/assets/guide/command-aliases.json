@@ -1,0 +1,10 @@
+{
+  "schema": "creative_second_brain_home_aliases_v1",
+  "aliases": {
+    "think": {
+      "home_title": "舊名相容：問第二大腦",
+      "host_prompt": "$brain-ask [問題]",
+      "purpose": "舊名相容入口；請改用 brain-think 形成並保存可追溯的思考紀錄。"
+    }
+  }
+}

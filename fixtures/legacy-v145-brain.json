@@ -1,0 +1,6 @@
+{
+  "schema": "creative_second_brain_workspace_v1",
+  "version": "1.4.5",
+  "vault": "私人/Vault",
+  "template_files": {"tools/brain.py": "legacy-fixture"}
+}

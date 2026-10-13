@@ -1,0 +1,9 @@
+{
+  "name": "creative-second-brain-browser-capture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned local browser dependency for reproducible research-case capture.",
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

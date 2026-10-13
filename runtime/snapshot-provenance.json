@@ -1,0 +1,5 @@
+{
+  "schema": "creative_second_brain_runtime_core_v1",
+  "role": "editable public product core",
+  "boundary": "This core is maintained in the public product source; builds do not read another workspace."
+}

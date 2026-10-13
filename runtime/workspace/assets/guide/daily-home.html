@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>@@TITLE@@</title>
+  <style>
+    :root { --ink:#efe9dc; --muted:#bdb6a8; --charcoal:#171713; --glass:rgba(31,30,25,.72); --glass-strong:rgba(24,24,20,.9); --line:rgba(235,231,221,.22); --gold:#dfc584; --silver:#d9d7ce; --brain-stardust:url('assets/brand/gold-silver-stardust.png'); color-scheme:dark; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; background:#11110f; }
+    body { margin:0; min-width:320px; color:var(--ink); font-family:"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif; background:linear-gradient(115deg,rgba(8,8,7,.9),rgba(23,22,18,.72)),var(--brain-stardust) center/cover fixed #11110f; }
+    a { color:inherit; text-decoration:none; }
+    button,input { font:inherit; }
+    .shell { max-width:1488px; margin:0 auto; padding:20px 38px 32px; }
+    .topbar { position:sticky; z-index:20; top:20px; display:flex; align-items:center; gap:22px; min-height:78px; padding:10px 26px; border:1px solid rgba(228,228,222,.43); border-radius:15px; background:linear-gradient(180deg,rgba(255,255,255,.14),rgba(255,255,255,.025) 34%,rgba(0,0,0,.12)),rgba(30,29,25,.28); box-shadow:inset 0 1px rgba(255,255,255,.38),inset 0 -1px rgba(0,0,0,.42),0 14px 32px rgba(0,0,0,.34); backdrop-filter:blur(16px) saturate(135%); }
+    .brand { width:264px; display:flex; align-items:center; gap:12px; min-width:0; font-weight:800; letter-spacing:.04em; }
+    .brand img { width:48px; height:48px; object-fit:contain; filter:drop-shadow(0 0 10px rgba(223,197,132,.23)); }
+    .brand small { display:block; color:#e7c985; font-size:10px; font-weight:700; letter-spacing:.16em; white-space:nowrap; }
+    .brand b { display:block; color:#f6f3eb; font-size:20px; letter-spacing:.04em; white-space:nowrap; }
+    .topbar nav { display:flex; gap:5px; margin-left:auto; }
+    .topbar nav a,.mobile-navigation a { padding:9px 11px; color:var(--muted); border-radius:10px; font-size:.88rem; }
+    .topbar nav a:hover,.topbar nav a:focus-visible,.mobile-navigation a:hover { color:var(--ink); background:rgba(255,255,255,.08); }
+    .topbar-actions { display:flex; gap:8px; }
+    .topbar button { color:var(--ink); border:1px solid var(--line); border-radius:11px; background:rgba(255,255,255,.06); padding:9px 12px; cursor:pointer; }
+    .topbar button:hover,.topbar button:focus-visible { border-color:rgba(223,197,132,.75); background:rgba(223,197,132,.12); }
+    #mobile-menu-toggle,.mobile-navigation { display:none; }
+    .hero-grid { display:grid; grid-template-columns:minmax(360px,.74fr) minmax(540px,1.26fr); gap:20px; min-height:675px; padding:55px 22px 24px; align-items:stretch; }
+    .nebula-card,.quick-strip,.operations-panel,.help-panel { border:1px solid var(--line); background:linear-gradient(135deg,rgba(42,40,33,.78),rgba(20,20,17,.72)); box-shadow:0 22px 56px rgba(0,0,0,.28),inset 0 1px rgba(255,255,255,.12); backdrop-filter:blur(18px); }
+    .hero-copy { display:flex; flex-direction:column; justify-content:center; min-height:675px; padding:4px 0 0; }
+    .eyebrow { margin:0 0 21px; color:#efd493; font-size:11px; letter-spacing:.42em; font-weight:700; }
+    h1 { margin:0 0 20px; max-width:600px; font:700 clamp(44px,4.1vw,68px)/1.28 "Noto Serif TC","PMingLiU",serif; letter-spacing:.02em; text-wrap:balance; }
+    .subline { max-width:590px; margin:0 0 28px; color:#e3e0d9; line-height:1.8; font-size:19px; letter-spacing:.06em; }
+    .hero-actions { display:flex; flex-wrap:wrap; gap:16px; margin:0 0 33px; }
+    .action { display:inline-flex; align-items:center; justify-content:center; min-height:69px; padding:0 23px; border:1px solid rgba(229,230,226,.52); border-radius:19px; color:#f5f2eb; background:rgba(39,38,33,.11); box-shadow:inset 0 1px rgba(255,255,255,.38),inset 0 -1px rgba(0,0,0,.42),0 14px 32px rgba(0,0,0,.34); backdrop-filter:blur(16px) saturate(135%); font-size:18px; font-weight:700; white-space:nowrap; }
+    .action.primary { border-color:rgba(247,227,187,.74); background:linear-gradient(165deg,rgba(255,255,255,.23),rgba(239,194,109,.075) 40%,rgba(20,17,10,.08) 80%),rgba(133,94,34,.12); color:#fffaf0; box-shadow:inset 0 1px rgba(255,251,238,.68),inset 0 -2px rgba(73,45,8,.52),0 13px 30px rgba(0,0,0,.30),0 0 22px rgba(229,182,89,.12); }
+    .action:hover,.action:focus-visible { transform:translateY(-2px); border-color:rgba(255,239,207,.88); box-shadow:inset 0 1px rgba(255,255,255,.78),inset 0 -2px rgba(74,47,12,.52),0 17px 35px rgba(0,0,0,.35),0 0 25px rgba(229,182,89,.17); }
+    .micro-cards { display:grid; gap:15px; }
+    .destination { display:block; min-height:100px; padding:14px; border:1px solid rgba(230,225,211,.19); border-radius:15px; background:rgba(255,255,255,.045); }
+    .destination:hover,.destination:focus-visible { border-color:rgba(223,197,132,.72); background:rgba(255,255,255,.08); }
+    .destination strong,.destination span { display:block; }
+    .destination strong { font-size:.94rem; }
+    .destination span { margin-top:6px; color:var(--muted); font-size:.78rem; line-height:1.5; }
+    .nebula-card { isolation:isolate; position:relative; overflow:hidden; min-height:655px; padding:0; border:2px solid rgba(229,213,181,.82); border-radius:24px; background:#0a0a09; box-shadow:inset 0 0 18px rgba(230,216,185,.28),0 0 34px rgba(214,178,102,.18); }
+    .nebula-card > img { position:absolute; inset:0; z-index:-2; width:100%; height:100%; object-fit:cover; object-position:center; opacity:1; }
+    .nebula-card:after { content:""; position:absolute; inset:0; z-index:-1; pointer-events:none; background:rgba(0,0,0,.37); }
+    .nebula-content { position:relative; z-index:1; max-width:555px; margin:0; padding:52px 38px; }
+    .nebula-content h2 { margin:0 0 20px; color:#fffaf0; font:400 clamp(52px,4vw,72px)/1.2 "Noto Serif TC","PMingLiU",serif; letter-spacing:.10em; }
+    .nebula-content p { max-width:520px; margin:0; color:#eeebe2; font-size:18px; line-height:1.7; letter-spacing:.04em; }
+    .nebula-content .destination { min-height:56px; margin-top:19px; }
+    .quick-strip { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:4px 0 25px; padding:11px; border-radius:18px; }
+    .quick-operation { display:block; padding:14px 15px; border:1px solid transparent; border-radius:12px; background:rgba(255,255,255,.04); }
+    .quick-operation:hover,.quick-operation:focus-visible { border-color:var(--line); background:rgba(255,255,255,.09); }
+    .quick-operation b,.quick-operation span { display:block; }
+    .quick-operation b { color:var(--gold); font-size:.86rem; }
+    .quick-operation span { margin-top:5px; color:var(--muted); font-size:.78rem; line-height:1.45; }
+    .operations-panel,.help-panel { margin-top:22px; padding:clamp(20px,3vw,34px); border-radius:22px; }
+    .section-head { display:flex; align-items:end; justify-content:space-between; gap:16px; margin-bottom:18px; }
+    .section-head h2 { margin:0; font-size:1.45rem; }
+    .section-head p { margin:5px 0 0; color:var(--muted); font-size:.86rem; }
+    .tools { display:flex; flex-wrap:wrap; gap:9px; align-items:center; }
+    .tools input { min-width:min(270px,100%); padding:10px 12px; color:var(--ink); border:1px solid var(--line); border-radius:10px; background:rgba(0,0,0,.22); }
+    .tools button { padding:9px 11px; color:var(--ink); border:1px solid var(--line); border-radius:10px; background:rgba(255,255,255,.05); cursor:pointer; }
+    #commands { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+    .micro-card,.nebula-cta,.command-card { display:block; border:1px solid rgba(230,225,211,.19); border-radius:15px; background:rgba(255,255,255,.045); }
+    .micro-card { min-height:127px; display:grid; grid-template-columns:minmax(0,1fr) 28px; align-items:center; gap:17px; padding:21px 23px; border-radius:19px; text-align:left; }
+    .micro-card span,.command-card strong,.command-card small { display:block; }
+    .micro-card b { color:#f8f4ec; font-size:20px; }
+    .micro-card small,.command-card small { margin-top:8px; color:#d8d6cf; font-size:14px; line-height:1.5; }
+    .micro-card i { color:#f3ede1; font-size:24px; font-style:normal; }
+    .micro-card:hover,.micro-card:focus-visible,.nebula-cta:hover,.nebula-cta:focus-visible,.command-card:hover,.command-card:focus-visible { border-color:rgba(223,197,132,.72); background:rgba(255,255,255,.08); }
+    .nebula-cta { display:inline-flex; align-items:center; justify-content:center; gap:15px; min-height:56px; padding:0 23px; border-color:rgba(244,219,166,.72); border-radius:19px; background:rgba(84,58,19,.13); color:#fffaf0; font-size:16px; font-weight:700; }
+    .command-card { padding:14px 15px; }
+    .command-card strong { color:var(--gold); font-size:.86rem; }
+    .prompt { overflow:hidden; border:1px solid var(--line); border-radius:14px; background:rgba(10,10,9,.24); }
+    .prompt[open] { border-color:rgba(223,197,132,.45); }
+    .prompt summary { list-style:none; padding:15px; cursor:pointer; }
+    .prompt summary::-webkit-details-marker { display:none; }
+    .prompt summary b,.prompt summary span { display:block; }
+    .prompt summary b { color:var(--gold); font-size:.88rem; }
+    .prompt summary span { margin-top:6px; font-size:.94rem; }
+    .prompt .detail { padding:0 15px 15px; color:var(--muted); line-height:1.65; font-size:.86rem; }
+    .prompt-body { padding:0 15px 15px; color:var(--muted); line-height:1.65; font-size:.86rem; }
+    .prompt-body p { margin:0 0 12px; }
+    .prompt textarea { width:100%; min-height:56px; resize:vertical; padding:8px; color:var(--ink); border:1px solid var(--line); border-radius:8px; background:rgba(0,0,0,.24); }
+    .prompt .copy { margin-top:9px; padding:8px 10px; color:var(--ink); border:1px solid var(--line); border-radius:8px; background:rgba(255,255,255,.05); cursor:pointer; }
+    .prompt .source { margin:10px 0 0; }
+    .prompt .source a { color:var(--gold); }
+    .prompt .alias { margin:10px 0 0; color:#d9d2c1; font-size:.8rem; }
+    #empty { margin:18px 0 0; color:var(--muted); }
+    #empty[hidden] { display:none; }
+    .compat { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); }
+    .help-panel { line-height:1.8; }
+    .help-panel h2 { margin-top:0; }
+    .footer { margin-top:24px; padding:20px 0 4px; color:var(--muted); text-align:center; font-size:.85rem; }
+    @media (min-width:761px) and (max-width:1120px) { .shell { padding:16px 20px 28px; } .topbar { gap:14px; padding:10px 16px; } .brand { width:232px; } .brand b { font-size:17px; } .topbar nav { display:none; } #mobile-menu-toggle { display:block; } .mobile-navigation.is-open { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; margin-top:9px; padding:9px; border:1px solid var(--line); border-radius:14px; background:var(--glass-strong); } .hero-grid { grid-template-columns:1fr; min-height:auto; padding:42px 0 24px; } .hero-copy { min-height:auto; max-width:760px; padding:0; } .nebula-card { min-height:500px; } h1 { font-size:clamp(44px,5.25vw,58px); line-height:1.23; } .hero-actions .action { min-height:60px; padding:0 17px; font-size:16px; white-space:nowrap; } }
+    @media (max-width:760px) { .shell { padding:13px 14px 26px; } .topbar { top:13px; min-height:62px; gap:10px; padding:8px 10px; } .brand { width:auto; gap:9px; } .brand small { display:block; font-size:8px; } .brand b { font-size:15px; } .brand img { width:42px; height:42px; } .topbar nav { display:none; } .topbar-actions { margin-left:auto; } .topbar-actions button { padding:8px 9px; font-size:.8rem; } #mobile-menu-toggle { display:block; } .mobile-navigation.is-open { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; margin-top:8px; padding:8px; border:1px solid var(--line); border-radius:14px; background:var(--glass-strong); } .hero-grid { grid-template-columns:1fr; gap:18px; min-height:auto; padding:40px 0 18px; } .hero-copy { min-height:0; padding:0; } h1 { max-width:100%; font-size:clamp(35px,10.7vw,42px); letter-spacing:0; white-space:normal; } .subline { margin-bottom:24px; font-size:16px; } .hero-actions { flex-direction:column; gap:12px; margin:0 0 33px; } .action { width:100%; min-height:60px; } .micro-card { min-height:108px; grid-template-columns:minmax(0,1fr) 22px; gap:12px; padding:15px; } .micro-card b { font-size:17px; } .micro-card small { font-size:12px; } .nebula-card { min-height:455px; border-radius:19px; } .nebula-content { padding:34px 23px; } .nebula-content h2 { font-size:51px; } .quick-strip { grid-template-columns:1fr; } .section-head { align-items:start; flex-direction:column; } .tools { width:100%; } .tools input { width:100%; min-width:0; } #commands { grid-template-columns:1fr; } }
+    @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } *,*:before,*:after { transition:none!important; } }
+  </style>
+</head>
+<body data-brain-visual="home">
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="#main"><img src="assets/brand/creative-second-brain-nebula-logo-v4.png" alt="創造型第二大腦標誌"><span><small>CREATIVE 2ND BRAIN</small><b>創造型第二大腦</b></span></a>
+      <nav aria-label="主選單">@@NAV@@</nav>
+      <div class="topbar-actions"><button id="search-trigger" type="button" aria-label="搜尋全部操作">搜尋</button><button id="mobile-menu-toggle" type="button" aria-expanded="false" aria-controls="mobile-navigation">選單</button></div>
+    </header>
+    <nav id="mobile-navigation" class="mobile-navigation" aria-label="手機主選單">@@NAV@@</nav>
+    <main id="main">
+      <section class="hero-grid" aria-label="創造型第二大腦導覽">
+        <div class="hero-copy">
+          <p class="eyebrow">CREATIVE SECOND BRAIN · @@VERSION@@</p>
+          <h1>讓知識，<br>孕育下一個想法</h1>
+          <p class="subline">仰望知識的星空，讓想法相遇</p>
+          <div class="hero-actions"><a class="action primary" href="#p-url">保存一個來源</a><a class="action secondary" href="#p-think">開始深入思考</a></div>
+          <div class="micro-cards">@@CORE_DESTINATIONS@@</div>
+        </div>
+        <article class="nebula-card"><img src="assets/brand/nebula-art.png" alt="知識星雲視覺"><div class="nebula-content"><h2>知識星雲</h2><p>從關係與脈絡探索已保存的知識，而不是只靠單一列表。</p>@@NEBULA_DESTINATION@@</div></article>
+      </section>
+      <section class="quick-strip" aria-label="常用操作">@@QUICK_OPERATIONS@@</section>
+      <section id="prompts" class="operations-panel" aria-labelledby="operations-heading">
+        <div class="section-head"><div><h2 id="operations-heading">全部操作 <span id="count">@@COMMAND_COUNT@@ 項</span></h2><p>搜尋指令、中文名稱或完整說明。舊名稱只會顯示為相容別名，不會重複成另一項操作。</p></div><div class="tools"><input id="search" type="search" placeholder="搜尋知識、主題或想法…" aria-label="搜尋全部操作"><button id="reset" type="button">清除</button><button id="expand" type="button">展開結果</button><button id="print" type="button">列印</button></div></div>
+        <div id="commands">@@COMMANDS@@</div><p id="empty" hidden>找不到相符的操作。</p>
+      </section>
+      <section id="help" class="help-panel">@@HELP@@</section>
+    </main>
+    <div class="compat">@@COMPAT_ANCHORS@@</div>
+    <div class="compat">@@FINGERPRINTS@@</div>
+    <footer class="brain-product-footer" data-brain-footer="creative-second-brain">創造型第二大腦 | Adam Chan</footer>
+  </div>
+  <script>
+  (()=>{const search=document.getElementById('search'),cards=[...document.querySelectorAll('#commands > .prompt')],count=document.getElementById('count'),empty=document.getElementById('empty'),mobile=document.getElementById('mobile-navigation'),toggle=document.getElementById('mobile-menu-toggle'); const filter=()=>{const q=search.value.trim().toLocaleLowerCase();let n=0;cards.forEach(card=>{const show=!q||card.textContent.toLocaleLowerCase().includes(q);card.hidden=!show;if(show)n++;});count.textContent=n+' 項';empty.hidden=n!==0;}; search.addEventListener('input',filter);document.getElementById('reset').addEventListener('click',()=>{search.value='';filter();search.focus();});document.getElementById('search-trigger').addEventListener('click',()=>{document.getElementById('prompts').scrollIntoView({behavior:'smooth'});search.focus();});document.getElementById('expand').addEventListener('click',()=>cards.filter(c=>!c.hidden).forEach(c=>c.open=true));document.getElementById('print').addEventListener('click',()=>window.print());if(toggle)toggle.addEventListener('click',()=>{const open=mobile.classList.toggle('is-open');toggle.setAttribute('aria-expanded',String(open));});const reveal=()=>{const id=decodeURIComponent(location.hash.slice(1));if(!id)return;const target=document.getElementById(id);if(target&&target.classList.contains('prompt')){search.value='';filter();target.open=true;target.scrollIntoView({block:'center'});}};window.addEventListener('hashchange',reveal);reveal();})();
+  </script>
+</body>
+</html>

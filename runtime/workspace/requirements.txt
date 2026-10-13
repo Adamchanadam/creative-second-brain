@@ -1,0 +1,4 @@
+Pillow==12.1.1
+beautifulsoup4==4.15.0
+yt-dlp[default]==2026.8.19
+tzdata==2026.5

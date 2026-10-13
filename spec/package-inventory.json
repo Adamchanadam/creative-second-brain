@@ -1,0 +1,44 @@
+{
+  "schema": "creative_second_brain_package_inventory_v1",
+  "package": "creative-second-brain",
+  "profile": "public-portable",
+  "daily_entry_contract": {
+    "managed_entry_prefix": ".agents/skills/brain-",
+    "managed_entries": [
+      {"command": "ask", "skill": "brain-ask", "role": "compatibility_alias", "canonical_command": "think"},
+      {"command": "think", "skill": "brain-think", "role": "canonical"},
+      {"command": "check", "skill": "brain-check", "role": "canonical"},
+      {"command": "create", "skill": "brain-create", "role": "canonical"}, {"command": "fix", "skill": "brain-fix", "role": "canonical"},
+      {"command": "grow", "skill": "brain-grow", "role": "canonical"}, {"command": "guide", "skill": "brain-guide", "role": "canonical"},
+      {"command": "nebula", "skill": "brain-nebula", "role": "canonical"},
+      {"command": "image", "skill": "brain-image", "role": "canonical"}, {"command": "research", "skill": "brain-research", "role": "canonical"},
+      {"command": "resume", "skill": "brain-resume", "role": "canonical"}, {"command": "text", "skill": "brain-text", "role": "canonical"},
+      {"command": "tidy", "skill": "brain-tidy", "role": "canonical"}, {"command": "update", "skill": "brain-update", "role": "canonical"}, {"command": "url", "skill": "brain-url", "role": "canonical"}
+    ],
+    "package_only_skill": "creative-second-brain",
+    "retired_or_unmanaged_members": ["brain-canvas", "brain-taste"]
+  },
+  "runtime": {
+    "source_root": "runtime",
+    "exported_prefixes": ["workspace/"],
+    "managed_workspace_prefixes": ["tools/", "docs/", "assets/"],
+    "public_runtime_allowlist": [
+      "workspace/requirements.txt",
+      "workspace/tools/",
+      "workspace/docs/",
+      "workspace/assets/"
+    ]
+  },
+  "managed_root_files": ["brain.json"],
+  "private_exclusions": [
+    "knowledge-base-vault/", "inputs/", "outputs/", ".obsidian/", "connections/", "jobs/", "registry/", "receipts/"
+  ],
+  "adoption_policy": {
+    "legacy_members": {
+      "brain-canvas": "preserve_unmanaged",
+      "brain-taste": "preserve_unmanaged",
+      "creative-second-brain": "preserve_package_only"
+    },
+    "requires_explicit_bootstrap_quiescence_proof": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "creative_second_brain_update_source_v1",
+  "repository": "Adamchanadam/creative-second-brain",
+  "latest_release_api": "https://api.github.com/repos/Adamchanadam/creative-second-brain/releases/latest",
+  "release_page": "https://github.com/Adamchanadam/creative-second-brain/releases",
+  "archive_name": "creative-second-brain-{version}.zip",
+  "required_assets": [
+    "creative-second-brain-{version}.zip",
+    "delivery-manifest.json",
+    "SHA256SUMS.txt"
+  ],
+  "allowed_download_hosts": [
+    "api.github.com",
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com"
+  ]
+}

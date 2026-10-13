@@ -1,0 +1,18 @@
+{
+  "asset": "creative-second-brain-nebula-logo-v4.png",
+  "status": "implementation_candidate_pending_user_aesthetic_review",
+  "mode": "built_in_imagegen",
+  "sha256": "961ea9c3a7dc7af9c3311a100995a7ad2aaa060232908e2195b4db27c60abeb9",
+  "source": "Original generator output is not included; this package preserves only the bundled asset, mode, prompts and SHA-256.",
+  "initial_prompt": "Use case: logo-brand. Asset: one production app logomark for CREATIVE 2ND BRAIN, no text. Design a NEW exceptionally refined minimal knowledge-galaxy symbol to harmonize with a charcoal black, warm champagne gold, silver-stardust Liquid Glass interface. Themes: knowledge galaxy, connected nodes, nebula. Resolve them into ONE compact distinctive flowing emblem: two elegantly tapered open sweeping curves suggesting a galactic spiral and a subtle emerging idea, with only three intentionally placed luminous round nodes integrated into the curves. Strong controlled negative space, calm balanced asymmetry, clear silhouette at 24/32/48 pixels. Warm champagne-gold main curve and platinum-silver secondary curve, restrained satin-metal edge light, nearly flat premium logo finish, not a photorealistic object. No blue, cyan, purple, magenta. Not Saturn or an atom: NO closed elliptical orbital ring, no central planet ball, no crossed orbital loops. No brain drawing, no letterforms, no text, no border, no app tile, no particles or scattered stars, no fog, no glow halo, no tiny details, no hairline wires, no decorative background. Exactly one centered symbol occupying about 80 percent of a square canvas; generous transparent margin; genuinely transparent background and clean alpha edges. Logo should feel bespoke and mature, luminous champagne and silver on dark charcoal, not a generic science icon.",
+  "final_edit_prompt": "Refine this logo, keeping its two open flowing galaxy curves, three integrated circular nodes, centered compact silhouette, warm champagne-gold plus platinum-silver palette and genuinely transparent background. Change ONLY the material and line discipline: remove all photorealistic brushed metal texture, shiny 3D spherical beads, beveled jewelry rendering, haze, colored edge fringes and tiny specks. Make it a mature minimal flat vector-like brand mark with smooth clean matte fills, very subtle restrained tonal depth at most, perfectly clean alpha edges. Nodes should be simple luminous solid round discs seamlessly joined to their curves, not metal balls. Give curves confident medium weight with elegant taper but no long vanishing hairline tips. Designed to remain beautifully clear at 32px on a dark charcoal glass UI. No blue/purple/cyan, no text, no shadow, no background, no frame. Keep the existing overall symbol idea, reduce visual complexity.",
+  "reference": "exec-6b9e646f-0e97-4246-9951-67bf038edbfc.png",
+  "constraints": [
+    "warm champagne gold and platinum silver",
+    "no blue/cyan/purple",
+    "galaxy curves and three nodes",
+    "transparent background",
+    "small-size clarity"
+  ],
+  "validation": "Parent actual browser dark-background readback at 24/32/48px; clean transparency in browser. Independent asset review pending."
+}
