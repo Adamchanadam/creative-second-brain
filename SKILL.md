@@ -13,7 +13,7 @@ description: 在使用者指定的 Obsidian workspace 建立或使用完整可�
 
 日常使用先讀 [命令表](spec/command-registry.json) 與 [資料 ownership](spec/ownership.md)，再讀指定 workspace 的 AGENTS.md 和 brain.json。用設定中的實際 Python 執行 `tools/brain.py`；`brain-think`、`brain-url`、`brain-text`、`brain-image`、`brain-grow`、`brain-create`、`brain-tidy`、`brain-guide`、`brain-nebula`、`brain-check`、`brain-resume`、`brain-fix`、`brain-research`、`brain-update` 的宿主入口與工具子命令不是同一件事。`brain-ask` 只是相容別名，必須轉到同一個 `brain-think` 正式流程。`brain-update` 只路由至 workspace 的 `tools/brain_update.py`：先讀回 `--check`，再按使用者已要求的更新執行 `--apply`；不自動解決衝突，不碰私人資料或全域舊 skill。
 
-完整功能以命令表為唯一基準；宿主是否把它們顯示為 slash command 需另行核對。多步、較長、除錯、根因修復或驗收工作，所有 `brain-*` 入口都會使用同一張可讀任務進度卡。文字入庫保留完整正文、提交者與原作者／被引用作品分離；庫內提問使用 `thinking_v2`，有地圖短標時需有 `visual_check`。研究只能按使用者直接要求啟動，PUBLIC 不提供背景排程。正式圖片、真實來源與語義審閱仍要按實際工具結果驗收。
+完整功能以命令表為唯一基準；宿主是否把它們顯示為 slash command 需另行核對。多步、較長、除錯、根因修復或驗收工作，`brain-*` 入口使用同一張可讀任務進度卡；正常單篇入庫（`brain-url`、`brain-text`、`brain-image`）與單次補圖（`brain-infographic`）不建立進度卡，完成時直接回報耗時。文字入庫保留完整正文、提交者與原作者／被引用作品分離；庫內提問使用 `thinking_v2`，有地圖短標時需有 `visual_check`。研究只能按使用者直接要求啟動，PUBLIC 不提供背景排程。正式圖片、真實來源與語義審閱仍要按實際工具結果驗收。
 
 ## 邊界
 

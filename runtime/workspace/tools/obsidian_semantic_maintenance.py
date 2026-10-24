@@ -246,6 +246,15 @@ def new_content_candidate_row(app: ApplicationRecord, notes: list[Any]) -> dict[
     application_id = str(fields.get("application_id") or app.path.stem.split("_", 1)[0]).strip()
     text = searchable_application_text(app)
     concept_candidates = concept_candidates_for_record(notes, source_id=source_id, source_note=source_note, application_stem=app.path.stem)
+    declared = fields.get("reusable_concepts_json", "[]")
+    declared = json.loads(declared) if isinstance(declared, str) else declared
+    if not isinstance(declared, list):
+        raise ValueError("application reusable concepts must be an array")
+    if "reusable_concepts_json" in fields:
+        concept_candidates = [
+            {"title": item["name"], "reason": item["reason"], "evidence": item["evidence"],
+             "kp_id": item["kp_id"], "status": "candidate_only"}
+            for item in declared if isinstance(item, dict) and all(item.get(key) for key in ("name", "reason", "evidence", "kp_id"))]
     idea_matches = idea_matches_for_text(text, notes)
     bridge_candidates = build_bridge_candidates(app, idea_matches)
     explicit_no_reusable = has_explicit_no_reusable_signal(fields)
@@ -268,6 +277,7 @@ def new_content_candidate_row(app: ApplicationRecord, notes: list[Any]) -> dict[
         "concept_candidates": concept_candidates[:8],
         "bridge_candidates": bridge_candidates[:12],
         "explicit_no_reusable_idea": explicit_no_reusable,
+        "cross_source_insight_status": str(fields.get("compounding_insight_status") or "needs_context"),
         "next_step": "週期整理時覆核候選；有證據才補 hub、tension、taste_signal、application_scene 或 typed bridge。",
     }
 
@@ -321,21 +331,22 @@ def idea_matches_for_text(text: str, notes: list[Any]) -> list[dict[str, str]]:
 
 
 def build_bridge_candidates(app: ApplicationRecord, idea_matches: list[dict[str, str]]) -> list[dict[str, str]]:
-    evidence = first_non_empty(
-        field_values(app.fields.get("compounding_insight_links")),
-        field_values(app.fields.get("taste_signals")),
-        [str(app.fields.get("compounding_next_action") or "").strip()],
-        [str(app.fields.get("adoption_reason") or "").strip()],
-        [str(app.fields.get("taste_network_reason") or "").strip()],
-    )
-    evidence_text = evidence[:180] if evidence else "由 application note 欄位與內容文字命中；仍需人工覆核。"
+    candidates = [value for value in [
+        *field_values(app.fields.get("compounding_insight_links")),
+        *field_values(app.fields.get("taste_signals")),
+    ] if value.strip().casefold() not in {"", "[]", "{}", "未建立", "暫無", "無", "none", "not_applicable", "needs_context", "no_compounding_insight"}
+        and not value.strip().startswith(("未提供", "暫未", "需要更多"))]
+    evidence = first_non_empty(candidates)
+    if not evidence:
+        return []
+    evidence_text = evidence
     rows: list[dict[str, str]] = []
     for match in idea_matches:
         rows.append(
             {
                 "target": match["title"],
                 "target_type": match["type"],
-                "relation": match["relation"],
+                "relation": "需要查證",
                 "evidence": evidence_text,
                 "status": "candidate_only",
             }
@@ -344,14 +355,9 @@ def build_bridge_candidates(app: ApplicationRecord, idea_matches: list[dict[str,
 
 
 def has_explicit_no_reusable_signal(fields: dict[str, Any]) -> bool:
-    compounding = str(fields.get("compounding_insight_status") or "").lower()
-    adoption = str(fields.get("adoption_status") or fields.get("AI總判斷") or "").lower()
-    taste = str(fields.get("taste_network_status") or fields.get("taste_link_status") or "").lower()
-    return (
-        compounding in {"no_insight", "needs_context", "none", "not_applicable", "暫無", "不適用"}
-        and taste in {"不入網", "not_applicable", "none", "不適用", ""}
-        and adoption in {"略過", "不採用", "skip", "reject", ""}
-    )
+    # A missing personal context or cross-source insight says nothing about
+    # whether this source contains a reusable single-source idea.
+    return str(fields.get("idea_candidate_status") or "").strip() == "no_reusable_idea"
 
 
 def load_application_records(vault: Path, *, paths: list[Path] | None = None) -> list[ApplicationRecord]:

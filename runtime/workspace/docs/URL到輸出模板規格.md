@@ -12,9 +12,9 @@
 2. `user_provided_text`：使用者明確指定的 UTF-8 文字 / Markdown 正文，由原始 bytes 的 SHA-256 身分驗證；或
 3. `user_provided_image`：使用者明確指定的一張 PNG、JPEG 或 WebP 原圖，由原始 bytes 的 SHA-256 身分驗證。
 
-新來源的固定工作單入口見 Compiler Worker 規格 7.2；URL／貼文一律保留全文，圖片保留原圖及經核對的完整可辨文字。
+新來源的固定工作單入口見 Compiler Worker 規格 7.2；URL／貼文一律保留全文，圖片保留原圖及經核對的完整可辨文字；新的 YouTube 字幕 `knowledge_only` 來源例外，完整字幕只留在工作包存檔（見 §5.1 `transcript_archive_required`）。
 
-三種輸入都必須經相同的來源分析、資訊圖與正式 writer 閘門；`user_provided_text` 和 `user_provided_image` 不得填入、推測或以其他 URL 代替其來源身分。
+三種輸入都必須經相同的來源分析與正式 writer 閘門。新 `ingest_rail start` 預設 `knowledge_only`：完整文字、覆蓋、知識點、應用及讀回先正式入庫，資訊圖狀態為 `not_requested`，零頁不冒充圖片覆蓋或建立待辦。只有明示 `formal_infographic`，或已完成文字成果後另走 `add-infographic`，才須經 `docs/資訊圖生成規格.md` 的完整圖片閘門；後者不得改寫原文字成果。`user_provided_text` 和 `user_provided_image` 不得填入、推測或以其他 URL 代替其來源身分。
 
 `user_provided_text`／`user_provided_image`只表示內容由誰交到系統，不表示該人是作者、發布者或內容歸屬者。若文字標示「非 <姓名> 內容」，這只是不可以把內容歸到該人名下；作者、來源機構與內容歸屬必須依正文或明示來源資料填寫。原始出處未提供時，保留正文已明示的人物／機構角色，並把原作者或發布者標為未提供／待核實，不可按提交者身分推定。
 
@@ -25,7 +25,7 @@
 1. 來源可讀性稽核。
 2. Markdown 真源知識檔。
 3. 本機 assets 目錄。
-4. 原文助讀 PNG 資訊圖。
+4. 明示要求時才加入的原文助讀 PNG 資訊圖。
 5. Obsidian-ready 來源索引欄位。
 6. 原子知識點草案與關係草案。
 7. application note 內的個人化扣連、跨來源洞見判斷與採納判斷。
@@ -80,9 +80,9 @@ README 不是正式產品產物。只有在需要保存 dry-run 驗收、候選�
 | 新手入口 | 讀懂本文前需要的概念 | 無必要前置就寫明 |
 | 概念拆解 | 日常類比、正式定義、適用邊界 | 不用術語堆砌代替理解 |
 | 知識用途分流 | 主要用途、是否入事實知識網、是否入品味探索網、不入或入網原因、即時實用產出、第二階段訊號 | 事實網與品味網不可混成同一判斷 |
-| 個人應用層 | slice 使用 `## 個人化消化`；writer 只投影到 `applications/APP-*.md`，包含個人化扣連、跨來源洞見判斷、採納判斷與可行動建議，不留在 source note | source note 只消化來源正文內容；AI 執行狀態只寫同一工作帳本、package 或檢查收據 |
+| 個人應用層 | slice 使用 `## 個人化消化`（讀取端同時接受舊寫法 `## For <任何名稱>:個人化消化`；私人與公開只按這個結構標記區分，與名稱無關）；writer 只投影到 `applications/APP-*.md`，包含個人化扣連、跨來源洞見判斷、採納判斷與可行動建議，不留在 source note | source note 只消化來源正文內容；AI 執行狀態只寫同一工作帳本、package 或檢查收據 |
 | Idea layer 候選 | 不寫入 source note;如有可重用想法,另在 application note 或 KP 中保存 concept、hub、tension、taste signal、application_scene 與 semantic bridge 候選 | 候選不是已核實 graph link;record ID 只作 plain text 查證,不可用 `KP-...` / `APP-...` wikilink 進主 graph；後續提取驗收只看 `docs/Obsidian語義索引與關聯圖落地方案.md`、`tools/obsidian_idea_retrieval.py` 與 `tools/obsidian_semantic_maintenance.py` |
-| 資訊圖 | 正式 PNG 的相對路徑、檔案雜湊及 source note embed | 資產必須已按 `docs/資訊圖生成規格.md` 完成生成及驗收；本文不重述其方法或門檻 |
+| 資訊圖 | `knowledge_only` 記錄 `not_requested` 與零頁，不建立待補圖；`formal_infographic`／`add-infographic` 才記錄正式 PNG 的相對路徑、檔案雜湊及 source note embed | 有圖片的路徑必須已按 `docs/資訊圖生成規格.md` 完成生成及驗收；文字優先不可假稱已有圖片覆蓋 |
 | 原子知識點與關係 | 知識點 ID、內容、層級、可信度、來源證據、關係表 | Obsidian 寫入前仍是草案 |
 | 學習檢查 | 理解題、保持題、遷移題、應用任務；可按題材另加辨析或風險題 | 必附答案標準或評分依據；應用任務必須是可執行小任務，不可只寫成抽象應用題 |
 | Obsidian-ready 索引欄位 | source note properties、knowledge-point note properties、Bases 視圖欄位、已寫入時的讀回紀錄 | Obsidian source note 是產品主資料層;Bases 只作視圖,不取代 Markdown 真源 |
@@ -134,14 +134,17 @@ AI 必須完成來源分析,不可把 source analysis 留給使用者作一級�
 | `summarized_allowed` | 已存在的相容／歷史入庫包 | 只供歷史讀回或原包修復；新文字與 URL 接單不得選用 |
 | `full_body_required` | 新文字與 URL 入庫，包含 v2 及相容入口的新接單 | `source slice` 與 Obsidian source note 必須包含清理後 canonical article body；metadata、review packet、source note 與 registry 的 `canonical_body_sha256` 必須一致；代表錨點必須能從正文區讀回 |
 | `original_image_required` | 使用者明確提供一張圖片作知識來源 | source slice、metadata、review packet、registry 與 source note 必須共用同一原圖 SHA-256；vault 必須保存原圖，並可讀回視覺解讀、`IMG-*` 錨點和第二輪校對 |
+| `transcript_archive_required` | 新的 YouTube 字幕 URL `knowledge_only` 工作；由接單程式按已核對字幕證據設定，AI 不可選擇 | 完整字幕只保存在工作包存檔（`canonical_source.md`、`source_capture_youtube.vtt`），不得寫入 vault；source note 以 `## 字幕存檔` 取代正文保存區，記錄保存模式、影片 URL、字幕語言／軌道、正文及原始 VTT SHA-256、存檔位置、閱讀版字數及「閱讀版代表錨點」。writer 與讀回須核對兩個存檔雜湊與 bundle 相符、代表錨點可由存檔重算，並拒絕任何寫入 vault 的筆記含行首的字幕時碼行（`[分:秒.毫秒 --> ` 或 `[時:分:秒.毫秒 --> ` 格式，判斷只在 `tools/youtube_transcript_capture.py` 的 `CUE_TIMING_LINE`） |
 
 `full_body_required` 不可只由 AI 審稿時自行填寫。正式 prepare 入口必須把此意圖、`canonical_body_sha256`、`canonical_body_representative_anchors` 寫入審核包；若 source slice 缺正文保存區、hash 不一致、代表錨點不存在，或 completion report 不能讀回正文區，正式寫入必須停止。若只讀到網站摘要或片段，狀態仍是 `partial_capture` / `source_blocked`，不得以 full-body 模式宣稱完成。
+
+`transcript_archive_required` 的目的，是讓知識庫只保存有價值的知識點、主張、數據、方法、限制與應用，不讓重複的口語逐字稿成為檢索雜訊；查證能力由不可變存檔及可重算引述保留。KP／關係證據只放程式由存檔重組的去重短引述及影片時間連結，規則見 [Compiler §7.2](Compiler%20Worker與Knowledge%20Package設計及驗收規格.md#72-三種來源的程式工作單)。既有 `full_body_required` 的 YouTube 來源保持原樣；改用新模式只可經另行授權的修訂，不能由重跑自動改寫。
 
 `original_image_required` 同樣不可由 AI 事後補欄位。正式 prepare 入口必須保存原圖 bytes 和 SHA-256，image-review 必須以原圖的 SHA-256、尺寸及 `IMG-*` 錨點驗證結構、逐字轉寫、來源主張、覆蓋表和第二輪校對。OCR 只屬轉寫候選；圖片可見內容、外部已核實事實及仍需外部核對的主張必須分開。不得把原圖當成由 imagegen 產生的資訊圖，也不得把摘要取代原圖。
 
 ## 6. 資訊圖成果引用
 
-URL 成果包只負責保存正式 PNG 的 vault 相對路徑、檔案雜湊及 source note embed；資訊圖鎖定稿、覆蓋表、頁數、候選上限、圖示、母版、生成授權與驗收全部由 `docs/資訊圖生成規格.md` 唯一定義。本文不得複製或改寫那些規則。
+URL 成果包只負責保存正式 PNG 的 vault 相對路徑、檔案雜湊及 source note embed；資訊圖鎖定稿、覆蓋表、頁數、候選上限、圖示、母版、生成授權與驗收全部由 `docs/資訊圖生成規格.md` 唯一定義。本文不得複製或改寫那些規則。完成後的內容修訂只可由其既有修訂 owner 建立可驗證的目前版本；原來源身分、raw／canonical 捕捉與完成收據保持不可變，補圖入口只可讀回該已接受的目前版本。
 
 ## 7. Obsidian-ready 來源欄位
 
@@ -152,16 +155,17 @@ source note properties 草案至少包含:
 | 欄位 | 規則 |
 |---|---|
 | 標題 | 來源名稱,不是內部任務名 |
+| retrieval_aliases | 選填清單，0–8 個去空白後 1–80 字元的原文／跨語言／同義名稱；不可含換行、`[[`、`]]`、`|`、忽略大小寫的重複或與標題相同，只供選材，不顯示給讀者 |
 | source_input_kind | `url`、`user_provided_text` 或 `user_provided_image`；不可省略於新寫入來源 |
 | source_identity | 新來源的唯一去重鍵；URL 為 `url:<標準化 URL hash>`，使用者文字為 `user_provided_text:<原始 bytes SHA-256>`，使用者圖片為 `user_provided_image:<原始 bytes SHA-256>` |
-| source_retention_mode | `summarized_allowed`、`full_body_required` 或 `original_image_required`；full-body / original-image 模式必須由正式入口帶入並由 writer / completion readback 驗證 |
-| canonical_body_sha256 | 只適用於 `full_body_required`；必須等於 source note `## 正文保存區` 中清理後正文主體的 SHA-256 |
+| source_retention_mode | `summarized_allowed`、`full_body_required`、`original_image_required` 或 `transcript_archive_required`；後三者必須由正式入口帶入並由 writer / completion readback 驗證 |
+| canonical_body_sha256 | `full_body_required`：必須等於 source note `## 正文保存區` 中清理後正文主體的 SHA-256；`transcript_archive_required`：必須等於工作包存檔 `canonical_source.md` 及 `## 字幕存檔` 所記的正文 SHA-256 |
 | 來源URL / source_url_hash | 只適用於 `url`；分別為原始 URL 與標準化 URL hash |
 | source_content_sha256 | 只適用於 `user_provided_text`；必須等於審核包 `source_capture.md` 的原始 bytes SHA-256 |
 | source_image_sha256 / source_original_image | 只適用於 `user_provided_image`；必須等於保存原圖的 raw bytes SHA-256，並指向 vault 內可讀回的原圖資產 |
 | source_image_mime / source_image_width / source_image_height | 只適用於 `user_provided_image`；必須與原圖的實際 MIME 和尺寸一致 |
 | 來源類型 | 使用 Obsidian source note schema;若不匹配,先用最接近類型並在 Markdown 寫清楚 |
-| content_owner | 內容歸屬；只在正文或明示來源資料足以指出時填寫，可記錄正文中明示的分享者、受訪者或作品／品牌歸屬，但不得把提交者當成內容 owner |
+| content_owner | 內容歸屬；只在正文或明示來源資料足以指出時填寫，可記錄正文中明示的分享者、受訪者或作品／品牌歸屬，但不得把提交者當成內容 owner；提交者身分只由通用詞「使用者／用戶」及工作區 `brain.json` 的可選設定 `owner_aliases` 判斷（作者、來源名稱、content_owner 三欄共用），程式不寫入任何個人名稱 |
 | 作者 / 發布日期 | 原文或可核實來源有才填；作者不可與受訪者、分享者或提交者混為一談 |
 | 知識用途 | 以用途分流結果填寫 |
 | 摘要 | 只描述來源正文內容;properties 內只放短摘要,長摘要寫入 note body |
@@ -186,6 +190,8 @@ source note properties 草案至少包含:
 | application note `manual_correction_action` | 不同意 AI 判斷時才改 status；由使用者明確要求的 APP 修正保存，不假設已交付互動審閱台 |
 | application note `personalization_status` | `linked` / `personalization_blocked`;已讀到可扣連材料時寫 `linked`,讀不到既有知識網時寫 `personalization_blocked` |
 | application note `personalization_links` | 新來源扣連到既有知識、項目、問題或規格的短句清單;詳細理由寫 APP note body |
+| application note `personal_relevance` / `personal_relevance_reason` | 傳遞同輪個人判斷及理由；共用 schema、脈絡證據及未知預設只見 [Compiler §7.2](Compiler%20Worker與Knowledge%20Package設計及驗收規格.md#72-三種來源的程式工作單)，writer 不固定填高相關。 |
+| application note `action_status` | 依已保存判斷及可用脈絡投影；缺脈絡不聲稱已可應用，不硬填用途或場景。 |
 | application note `compounding_insight_status` | `has_insight` / `no_compounding_insight` / `needs_context`;表示新內容是否對既有知識網產生 ⚡ 複利洞見 |
 | application note `compounding_insight_types` | 補底 / 加深 / 連接 / 修正 / 行動;可多選,五類都不成立時留空並用 `no_compounding_insight` 說明 |
 | application note `compounding_insight_links` | 新 URL 扣連到哪些既有 source / knowledge point / application / project anchor;詳細理由寫 APP note body |
@@ -219,10 +225,13 @@ application note body 必須包含「跨來源洞見判斷」小節,對外語義
 | 欄位 | 規則 |
 |---|---|
 | ID | 本機暫用 `KP-<來源縮寫>-<序號>` |
+| title / reusable_concept | KP 標題與同輪概念判斷分開保存；共同欄位只見 [Compiler §7.2](Compiler%20Worker與Knowledge%20Package設計及驗收規格.md#72-三種來源的程式工作單)，概念責任只見 [語義索引 §2](Obsidian語義索引與關聯圖落地方案.md#2-idea-類型與語義橋接)。 |
 | 知識點 | 一句可獨立成立的主張 |
 | 層級 | 原文主張 / 原文方法 / 原文數據 / 原文限制 / 原文治理 / AI 轉化 |
 | 可信度 | 高 / 中 / 低 |
-| 來源證據 | 原文中足以支持整句主張的完整逐字句子或段落摘錄；不可只寫小節名、關鍵字或片語。寫入前 adapter 必須核對摘錄確實出現在 canonical 原文。 |
+| 來源證據 | 原文中足以支持整句主張的完整逐字句子或段落摘錄；不可只寫小節名、關鍵字或片語。寫入前 adapter 必須以非空、非佔位並可定位於 canonical 原文的摘錄作機器核對，不以字數或與主張逐字相等代替語義判斷；AI 審閱仍須確認摘錄完整支持主張與關係。 |
+
+版本化引用、字幕上下文及舊 block 相容只依 [Compiler §7.2](Compiler%20Worker與Knowledge%20Package設計及驗收規格.md#72-三種來源的程式工作單)。既有 KP 欄位及成果頁閱讀功能保留；沒有證據的 `applicable_scenes`／`usable_for` 留空，不用固定 AI／產品／學習用途代填。
 
 關係表至少包含來源知識點、目標知識點、關係、證據錨點、信心。證據錨點同樣必須是能支持該關係的完整原文摘錄。source note 內的關係只可承載來源正文內容與忠實轉化;若目標是本專案需求、使用者既有知識或個人應用,必須另寫 `applications/APP-*.md`,不可冒充來源正文。
 
@@ -232,7 +241,7 @@ ObsidianVaultAdapter 寫入 knowledge-point note 時,必須同步維護 `_regist
 
 1. 每條 knowledge point 以 `kp_uid = <source_id>:<kp_id>` 作唯一 row key。
 2. `semantic_key` 由知識點文字正規化後 hash 生成,用於查出疑似重複;同 key 只標成 `duplicate_candidate`,不得自動合併。
-3. relation registry 只登記兩端都已寫入 knowledge-point note 的 source 內關係。
+3. relation registry 只登記兩端都已寫入 knowledge-point note 的 source 內關係；經驗證的跨來源關係（`scope: cross_source`）另依 [Compiler §7.2](Compiler%20Worker與Knowledge%20Package設計及驗收規格.md#72-三種來源的程式工作單) 寫入。
 4. 指向本專案、個人應用、個人脈絡或未寫入節點的關係,不進 source 關係 registry。
 5. registry 寫入需有鎖,避免並行程序覆寫彼此 row。
 
@@ -243,8 +252,8 @@ ObsidianVaultAdapter 寫入 knowledge-point note 時,必須同步維護 `_regist
 1. `url` 來源狀態是 `public_ok`；`user_provided_text` 是 `user_text_complete`，且審核包 bytes、metadata 和 slice 的內容 SHA-256 一致；`user_provided_image` 是 `user_image_complete`，且原圖 bytes、metadata、review packet、visual analysis、slice 和 vault 原圖的 SHA-256 一致。
 2. Markdown 真源有來源稽核、原文層、轉化層,且不混入 個人應用層或 AI 內部行動。
 3. TL;DR 與來源摘要沒有加入 個人應用或本專案內部流程。
-4. 資訊圖成果已通過 `docs/資訊圖生成規格.md` 的完整驗收。
-5. PNG 路徑、檔案雜湊及 source note embed 可讀回。
+4. `formal_infographic` 或 `add-infographic` 的資訊圖成果已通過 `docs/資訊圖生成規格.md` 的完整驗收；`knowledge_only` 則明確讀回 `not_requested`、零頁及沒有圖片覆蓋，這是完整文字成果而非待補項。
+5. 有資訊圖時，PNG 路徑、檔案雜湊及 source note embed 可讀回；文字優先不以不存在的 PNG 補欄位。
 7. Obsidian-ready 欄位含 source identity、registry path、source note path、assets folder、infographics、真源狀態、preview status、vault write status；只有 URL 來源另含 source URL hash。
 8. 不生成或嵌入 Excalidraw map;第一階段只保留 source note、PNG 資訊圖、knowledge-point notes、application note 與 Bases。
 9. 原子知識點有來源證據,關係不是泛稱「相關」。
@@ -277,7 +286,7 @@ ObsidianVaultAdapter 寫入 knowledge-point note 時,必須同步維護 `_regist
 2. 正式寫入只經 `tools/obsidian_vault_adapter.py`。以 `_registry/sources.jsonl` 和 `source_identity` 查重；舊 URL 的 `source_url_hash` 只作相容讀取。registry 與 note 身份矛盾時停止，不靜默合併。
 3. canonical 路徑是 `sources/YYYY/MM/`、`applications/YYYY/MM/`、`knowledge-points/by-source/<source_id>/`、`assets/`；不將原始本機絕對路徑寫入產品。
 4. 每條 KP 的來源證據可回到正式來源；主 graph 的機器 ID 連結限制仍依語義圖規格。
-5. 寫入後只做本篇讀回：來源身份、registry、YAML、正文／原圖、KP、source-local relations、APP、附件 embed、資訊圖雜湊、outcome 與增量入口。全庫健康、歷史 duplicate scan 及 Bases 整理不作本篇完成條件。
+5. 寫入後只做本篇讀回：來源身份、registry、YAML、正文／原圖、KP、source-local relations、APP、outcome 與增量入口；有資訊圖才再讀附件 embed 和圖片雜湊。全庫健康、歷史 duplicate scan 及 Bases 整理不作本篇完成條件。
 6. AI 負責首次來源與採納判斷；採納值正式生效但明示其 AI 來源，人只在不同意時修正。新使用者沒有既有脈絡時保留 needs_context / personalization_blocked，不套入預置個人偏好。
 7. 不作批量 ingestion。既有完成收據與圖片不可無痕覆寫；修訂依 Compiler 的 revision 契約。
 

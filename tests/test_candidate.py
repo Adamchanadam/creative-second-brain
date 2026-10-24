@@ -20,14 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 COMMANDS = {
     "brain-url", "brain-text", "brain-image", "brain-think", "brain-ask", "brain-grow", "brain-create",
-    "brain-tidy", "brain-guide", "brain-nebula", "brain-check", "brain-resume", "brain-fix", "brain-research", "brain-update",
+    "brain-tidy", "brain-guide", "brain-nebula", "brain-check", "brain-resume", "brain-fix", "brain-research", "brain-update", "brain-infographic",
 }
 PROMPTS = {
     "think": "$brain-think [問題]", "url": "$brain-url [網址]", "text": "$brain-text\n[貼上原文]",
     "image": "$brain-image [附上一張圖片]", "grow": "$brain-grow [來源]", "create": "$brain-create [想做的成品]",
     "research": "$brain-research 查看目前研究主題", "tidy": "$brain-tidy", "guide": "$brain-guide", "nebula": "$brain-nebula",
     "check": "$brain-check [來源或工作編號]", "resume": "$brain-resume [來源或工作編號]",
-    "fix": "$brain-fix [哪裏有甚麼問題]", "update": "$brain-update",
+    "fix": "$brain-fix [來源或問題描述]", "update": "$brain-update",
+    "infographic": "$brain-infographic <知識頁ID>",
 }
 
 
@@ -79,7 +80,7 @@ def main() -> int:
     vault = workspace / "私人" / "創作庫"
     graph_file = vault / ".obsidian" / "graph.json"
     graph_settings = json.loads(graph_file.read_text(encoding="utf-8"))
-    assert graph_settings["search"] == "path:concepts"
+    assert graph_settings["search"] == "path:concepts -[concept_status:superseded]"
     assert graph_settings["showOrphans"] is True
     assert graph_settings["nodeSizeMultiplier"] == 1 and graph_settings["lineSizeMultiplier"] == 1
     assert graph_settings["centerStrength"] == 0.518713248970312
@@ -93,7 +94,7 @@ def main() -> int:
     installed = {path.name for path in (workspace / ".agents" / "skills").iterdir() if path.is_dir()}
     assert COMMANDS == installed
     home = (workspace / "index.html").read_text(encoding="utf-8")
-    assert home.count('data-skill="brain-') == len(PROMPTS) and ">14 項</span>" in home
+    assert home.count('data-skill="brain-') == len(PROMPTS) and ">15 項</span>" in home
     assert "測試用戶 的第二大腦" in home and "本候選" not in home
     assert "creative-second-brain-nebula-logo-v4.png" in home
     assert home.count("創造型第二大腦 | Adam Chan") == 1
@@ -121,6 +122,9 @@ def main() -> int:
         "type: knowledge_point\n"
         "knowledge_point: 首份材料的獨立觀點\n"
         "kp_uid: ORPHAN-TEST:KP-1\n"
+        "reusable_concept_status: reusable\n"
+        "reusable_concept_name: 首份材料的獨立觀點\n"
+        "reusable_concept_reason: 測試用的可重用概念\n"
         "---\n\n沒有關係的有效概念。\n",
         encoding="utf-8",
     )
@@ -143,6 +147,9 @@ def main() -> int:
             "type: knowledge_point\n"
             + f"knowledge_point: {json.dumps(concept, ensure_ascii=False)}\n"
             + f"kp_uid: GRAPH-TEST:KP-{number}\n"
+            + "reusable_concept_status: reusable\n"
+            + f"reusable_concept_name: {json.dumps(concept, ensure_ascii=False)}\n"
+            + "reusable_concept_reason: 測試用的可重用概念\n"
             "---\n\n測試用知識點。\n",
             encoding="utf-8",
         )
@@ -158,9 +165,12 @@ def main() -> int:
     assert graph_projection["status"] == "ready"
     assert graph_projection["verification"]["passed"] is True
     generated = [frontmatter_fields(path) for path in (vault / "concepts").glob("*.md")]
-    assert {str(fields.get("graph_group")) for fields in generated} == set(samples.values())
+    # Since 1.9.18 every adapter-generated concept uses the one neutral "concept" graph group.
+    assert {str(fields.get("graph_group")) for fields in generated} == {"concept"}
+    assert {str(fields.get("concept")) for fields in generated} >= set(samples)
     assert all(fields.get("idea_type") == "concept" for fields in generated)
-    assert any("## 相關概念" in path.read_text(encoding="utf-8") for path in (vault / "concepts").glob("*.md"))
+    # Source-local relations are evidence records; they no longer become reviewed concept bridges.
+    assert not any("## 相關概念" in path.read_text(encoding="utf-8") for path in (vault / "concepts").glob("*.md"))
 
     # Source identity deduplication is not enough: an explicitly supplied
     # stale source ID must not be able to claim another source's path.

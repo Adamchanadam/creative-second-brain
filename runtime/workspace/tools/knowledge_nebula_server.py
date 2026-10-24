@@ -9,6 +9,9 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
+import subprocess  # no longer used here: the doctor child runs in knowledge_nebula; the guard tests still patch it through this name
+import sys
 import threading
 import time
 from urllib.parse import unquote, urlsplit, quote
@@ -16,15 +19,17 @@ from urllib.request import build_opener, ProxyHandler
 import webbrowser
 
 import knowledge_nebula as nebula
+# The one "may the reader layer be rebuilt now?" answer lives in knowledge_nebula (refresh_installed asks it too); same names here.
+from knowledge_nebula import GUARD_DOCTOR_SECONDS, ProjectionPaused, doctor_python, projection_guard, record_projection_pause
 from reader_port_policy import candidate_ports, find_reader_state
 from reader_service_lease import ReaderLease
 
-SERVICE_GENERATION = "knowledge-nebula-server-v6"
+SERVICE_GENERATION = "knowledge-nebula-server-v7"
 PREFERENCE_SCHEMA = "knowledge_nebula_preferences_v1"
 DEFAULT_PREFERENCES = {"schema": PREFERENCE_SCHEMA, "palette": "violet", "reduced_motion": False, "entrance_enabled": True}
 PALETTE_IDS = {"violet", "aurora", "rose", "amber"}
 MAX_REFRESH_RECEIPTS = 32
-_GENERATION = re.compile(r"knowledge-nebula-server-v([1-9]\d*)\Z")
+_GENERATION =re.compile(r"knowledge-nebula-server-v([1-9]\d*)\Z")
 _REFRESH_JOB_ID = re.compile(r"[a-f0-9]{32}\Z")
 
 
@@ -84,6 +89,55 @@ def save_preferences(vault: Path, value: object) -> dict:
     return saved
 
 
+def save_constellations(vault: Path, value: object) -> dict:
+    """Atomically replace the validated constellation record (vault/.reader/nebula-constellations.json). Same rules as the preferences: a malformed file is never overwritten,
+    a temporary file in the same folder is written, flushed and renamed over the old one, and nothing outside this one file is touched (the notes and the registries are never written)."""
+    saved = nebula.validate_constellations(value)
+    nebula.load_constellations(vault)   # refuses (ValueError) to overwrite a file that is not valid
+    path = constellation_write_path(vault)
+    folder = path.parent
+    folder.mkdir(parents=True, exist_ok=True)
+    path = constellation_write_path(vault)
+    folder = path.parent
+    data = json.dumps(saved, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(data) > nebula.CONSTELLATION_LIMITS["bytes"]:
+        raise ValueError("constellations: too large")
+    temp = folder / (".nebula-constellations-" + secrets.token_hex(8) + ".tmp")
+    try:
+        with temp.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        nebula.plain(temp)
+        for attempt in range(20):   # Windows refuses the rename while another reader has the old file open for an instant: wait a moment and try again
+            try:
+                path = constellation_write_path(vault)
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
+    finally:
+        if temp.exists():
+            temp.unlink()
+    return saved
+
+
+def constellation_write_path(vault: Path) -> Path:
+    """Check the complete new-write path every time; do not reuse the reader's read cache."""
+    root = Path(vault)
+    path = root / ".reader" / "nebula-constellations.json"
+    for candidate in (root, path.parent, path):
+        try:
+            candidate_stat = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(candidate_stat.st_mode) or getattr(candidate_stat, "st_file_attributes", 0) & 0x400:
+            raise ValueError("Link/junction paths are not supported")
+    return path
+
+
 def refresh_reader_projections(root: Path) -> dict:
     """Rebuild only reader projections from already-saved local truth.
 
@@ -103,7 +157,7 @@ def refresh_reader_projections(root: Path) -> dict:
         from reader_shell import refresh_current_reader_visuals
     except ImportError:
         from tools.reader_shell import refresh_current_reader_visuals
-    readers.update(refresh_current_reader_visuals(vault))
+    readers.update(refresh_current_reader_visuals(vault, root=root))
     graph = nebula.build(root)
     return {"readers": readers, "nebula": graph}
 
@@ -119,6 +173,18 @@ def reader_input_stamp(root: Path) -> tuple:
         directory = vault / folder
         if directory.is_dir():
             paths.extend(directory.rglob(pattern))
+    # Declared preview media are saved source truth shown in the nebula; a
+    # replaced infographic must refresh the reader like an edited note.
+    registry = vault / "_registry" / "sources.jsonl"
+    if registry.is_file():
+        for line in registry.read_text(encoding="utf-8-sig").splitlines():
+            if not line.strip(): continue
+            row = json.loads(line)
+            if not isinstance(row, dict): raise ValueError("Invalid source registry row")
+            if row.get("status") in {"deleted", "retired", "archived"}: continue
+            note = nebula.inside(vault, row.get("source_note_path", ""))
+            if note.is_file():
+                paths.extend(media for media, _ in nebula.preview_files(vault, nebula.read_markdown(note)[0]))
     stamps = []
     for path in sorted(set(paths)):
         nebula.plain(path)
@@ -149,6 +215,8 @@ class NebulaServer(ThreadingHTTPServer):
         self.idle_seconds = idle_seconds
         self.update_error = False
         self.applied_reader_input: tuple | None = None
+        self.projection_pause: dict | None = None  # why rebuilding is paused right now (shown by /api/status), else None
+        self.paused_reader_input: tuple | None = None  # the input the gate was last asked about and refused
         self.refresh_jobs: dict[str, dict] = {}
         self.refresh_jobs_lock = threading.Lock()
         self.watch_stop = threading.Event()
@@ -237,14 +305,37 @@ class NebulaServer(ThreadingHTTPServer):
         return public_result
 
     def refresh_projections(self) -> dict:
-        """Refresh once and only share the watcher stamp if the input stayed stable."""
+        """Refresh once and only share the watcher stamp if the input stayed stable.
+
+        This is the one door every rebuild of a running service goes through (cold start, watcher, sync button, refresh job).
+        While the release gate has not registered the code on disk, it raises ProjectionPaused and writes nothing."""
         before = reader_input_stamp(self.root)
+        guard = projection_guard(self.root)
+        if not guard["allowed"]:
+            self.projection_pause = {"kind": guard["kind"], "reason": guard["reason"], "files": guard["files"]}
+            self.paused_reader_input = before
+            self.update_error = False  # nothing failed; the existing pages are still good
+            record_projection_pause(self.root, guard)
+            raise ProjectionPaused(guard)
+        self.projection_pause = None
+        self.paused_reader_input = None
         refreshed = refresh_reader_projections(self.root)
         result = self._publish_refresh(refreshed)
         after = reader_input_stamp(self.root)
         self.applied_reader_input = after if before == after else None
         self.update_error = False
         return result
+
+    def initial_refresh(self) -> dict | None:
+        """The refresh of a cold start.  When the gate says no, the existing pages are served as they are (None)."""
+        if not self.begin_write():
+            raise ValueError('reader service could not begin initial projection refresh')
+        try:
+            return self.refresh_projections()
+        except ProjectionPaused:
+            return None
+        finally:
+            self.end_write()
 
     def _run_refresh_job(self, job_id: str) -> None:
         while not self.begin_write():
@@ -255,6 +346,8 @@ class NebulaServer(ThreadingHTTPServer):
         self._update_refresh_job(job_id, status="running")
         try:
             self._update_refresh_job(job_id, status="ready", result=self.refresh_projections())
+        except ProjectionPaused as paused:
+            self._update_refresh_job(job_id, status="failed", error=paused.guard["notice"])
         except (ValueError, OSError, KeyError, TypeError):
             self.update_error = True
             self._update_refresh_job(job_id, status="failed", error="reader synchronization failed")
@@ -275,10 +368,12 @@ class NebulaServer(ThreadingHTTPServer):
                 # Two identical observations let multi-file saves settle.
                 if current != pending:
                     pending = current
-                elif current != self.applied_reader_input:
+                elif current != self.applied_reader_input and current != self.paused_reader_input:
                     if not self.begin_write(): continue
                     try:
                         self.refresh_projections()
+                    except ProjectionPaused:
+                        pass  # recorded by refresh_projections; the gate is asked again only when the input changes again
                     finally:
                         self.end_write()
                 else:
@@ -347,8 +442,12 @@ class Handler(BaseHTTPRequestHandler):
         self.server.last_active = time.monotonic()
         path = urlsplit(self.path).path
         if path == '/api/status':
+            pause = self.server.projection_pause
             return self.reply(200, {'app':'knowledge-nebula', 'identity':self.server.identity,
-                                    'generation':SERVICE_GENERATION, 'retiring':self.server.retiring})
+                                    'generation':SERVICE_GENERATION, 'retiring':self.server.retiring,
+                                    'projection_paused':pause is not None,
+                                    'projection_pause_reason':pause['reason'] if pause else None,
+                                    'projection_pause_files':list(pause['files']) if pause else []})
         if path == '/api/ping':
             ready = self.server.page.is_file() and not self.server.build_lock.locked() and not self.server.update_error and not self.server.retiring
             return self.reply(200, {'ready':ready, 'revision':nebula.digest(self.server.page),
@@ -368,6 +467,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, {'preferences': load_preferences(self.server.vault)})
             except ValueError:
                 return self.reply(422, {'error':'已保存的星雲偏好無法讀取，沒有覆寫原有設定。'})
+        if path == '/api/constellations':
+            if not self.allowed_preference_request():
+                return self.reply(403, {'error':'星座只供目前本機星雲使用。'})
+            try:
+                return self.reply(200, {'constellations': nebula.load_constellations(self.server.vault)['constellations'], 'limits': nebula.CONSTELLATION_LIMITS})
+            except ValueError:
+                return self.reply(422, {'error':'已保存的星座無法讀取，沒有覆寫原有內容。'})
         if path == '/':
             self.send_response(302); self.send_header('Location', self.server.page_url); self.end_headers(); return
         try:
@@ -439,6 +545,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(400, {'error':'星雲偏好格式不正確，原有設定沒有改動。'})
             self.server.last_active = time.monotonic()
             return self.reply(200, {'preferences': saved})
+        if path == '/api/constellations':
+            if not self.allowed_preference_request():
+                return self.reply(403, {'error':'星座只供目前本機星雲使用。'})
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if length > nebula.CONSTELLATION_LIMITS['bytes']:
+                    return self.reply(413, {'error':'星座資料太大，原有內容沒有改動。'})
+                if length < 1 or not self.headers.get('Content-Type', '').startswith('application/json'): raise ValueError("Invalid constellations")
+                value = json.loads(self.rfile.read(length).decode('utf-8'))
+                if not self.server.begin_write():
+                    return self.reply(409, {'error':'閱讀服務正在安全接替，沒有寫入星座。'})
+                try:
+                    saved = save_constellations(self.server.vault, value)
+                finally:
+                    self.server.end_write()
+            except (ValueError, TypeError, UnicodeDecodeError, json.JSONDecodeError, OSError):
+                return self.reply(400, {'error':'星座格式不正確，原有內容沒有改動。'})
+            self.server.last_active = time.monotonic()
+            return self.reply(200, {'constellations': saved['constellations'], 'limits': nebula.CONSTELLATION_LIMITS})
         if path == '/api/handoff':
             # Keep the auth test adjacent to this destructive lifecycle action:
             # same origin and a token injected only into the current page.
@@ -464,6 +589,10 @@ class Handler(BaseHTTPRequestHandler):
         self.server.last_active = time.monotonic()
         try:
             return self.reply(200, self.server.refresh_projections())
+        except ProjectionPaused as paused:
+            # 409 with an ``error`` sentence: the page shows exactly that text (a refused sync, not a connection fault).
+            return self.reply(409, {'error':paused.guard['notice'], 'projection_paused':True,
+                                    'reason':paused.guard['reason'], 'files':paused.guard['files']})
         except (ValueError, OSError, KeyError, TypeError):
             self.server.update_error = True
             return self.reply(422, {'error':'同步未完成：資料正在修改或格式有問題。原有星雲已保留，請稍後再試。'})
@@ -527,18 +656,16 @@ def main():
             try: server = NebulaServer(root, port, args.idle_seconds)
             except OSError: continue
             try:
-                if not server.begin_write():
-                    raise ValueError('reader service could not begin initial projection refresh')
-                try:
-                    server.refresh_projections()
-                finally:
-                    server.end_write()
+                # Not released through the gate yet: serve the existing pages, rebuild nothing.
+                server.initial_refresh()
                 # Initial projection work can take longer than a deliberately
                 # short test idle period.  Start the inactivity clock only once
                 # the loopback endpoint can actually accept its first request.
                 server.last_active = time.monotonic()
                 url = server.home_url if args.page == 'home' else server.page_url
-                print(json.dumps({'status':'ready','url':url}), flush=True)
+                ready = {'status':'ready','url':url}
+                if server.projection_pause: ready.update(projection_paused=True, reason=server.projection_pause['reason'])
+                print(json.dumps(ready), flush=True)
                 if not args.no_browser: webbrowser.open(url)
                 server.serve_until_idle()
             finally: server.server_close()
@@ -552,6 +679,14 @@ if __name__ == '__main__':
     try:
         main()
     except Exception:
+        # A windowless launch has no console: keep the cause so the workspace assistant can diagnose it.
+        try:
+            import sys, traceback
+            log = Path(__file__).resolve().parents[1] / '.reader-runtime' / 'last-error.log'
+            log.parent.mkdir(exist_ok=True)
+            log.write_text(time.strftime('%Y-%m-%d %H:%M:%S') + '\n' + ' '.join(sys.argv) + '\n' + traceback.format_exc(), encoding='utf-8')
+        except Exception:
+            pass
         if os.name == 'nt':
             import ctypes
             ctypes.windll.user32.MessageBoxW(None, '知識星雲未能開啟。原有筆記沒有改動，請交由 工作區助手檢查本機資料與連線。', '知識星雲', 16)

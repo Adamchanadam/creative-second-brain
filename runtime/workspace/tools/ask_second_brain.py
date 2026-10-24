@@ -10,15 +10,20 @@ import argparse
 import hashlib
 import json
 import re
+import unicodedata
 from pathlib import Path
 from uuid import uuid4
 
 try:
+    from .obsidian_vault_adapter import retained_note_body_offsets
+    from .knowledge_direction import established_tensions, source_ids_in_paths
     from .knowledge_material_selector import select_materials
     from .obsidian_idea_retrieval import retrieve_question, load_concept_notes
     from .source_identity import normalize_url
     from . import thought_analysis as thinking
 except ImportError:
+    from obsidian_vault_adapter import retained_note_body_offsets
+    from knowledge_direction import established_tensions, source_ids_in_paths
     from knowledge_material_selector import select_materials
     from obsidian_idea_retrieval import retrieve_question, load_concept_notes
     from source_identity import normalize_url
@@ -28,10 +33,47 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "ask_second_brain_v1"
 MAX_EVIDENCE_NOTES = 10
 MAX_SINGLE_SOURCE_BUNDLE_NOTES = 16
+PACKET_BODY_MAX_CHARS = 20000
+CANONICAL_BODY_HEADING = "### Canonical article body"
+CANONICAL_BODY_END_HEADING = "## 知識用途分流"
+PACKET_PROJECTION = "source_sections_omitted"
+RETAINED_BODY_LABEL = "正文保存區"
 
 
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def project_packet_note(text: str) -> tuple[str, str | None]:
+    """Return the bounded Ask-packet copy, or a delimiter gap for a malformed source section."""
+    try:
+        bounds = retained_note_body_offsets(text)
+    except ValueError:
+        return text, "canonical_body_not_delimited"
+    if bounds is None:
+        projected = text
+    else:
+        start, end = bounds
+        body = text[start:end]
+        if len(body) <= PACKET_BODY_MAX_CHARS:
+            projected = text
+        else:
+            notice = f"（{RETAINED_BODY_LABEL}共 {len(body)} 字元，未載入此問答材料；需要逐字核對時讀知識點筆記的證據或原檔。）\n"
+            projected = text[:start] + notice + text[end:]
+
+    infographics = list(re.finditer(r"(?m)^## 資訊圖[ \t]*(?=\n|\Z)", projected))
+    if not infographics:
+        return projected, None
+    if len(infographics) != 1:
+        return projected, "infographic_section_not_delimited"
+    start = infographics[0].end()
+    next_section = re.search(r"(?m)^## ", projected[start:])
+    end = start + next_section.start() if next_section else len(projected)
+    infographic = projected[start:end]
+    if len(infographic) <= PACKET_BODY_MAX_CHARS:
+        return projected, None
+    notice = f"\n（資訊圖製作紀錄共 {len(infographic)} 字元，未載入此問答材料；需要時讀原檔。）\n\n"
+    return projected[:start] + notice + projected[end:], None
 
 
 def inside(root: Path, path: Path) -> Path:
@@ -42,6 +84,75 @@ def inside(root: Path, path: Path) -> Path:
     return resolved
 
 
+EXPANSION_DECISION_GUIDANCE = '請加 --expand "同一問題的另一說法"（可重複，建議包含另一語言或同義詞）或 --no-expand "理由"。'
+
+
+def comparable_question_text(value: str) -> str:
+    """Normalise only the comparison boundary used by the prepare CLI."""
+    value = unicodedata.normalize("NFKC", value).casefold().strip()
+    while value and unicodedata.category(value[0]).startswith("P"):
+        value = value[1:].lstrip()
+    while value and unicodedata.category(value[-1]).startswith("P"):
+        value = value[:-1].rstrip()
+    return value
+
+
+def cli_expansion_decision(
+    question: str,
+    expansions: list[str],
+    no_expand: str | None,
+    *,
+    selected_only: bool,
+) -> tuple[list[str], dict[str, object]]:
+    """Validate the explicit CLI-only expansion decision before any output exists."""
+    question_key = comparable_question_text(question)
+    clean_expansions: list[str] = []
+    seen: set[str] = set()
+    for raw in expansions:
+        item = raw.strip()
+        if not item:
+            raise ValueError(EXPANSION_DECISION_GUIDANCE)
+        item_key = comparable_question_text(item)
+        if item_key == question_key:
+            raise ValueError(EXPANSION_DECISION_GUIDANCE)
+        if item_key not in seen:
+            seen.add(item_key)
+            clean_expansions.append(item)
+    if len(clean_expansions) > 5:
+        raise ValueError("--expand 最多可有 5 個另一說法。")
+    reason = no_expand.strip() if no_expand is not None else ""
+    if no_expand is not None and not reason:
+        raise ValueError(EXPANSION_DECISION_GUIDANCE)
+    if clean_expansions and no_expand is not None:
+        raise ValueError(EXPANSION_DECISION_GUIDANCE)
+    if selected_only:
+        return clean_expansions, {"mode": "not_applicable_selected_only"}
+    if clean_expansions:
+        return clean_expansions, {"mode": "expanded", "count": len(clean_expansions)}
+    if no_expand is not None:
+        return clean_expansions, {"mode": "declined", "reason": reason}
+    raise ValueError(EXPANSION_DECISION_GUIDANCE)
+
+
+def fit_tensions(tensions: list[dict], required_paths: list[str], room: int) -> tuple[list[dict], list[dict]]:
+    """Admit established tensions in their given order, each only as a pair that fits the room left in the read limit.
+
+    A tension needs the source notes of both sides that are not yet required (empty paths do not count).  It joins when
+    all of them fit; one with no new note always joins.  One that does not fit adds no path and is reported instead.
+    """
+    seen, room = set(required_paths), max(0, room)
+    included, over_capacity = [], []
+    for tension in tensions:
+        new = list(dict.fromkeys(path for path in (tension["source_note_path"], tension["target_source_note_path"]) if path and path not in seen))
+        if len(new) > room:
+            over_capacity.append({key: tension[key] for key in ("relation_id", "relation_type", "insight", "concept_names", "source_id", "target_source_id")})
+            continue
+        included.append(tension)
+        seen.update(new)
+        room -= len(new)
+    return included, over_capacity
+
+
 def prepare(
     question: str,
     vault: Path,
@@ -49,14 +160,18 @@ def prepare(
     notes: list[str] | None = None,
     selected_only: bool = False,
     topic_ids: list[str] | None = None,
+    expansions: list[str] | None = None,
+    expansion_decision: dict[str, object] | None = None,
 ) -> dict:
     if not question.strip() or not 1 <= limit <= 8:
         raise ValueError("provide a question and a limit between 1 and 8")
     vault = vault.resolve()
     if selected_only and not notes:
         raise ValueError("selected-only requires explicit evidence notes")
+    received_expansions = [item for item in (expansions or []) if isinstance(item, str)]
+    clean_expansions = [item.strip() for item in received_expansions if item.strip()]
     materials = {"candidates": [], "blocked_reasons": []} if selected_only else select_materials(
-        query=question, vault=vault, limit=limit, topic_ids=topic_ids,
+        query=question, vault=vault, limit=limit, topic_ids=topic_ids, expansions=clean_expansions,
     )
     graph = {} if selected_only else retrieve_question(query=question, vault=vault)
     graph_paths = list(graph.get("must_read_notes", []))
@@ -64,14 +179,37 @@ def prepare(
     for candidate in materials["candidates"]:
         required_paths.extend(candidate["must_read"])
     required_paths = list(dict.fromkeys(required_paths))
+    single_source = len(materials["candidates"]) == 1 and len(required_paths) <= MAX_SINGLE_SOURCE_BUNDLE_NOTES
+    # Established cross-source tensions around the selected sources: read both sides before answering.
+    # A tension joins only as a pair, within the read limit left after the user's notes and the material candidates.
+    selected_sources = {str(candidate.get("source_id") or "") for candidate in materials["candidates"]} | source_ids_in_paths(notes or [])
+    tension_set = established_tensions(vault, selected_sources - {""})
+    room = (MAX_SINGLE_SOURCE_BUNDLE_NOTES if single_source else MAX_EVIDENCE_NOTES) - len(required_paths)
+    tensions, over_capacity = fit_tensions(tension_set["tensions"], required_paths, room)
+    for tension in tensions:
+        required_paths.extend(path for path in (tension["source_note_path"], tension["target_source_note_path"]) if path)
+    required_paths = list(dict.fromkeys(required_paths))
+
+    optional_knowledge_point_paths = []
+    candidate_knowledge_point_paths = [candidate.get("knowledge_point_paths", []) for candidate in materials["candidates"]]
+    for index in range(max((len(paths) for paths in candidate_knowledge_point_paths), default=0)):
+        for paths_for_candidate in candidate_knowledge_point_paths:
+            if index < len(paths_for_candidate):
+                path = paths_for_candidate[index]
+                if path and path not in required_paths:
+                    optional_knowledge_point_paths.append(path)
+
     paths = [*required_paths, *graph_paths[:1]]
     paths.extend(item["path"] for item in graph.get("matched_idea_notes", []) if item.get("type") == "tension")
-    paths.extend(graph_paths)
+    paths.extend(optional_knowledge_point_paths)
+    paths.extend(graph_paths[1:])
     evidence, gaps = [], list(graph.get("missing_or_weak_links", []))
     gaps.extend(materials.get("blocked_reasons", []))
+    if over_capacity:
+        gaps.append({"reason": "established_tensions_over_capacity", "message": f"{len(over_capacity)} 條已成立張力因可讀上限未納入；不可聲稱已回應這些張力。", "relation_ids": [item["relation_id"] for item in over_capacity]})
     unique_paths = list(dict.fromkeys(paths))
     bundle_limit = MAX_EVIDENCE_NOTES
-    if len(materials["candidates"]) == 1 and len(required_paths) <= MAX_SINGLE_SOURCE_BUNDLE_NOTES:
+    if single_source:
         bundle_limit = max(bundle_limit, len(required_paths))
     deferred = []
     for relative in unique_paths:
@@ -86,7 +224,17 @@ def prepare(
         except (ValueError, OSError) as exc:
             gaps.append({"path": relative, "reason": str(exc)})
             continue
-        evidence.append({"id": f"L{len(evidence)+1}", "path": path.relative_to(vault).as_posix(), "sha256": digest(body), "text": body})
+        relative_path = path.relative_to(vault).as_posix()
+        projected = body
+        delimiter_gap = None
+        if path.relative_to(vault).parts[0] == "sources":
+            projected, delimiter_gap = project_packet_note(body)
+        if delimiter_gap:
+            gaps.append({"path": relative_path, "reason": delimiter_gap})
+        item = {"id": f"L{len(evidence)+1}", "path": relative_path, "sha256": digest(projected), "text": projected}
+        if projected != body:
+            item.update({"source_sha256": digest(body), "projection": PACKET_PROJECTION})
+        evidence.append(item)
     deferred_required = [path for path in deferred if path in set(required_paths)]
     if deferred_required:
         gaps.append({"reason": "required_source_bundle_incomplete", "message": "必要來源包超出可讀上限；不可用部分材料作答。請收窄問題或明示選定來源後重新 prepare。", "paths": deferred_required})
@@ -100,7 +248,7 @@ def prepare(
                 if title in concepts:
                     adjacent.append({"from": seed.title, "relation": relation, "title": title, "path": concepts[title].rel_path, "status": "candidate_only"})
     status = "insufficient_evidence" if not evidence else "needs_review" if deferred_required else "context_ready"
-    return {"schema_version": SCHEMA, "session_id": f"ASK-{uuid4().hex}", "status": status, "question": question.strip(), "vault": str(vault), "evidence": evidence, "deferred_paths": deferred, "required_paths": required_paths, "deferred_required_paths": deferred_required, "local_explorations": adjacent, "gaps": gaps, "source_candidates": materials["candidates"], "research_topic_ids": list(topic_ids or []), "graph_path": graph.get("path_text", ""), "web_status": "not_searched", "answer_status": "not_written", "reasoning_contract": "thinking_v2", "reading_tasks": ["Read evidence bodies and distinguish original records from their derivatives", "Find a tension or difference in mechanism, not only topical similarity", "Search for the strongest alternative; selected notes do not exhaust the vault", "Separate source statements, inference steps and discriminating observations"] + (["Required source bundle is incomplete: do not answer from this packet; narrow the question or explicitly select one source and prepare again."] if deferred_required else []), "requested_notes": list(notes or [])}
+    return {"schema_version": SCHEMA, "session_id": f"ASK-{uuid4().hex}", "status": status, "question": question.strip(), "query_expansions": received_expansions, "expansion_decision": expansion_decision or {"mode": "not_recorded"}, "vault": str(vault), "evidence": evidence, "deferred_paths": deferred, "required_paths": required_paths, "deferred_required_paths": deferred_required, "local_explorations": adjacent, "established_tensions": tensions, "established_tensions_omitted": tension_set["omitted"], "established_tensions_over_capacity": over_capacity, "gaps": gaps, "source_candidates": materials["candidates"], "research_topic_ids": list(topic_ids or []), "graph_path": graph.get("path_text", ""), "web_status": "not_searched", "answer_status": "not_written", "reasoning_contract": "thinking_v2", "reading_tasks": ["Read evidence bodies and distinguish original records from their derivatives", "Find a tension or difference in mechanism, not only topical similarity", "Search for the strongest alternative; selected notes do not exhaust the vault", "Separate source statements, inference steps and discriminating observations"] + (["Required source bundle is incomplete: do not answer from this packet; narrow the question or explicitly select one source and prepare again."] if deferred_required else []) + (["Established cross-source tensions: read both sides, then answer each in tension_responses (one entry per relation_id)."] if tensions else []) + ([f"{len(over_capacity)} established tension(s) did not fit the read limit (see established_tensions_over_capacity): this packet does not answer them, so do not claim a response; narrow the selected notes and prepare again to cover them."] if over_capacity else []), "requested_notes": list(notes or [])}
 
 
 def check_evidence(packet: dict) -> dict:
@@ -114,12 +262,40 @@ def check_evidence(packet: dict) -> dict:
         if path.suffix != ".md" or not re.fullmatch(r"L[1-9][0-9]*", item["id"]):
             raise ValueError("invalid local evidence")
         text = path.read_text(encoding="utf-8-sig")
-        if digest(text) != item["sha256"] or digest(item["text"]) != item["sha256"]:
+        if item.get("projection") == PACKET_PROJECTION:
+            projected, delimiter_gap = project_packet_note(text)
+            if (delimiter_gap == "canonical_body_not_delimited" or projected == text or digest(text) != item.get("source_sha256")
+                    or projected != item["text"] or digest(item["text"]) != item["sha256"]):
+                raise ValueError("local evidence changed; prepare and reread before answering")
+        elif "projection" in item or "source_sha256" in item:
+            raise ValueError("invalid local evidence projection")
+        elif digest(text) != item["sha256"] or digest(item["text"]) != item["sha256"]:
             raise ValueError("local evidence changed; prepare and reread before answering")
         if item["id"] in lookup:
             raise ValueError("duplicate evidence id")
         lookup[item["id"]] = item
     return lookup
+
+
+def check_tension_responses(packet: dict, answer: dict) -> None:
+    """Every established tension in the packet needs one substantive response; the rule is in the semantic-index specification."""
+    expected = [item["relation_id"] for item in packet.get("established_tensions") or []]
+    if not expected:
+        return
+    responses = answer.get("tension_responses")
+    if not isinstance(responses, list) or not responses:
+        raise ValueError("tension_responses_missing: the packet carries established tensions; answer each one in tension_responses as {relation_id, response}")
+    answered = set()
+    for item in responses:
+        response = item.get("response") if isinstance(item, dict) else None
+        if not isinstance(item, dict) or item.get("relation_id") not in expected or not isinstance(response, str) or not response.strip():
+            raise ValueError("tension_response_invalid: each entry needs a relation_id from the packet and a non-empty response")
+        answered.add(item["relation_id"])
+    if len(answered) != len(responses):
+        raise ValueError("tension_response_invalid: one response per relation_id")
+    missing = [relation_id for relation_id in expected if relation_id not in answered]
+    if missing:
+        raise ValueError("tension_response_uncovered: no response for " + ", ".join(missing))
 
 
 def review_answer(packet: dict, answer: dict, review: dict | None = None) -> dict:
@@ -130,6 +306,7 @@ def review_answer(packet: dict, answer: dict, review: dict | None = None) -> dic
         raise ValueError("answer must be an object")
     if answer.get("session_id") != packet["session_id"]:
         raise ValueError("answer belongs to another question")
+    check_tension_responses(packet, answer)
     web = answer.get("web_sources", [])
     for item in web:
         if not item.get("readback") or not item.get("title") or not item.get("retrieved_at"):
@@ -217,6 +394,8 @@ def main() -> int:
     parser.add_argument("--review", type=Path, help="Substantive semantic review bound to the answer/evidence hash")
     parser.add_argument("--note", action="append", default=[], help="Explicit vault-relative evidence note; repeat to prioritize contrasting sources")
     parser.add_argument("--topic-id", action="append", default=[], help="Optional bounded research topic filter; it selects evidence only and never creates work.")
+    parser.add_argument("--expand", action="append", default=[], help="Alternate wording of the same question; repeatable and recorded in the packet.")
+    parser.add_argument("--no-expand", help="One-sentence reason no alternate wording is needed for this question.")
     parser.add_argument("--selected-only", action="store_true", help="Use only explicitly selected notes after runtime material selection; not whole-vault coverage")
     parser.add_argument("--web-id")
     parser.add_argument("--suitability", type=Path)
@@ -225,7 +404,10 @@ def main() -> int:
     try:
         out = inside(ROOT, args.output_dir)
         if args.action == "prepare":
-            result = prepare(args.question or "", inside(ROOT, args.vault), notes=args.note, selected_only=args.selected_only, topic_ids=args.topic_id)
+            clean_expansions, decision = cli_expansion_decision(
+                args.question or "", args.expand, args.no_expand, selected_only=args.selected_only,
+            )
+            result = prepare(args.question or "", inside(ROOT, args.vault), notes=args.note, selected_only=args.selected_only, topic_ids=args.topic_id, expansions=clean_expansions, expansion_decision=decision)
         else:
             packet = json.loads(inside(ROOT, args.packet).read_text(encoding="utf-8"))
             inside(ROOT, Path(packet["vault"]))

@@ -11,7 +11,7 @@
       {"command": "create", "skill": "brain-create", "role": "canonical"}, {"command": "fix", "skill": "brain-fix", "role": "canonical"},
       {"command": "grow", "skill": "brain-grow", "role": "canonical"}, {"command": "guide", "skill": "brain-guide", "role": "canonical"},
       {"command": "nebula", "skill": "brain-nebula", "role": "canonical"},
-      {"command": "image", "skill": "brain-image", "role": "canonical"}, {"command": "research", "skill": "brain-research", "role": "canonical"},
+      {"command": "image", "skill": "brain-image", "role": "canonical"}, {"command": "infographic", "skill": "brain-infographic", "role": "canonical"}, {"command": "research", "skill": "brain-research", "role": "canonical"},
       {"command": "resume", "skill": "brain-resume", "role": "canonical"}, {"command": "text", "skill": "brain-text", "role": "canonical"},
       {"command": "tidy", "skill": "brain-tidy", "role": "canonical"}, {"command": "update", "skill": "brain-update", "role": "canonical"}, {"command": "url", "skill": "brain-url", "role": "canonical"}
     ],

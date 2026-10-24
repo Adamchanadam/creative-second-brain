@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import time
 from urllib.parse import quote, unquote, urlsplit
 from uuid import uuid4
 
@@ -25,6 +26,8 @@ except ImportError:
 
 SCHEMA = 'thinking_record_v1'
 ID = re.compile(r'ASK-[0-9a-f]{32}')
+LOCK_WAIT_SECONDS = 60
+LOCK_POLL_SECONDS = 0.5
 
 
 def safe(vault: Path, path: Path) -> Path:
@@ -63,10 +66,16 @@ def relative_note(relative: str) -> str:
 def lock(vault: Path, path: Path):
     path = safe(vault, path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        handle = path.open('x', encoding='utf-8')
-    except FileExistsError:
-        raise ValueError('another write is active or interrupted; inspect the named lock before resuming: ' + str(path))
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    while True:
+        try:
+            handle = path.open('x', encoding='utf-8')
+            break
+        except FileExistsError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError('another write is active or interrupted; inspect the named lock before resuming: ' + str(path))
+            time.sleep(min(LOCK_POLL_SECONDS, remaining))
     try:
         with handle:
             handle.write(str(os.getpid()))
@@ -255,7 +264,8 @@ def export_records(vault: Path, output_dir: Path) -> list[dict]:
             for e in record['packet']['evidence']:
                 try:
                     current = checked_note(vault, e['path']).read_text(encoding='utf-8-sig')
-                    if hashlib.sha256(current.encode('utf-8')).hexdigest() != e['sha256']:
+                    saved_hash = e['source_sha256'] if 'source_sha256' in e else e['sha256']
+                    if hashlib.sha256(current.encode('utf-8')).hexdigest() != saved_hash:
                         warnings.append(e['id'] + ' 來源已更新；這份答案保留當時的來源快照。')
                 except (ValueError, OSError):
                     warnings.append(e['id'] + ' 目前來源不可用；這份答案保留當時的來源快照。')
@@ -309,6 +319,27 @@ def portal_links(vault: Path, portal: Path) -> str:
     return '\n'.join(lines) + '\n'
 
 
+def refresh_nebula(vault: Path) -> dict:
+    """Bring an already installed nebula up to date, so the new record appears in it as a new star.
+
+    The record is already saved and exported when this runs, so no outcome of it can undo the record: a nebula that is not
+    installed, that did not update, or that the release gate has kept from rebuilding is only reported (receipt field ``nebula``:
+    updated / not_installed / paused / refresh_failed)."""
+    try:
+        try:
+            from .knowledge_nebula import refresh_installed
+        except ImportError:
+            from knowledge_nebula import refresh_installed
+        result = refresh_installed(vault, vault/'outcome-pages')
+        if result is None:
+            return {'status': 'not_installed'}
+        if result.get('status') == 'paused':  # unregistered reader code: nothing was rebuilt, so this is not an update
+            return {'status': 'paused', 'reason': result['reason']}
+        return {'status': 'updated', 'changed': result['status'] == 'updated'}
+    except Exception as error:  # the record and its readers stay as saved
+        return {'status': 'refresh_failed', 'error': type(error).__name__ + ': ' + str(error)}
+
+
 def archive_answer(vault: Path, packet: dict, answer: dict, review: dict) -> dict:
     """No complete result until the record and its navigable catalogue exist."""
     try:
@@ -324,7 +355,9 @@ def archive_answer(vault: Path, packet: dict, answer: dict, review: dict) -> dic
     for name in ('index.html', 'knowledge.html', 'thinking.html'):
         safe(vault, output/name)
     safe(vault, portal)
-    refresh_outcome_index(vault=vault, output_dir=output, portal=portal)
+    # The installed nebula is refreshed once, below, after the readers exist (so the new star can link to its reader) and with
+    # its outcome kept out of the record's fate; the catalogue refresh itself leaves it alone here.
+    refresh_outcome_index(vault=vault, output_dir=output, portal=portal, defer_nebula=True)
     key = packet['session_id']
     catalogue = (output/'thinking.html').read_text(encoding='utf-8')
     match = re.search(r'<script type="application/json" id="catalog-data">(.*?)</script>', catalogue, re.S)
@@ -351,4 +384,5 @@ def archive_answer(vault: Path, packet: dict, answer: dict, review: dict) -> dic
             raise ValueError('answer navigation target missing: ' + href)
     return {'status': 'complete', 'answer_id': key, 'record': str(record), 'note': str(record.with_suffix('.md')),
             'reader': str(reader), 'catalogue': str(output/'thinking.html'), 'portal': str(portal),
+            'nebula': refresh_nebula(vault),
             'source_ingest_complete': False, 'epistemic_status': 'derived_reasoning'}

@@ -36,6 +36,12 @@ lease_module = load("reader_service_lease_test", TOOLS / "reader_service_lease.p
 server_module = load("reader_service_server_test", TOOLS / "knowledge_nebula_server.py")
 
 
+def generation_after(steps: int) -> str:
+    """A generation newer than the shipped server by ``steps`` (never hard-coded)."""
+    current = int(server_module.SERVICE_GENERATION.rsplit("-v", 1)[1])
+    return "knowledge-nebula-server-v" + str(current + steps)
+
+
 def make_workspace(base: Path, name: str) -> Path:
     root = base / name
     vault = root / "notes"
@@ -107,8 +113,10 @@ def assert_handoff_safety(root: Path) -> None:
         assert server.begin_write()
         done = threading.Event()
         result = []
+        current_number = int(server_module.SERVICE_GENERATION.rsplit("-v", 1)[1])
+        newer_generation = f"knowledge-nebula-server-v{current_number + 1}"
         def request_handoff():
-            response = request(origin + "/api/handoff", json.dumps({"generation": "knowledge-nebula-server-v6"}).encode(), {
+            response = request(origin + "/api/handoff", json.dumps({"generation": newer_generation}).encode(), {
                 "Origin": origin, "X-Nebula-Token": token, "Content-Type": "application/json",
             })
             result.append((response.status, json.loads(response.read().decode("utf-8"))))
@@ -159,7 +167,7 @@ def assert_newer_reader_is_not_replaced(root: Path) -> None:
          patch.object(brain, "ROOT", root), \
          patch.object(brain, "_reader_origin", return_value=("0123456789abcdef0123", "54321")), \
          patch.object(brain, "_reader_ports", return_value=(54321,)), \
-         patch.object(brain, "_find_reader_state", return_value=("http://127.0.0.1:54321", {"generation": "knowledge-nebula-server-v6"})), \
+         patch.object(brain, "_find_reader_state", return_value=("http://127.0.0.1:54321", {"generation": generation_after(1)})), \
          patch.object(brain, "_handoff_existing_reader") as handoff, \
          patch.object(brain.subprocess, "Popen") as popen:
         try:
@@ -196,7 +204,7 @@ def assert_concurrent_handoff_waits(root: Path) -> None:
          patch.object(brain, "_find_reader_state", side_effect=lambda *args, **kwargs: next(states)), \
          patch.object(brain, "_handoff_existing_reader", return_value=False) as handoff, \
          patch.object(brain, "_refresh_home_projection", return_value={"status": "home_refreshed"}), \
-         patch.object(brain, "_refresh_existing_reader", return_value={"status": "unchanged"}), \
+         patch.object(brain, "_reader_refresh_job", return_value={"status": "unchanged"}), \
          patch.object(brain.subprocess, "Popen", return_value=AliveProcess()) as popen, \
          patch.object(brain, "_reader_request", return_value=(200, b'<main id="prompts"></main>')), \
          patch.object(brain.time, "monotonic", side_effect=lambda: clock["now"]), \
@@ -247,8 +255,10 @@ def _start_process_reader(root: Path, generation: str) -> tuple[subprocess.Popen
 
 
 def assert_real_generation_handoff(root: Path) -> None:
-    old_generation = "knowledge-nebula-server-v5"
-    new_generation = "knowledge-nebula-server-v6"
+    # The retiring child keeps the module's current generation: its handoff
+    # check compares against the generation bound when the module loaded.
+    old_generation = server_module.SERVICE_GENERATION
+    new_generation = "knowledge-nebula-server-v" + str(int(old_generation.rsplit("-v", 1)[1]) + 1)
     old, old_origin = _start_process_reader(root, old_generation)
     page = request(old_origin + "/notes/outcome-pages/nebula.html").read().decode("utf-8")
     token = json.loads(re.search(r"const LOCAL_SYNC=(\{.*?\});", page).group(1))["token"]
@@ -262,7 +272,7 @@ def assert_real_generation_handoff(root: Path) -> None:
     assert status["generation"] == new_generation and status["retiring"] is False
     page = request(new_origin + "/notes/outcome-pages/nebula.html").read().decode("utf-8")
     token = json.loads(re.search(r"const LOCAL_SYNC=(\{.*?\});", page).group(1))["token"]
-    request(new_origin + "/api/handoff", json.dumps({"generation": "knowledge-nebula-server-v7"}).encode(), {
+    request(new_origin + "/api/handoff", json.dumps({"generation": generation_after(2)}).encode(), {
         "Origin": new_origin, "X-Nebula-Token": token, "Content-Type": "application/json",
     }).read()
     assert new.wait(timeout=6) == 0
@@ -280,15 +290,15 @@ def _retire_process_reader(process: subprocess.Popen, origin: str, target_genera
 def assert_real_roots_are_independent(base: Path) -> None:
     first = make_workspace(base, "listener-one")
     second = make_workspace(base, "listener-two")
-    first_process, first_origin = _start_process_reader(first, "knowledge-nebula-server-v5")
-    second_process, second_origin = _start_process_reader(second, "knowledge-nebula-server-v5")
+    first_process, first_origin = _start_process_reader(first, server_module.SERVICE_GENERATION)
+    second_process, second_origin = _start_process_reader(second, server_module.SERVICE_GENERATION)
     first_status = json.loads(request(first_origin + "/api/status").read().decode("utf-8"))
     second_status = json.loads(request(second_origin + "/api/status").read().decode("utf-8"))
     assert first_origin != second_origin and first_status["identity"] != second_status["identity"]
-    _retire_process_reader(first_process, first_origin, "knowledge-nebula-server-v6")
+    _retire_process_reader(first_process, first_origin, generation_after(1))
     still_running = json.loads(request(second_origin + "/api/status").read().decode("utf-8"))
     assert still_running == second_status
-    _retire_process_reader(second_process, second_origin, "knowledge-nebula-server-v6")
+    _retire_process_reader(second_process, second_origin, generation_after(1))
 
 
 def assert_direct_server_does_not_reuse_retiring(root: Path) -> None:

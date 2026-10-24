@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
-ENTRIES = {"brain-ask", "brain-think", "brain-check", "brain-create", "brain-fix", "brain-grow", "brain-guide", "brain-image", "brain-nebula", "brain-research", "brain-resume", "brain-text", "brain-tidy", "brain-url"}
+ENTRIES = {"brain-ask", "brain-think", "brain-check", "brain-create", "brain-fix", "brain-grow", "brain-guide", "brain-image", "brain-infographic", "brain-nebula", "brain-research", "brain-resume", "brain-text", "brain-tidy", "brain-update", "brain-url"}
 
 
 def digest(data: bytes) -> str: return hashlib.sha256(data).hexdigest()

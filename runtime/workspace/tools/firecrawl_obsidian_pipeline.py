@@ -36,6 +36,11 @@ except ModuleNotFoundError:
     from source_identity import normalize_url as normalize_capture_url
 
 try:
+    from tools.workspace_paths import WorkspacePathError, vault_path
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, vault_path  # type: ignore
+
+try:
     from tools.validation_manifest import build_embedded_manifest
 except ModuleNotFoundError:
     from validation_manifest import build_embedded_manifest  # type: ignore
@@ -4545,16 +4550,26 @@ def resolve_inside(root: Path, target: Path) -> Path:
 
 
 def next_source_id(root: Path) -> str:
-    max_seen = 0
-    for path in root.glob("outputs/vertical_slice_*/KS-VS-*.md"):
-        match = re.match(r"KS-VS-(\d+)", path.name)
-        if match:
-            max_seen = max(max_seen, int(match.group(1)))
-    for path in root.glob(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "sources/*/*/KS-VS-*.md"):
-        match = re.match(r"KS-VS-(\d+)", path.name)
-        if match:
-            max_seen = max(max_seen, int(match.group(1)))
-    return f"KS-VS-{max_seen + 1:04d}"
+    """Same sources as ingest_rail.next_source_id (registry, accepted jobs), plus saved notes and legacy slices."""
+    try:
+        vault = vault_path(root)
+    except WorkspacePathError as exc:
+        raise PipelineStop("blocked", str(exc)) from exc
+    seen = []
+    registry = vault / "_registry" / "sources.jsonl"
+    if registry.is_file():
+        for line in registry.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                seen.append(str(json.loads(line).get("source_id", "")))
+    for path in (root / "outputs" / "compiler_worker_v2" / "_jobs").glob("*.json"):
+        try:
+            seen.append(str(json.loads(path.read_text(encoding="utf-8")).get("source_id", "")))
+        except (OSError, ValueError):
+            continue
+    for path in [*vault.glob("sources/*/*/KS-VS-*.md"), *root.glob("outputs/vertical_slice_*/KS-VS-*.md")]:
+        seen.append(path.name)
+    values = [int(match.group(1)) for value in seen if (match := re.match(r"KS-VS-(\d+)", value))]
+    return f"KS-VS-{max(values, default=0) + 1:04d}"
 
 
 def slugify(value: str) -> str:

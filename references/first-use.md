@@ -74,7 +74,7 @@ macOS／Linux 先讀 [Python 對應平台官方文件](https://docs.python.org/3
 <python> -B <package>/scripts/install_skill.py --archive <ZIP> --apply
 ```
 
-安裝器預設複製完整套件到當前使用者 `.agents/skills/creative-second-brain`，同內容可安全重跑；衝突或中斷保留現場，不覆寫。這是產品與發行資料夾，日常工作只從每個 workspace 的 14 個 canonical `brain-*` 入口開始；`brain-ask` 只作相容別名。`--skills-root` 只供明示的測試／自訂位置，不證明真實全域辨識。預設位置按 [Codex 官方技能文件](https://learn.chatgpt.com/docs/build-skills) 核對；其他 Agent 宿主先驗其官方安裝與入口契約，不能把 Codex 路徑當通用標準。沒有已驗適配就報能力缺口，不宣称支援。
+安裝器預設複製完整套件到當前使用者 `.agents/skills/creative-second-brain`，同內容可安全重跑；衝突或中斷保留現場，不覆寫。這是產品與發行資料夾，日常工作只從每個 workspace 的 15 個 canonical `brain-*` 入口開始；`brain-ask` 只作相容別名。`--skills-root` 只供明示的測試／自訂位置，不證明真實全域辨識。預設位置按 [Codex 官方技能文件](https://learn.chatgpt.com/docs/build-skills) 核對；其他 Agent 宿主先驗其官方安裝與入口契約，不能把 Codex 路徑當通用標準。沒有已驗適配就報能力缺口，不宣称支援。
 
 使用 installer 回傳的完整技能位置作 `<skill>`。建立與 workspace 分開、尚不存在的專用環境（例如同一父資料夾的獨立工具環境；具體位置已在前置資料確認），不改全域 Python 套件：
 
@@ -116,7 +116,7 @@ setup 建立完整 `brain-*` 技能入口。讓宿主開啟該 workspace，實�
 
 ## 6. 給新手的完成交付
 
-AI 只可先給一個整體裁決：「完整可用」、「基本可用但明列受限功能」或「受阻未完成」。其後逐項提供 package／版本、專用 venv 四項依賴與 yt-dlp CLI／時區資料、正確 Obsidian vault／CLI、14 個 canonical skill、Node／鎖定 Playwright／Chromium、Codex ImageGen schema、首頁、nebula、閱讀 HTML 與 Graph 的實際證據；單項不各自宣稱完整可用。首頁只在已實際啟動 loopback 後回報 `index.html#prompts`；nebula 同樣回報實際 URL。沒有安全瀏覽器工具時只給 URL，不稱已開啟。技能、依賴或 Obsidian 缺項需明列，不能用另一項 ready 抵銷。
+AI 只可先給一個整體裁決：「完整可用」、「基本可用但明列受限功能」或「受阻未完成」。其後逐項提供 package／版本、專用 venv 四項依賴與 yt-dlp CLI／時區資料、正確 Obsidian vault／CLI、15 個 canonical skill、Node／鎖定 Playwright／Chromium、Codex ImageGen schema、首頁、nebula、閱讀 HTML 與 Graph 的實際證據；單項不各自宣稱完整可用。首頁只在已實際啟動 loopback 後回報 `index.html#prompts`；nebula 同樣回報實際 URL。沒有安全瀏覽器工具時只給 URL，不稱已開啟。技能、依賴或 Obsidian 缺項需明列，不能用另一項 ready 抵銷。
 
 向使用者交付自己的首頁連結、資料位置、完整 `brain-*` 入口的短句，以及實際能力限制。新库保持空白；首筆正式入庫是之後獨立的任務，不以造示範資料充當安裝驗收。需要使用者實測前，先把 AI 可做的項目完成及讀回。任何仍未驗證的宿主／原生介面項目如實列出，不叫使用者代做工程除錯。
 

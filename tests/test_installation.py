@@ -118,10 +118,10 @@ def main():
     assert soup.select_one("#install-command").text == (package / "install-prompt.txt").read_text(encoding="utf-8").strip()
     for instruction in ("Node", "Playwright", "case_reproduction_capture.js"):
         assert instruction in soup.select_one("#install-command").text, instruction
-    # One installer prompt plus the fourteen current portable daily entries.
-    assert len(soup.select("button.copy")) == 15
+    # One installer prompt plus the fifteen current portable daily entries.
+    assert len(soup.select("button.copy")) == 16
     assert "brain-reader" in soup.select_one("body").get("class", [])
-    assert "03 / 14 個日常入口" in soup.get_text()
+    assert "03 / 15 個日常入口" in soup.get_text()
     for field in soup.select("textarea"):
         assert field.get("id") and field.get("name")
         assert field.get("aria-label") or soup.find("label", attrs={"for": field["id"]})

@@ -2,17 +2,21 @@ from __future__ import annotations
 import os
 
 import argparse
+import hashlib
 import html
 import json
 import re
+import struct
+import zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
 try:
-    from tools.obsidian_vault_adapter import is_png_file, extract_canonical_body_markdown
-    from tools.reader_surface_guard import reader_surface_internal_message_errors
+    from tools.obsidian_vault_adapter import is_png_file, read_retained_original, retained_original_location
+    from tools.reader_surface_guard import reader_safe_source_value, reader_surface_internal_message_patterns, reader_surface_internal_message_errors
     from tools.reader_shell import logo_for
     from tools.case_evidence_contract import CaseEvidenceError, _png_dimensions
+    from tools.image_source_contract import ImageSourceContractError, identify_image
     from tools.outcome_page_generator import (
         case_evidence_reproduction_entrypoint_path,
         reader_title_from_saved_source,
@@ -24,10 +28,11 @@ try:
         research_reuse_work_paths_for_source,
     )
 except ModuleNotFoundError:
-    from obsidian_vault_adapter import is_png_file, extract_canonical_body_markdown  # type: ignore
-    from reader_surface_guard import reader_surface_internal_message_errors  # type: ignore
+    from obsidian_vault_adapter import is_png_file, read_retained_original, retained_original_location  # type: ignore
+    from reader_surface_guard import reader_safe_source_value, reader_surface_internal_message_patterns, reader_surface_internal_message_errors  # type: ignore
     from reader_shell import logo_for  # type: ignore
     from case_evidence_contract import CaseEvidenceError, _png_dimensions  # type: ignore
+    from image_source_contract import ImageSourceContractError, identify_image  # type: ignore
     from outcome_page_generator import (  # type: ignore
         case_evidence_reproduction_entrypoint_path,
         reader_title_from_saved_source,
@@ -51,10 +56,9 @@ SOURCE_OVERVIEW_HEADINGS = {
     "user_provided_text": "這份文字講甚麼",
     "user_provided_image": "這張圖片說甚麼",
 }
-DIRECT_SOURCE_LABELS = {
-    "user_provided_text": "使用者提供文字",
-    "user_provided_image": "使用者提供圖片",
-}
+# Source kinds without a public URL: their page proves provenance with a named source line instead.
+DIRECT_SOURCE_KINDS = frozenset({"user_provided_text", "user_provided_image"})
+PROVENANCE_LINE_RE = re.compile(r'<p class="[^"]*\bsource-provenance\b[^"]*"><span>[^<]+</span>(.*?)</p>', re.S)
 INTERNAL_LANGUAGE_TERMS = (
     "本項目",
     "任務摘要",
@@ -102,6 +106,38 @@ FORBIDDEN_STYLE_TEXTS = (
     "本工具認為",
 )
 MIN_DUPLICATE_TEXT_LENGTH = 30
+
+# Where each audit_page result key can first be checked.  The completion receipt
+# is blocked by any of them, but the plan locks first, so everything that is
+# decided by the text of the plan itself must also run before the lock
+# (ingest_rail.validate_plan calls reader_surface_text_findings on the
+# reader-visible plan strings).  The rest needs the written Vault notes or the
+# rendered page and can only run after the writer.
+#   pre_lock          the same text checks run on the plan-derived strings
+#   partial_pre_lock  run on the part the plan alone decides (the plan-derived
+#                     strings; the knowledge-point claims for repeated content);
+#                     the full page also has generated sections
+#   post_writer_only  needs the written notes, assets or the rendered page
+AUDIT_CHECK_STAGES = {
+    "placeholder_issues": "pre_lock",
+    "reader_surface_issues": "pre_lock",
+    "generic_text_issues": "pre_lock",
+    "style_issues": "pre_lock",
+    "internal_language_risks": "pre_lock",
+    "html_surface_issues": "partial_pre_lock",
+    "missing_required_texts": "post_writer_only",
+    "asset_issues": "post_writer_only",
+    "source_url_issues": "post_writer_only",
+    "navigation_issues": "post_writer_only",
+    "layout_issues": "post_writer_only",
+    "retired_taste_route_issues": "post_writer_only",
+    "vault_body_layout_issues": "post_writer_only",
+    "case_evidence_issues": "post_writer_only",
+    "method_verification_issues": "post_writer_only",
+    "research_reuse_issues": "post_writer_only",
+    "infographic_status_issues": "post_writer_only",
+    "duplicate_content_issues": "partial_pre_lock",
+}
 
 
 def main() -> int:
@@ -405,11 +441,21 @@ def audit_page(page_path: Path, vault: Path) -> dict[str, object]:
     reader_html = strip_vault_body_sections(html_text)
     text = visible_text(reader_html)
     source_input_kind = body_attribute(html_text, "data-source-input-kind")
+    source_note = first_matching_source_note(vault, page_path.stem.replace("_outcome", ""))
+    source_fields = frontmatter_fields(source_note.read_text(encoding="utf-8")) if source_note else {}
+    asset_mode = str(source_fields.get("asset_mode") or "formal_infographic").strip().strip('"')
     missing_texts = [item for item in REQUIRED_PAGE_TEXTS if item not in text]
     overview_heading = SOURCE_OVERVIEW_HEADINGS.get(source_input_kind)
     if overview_heading and overview_heading not in text:
         missing_texts.append("missing source overview heading")
-    asset_issues = missing_assets(html_text, page_path, vault)
+    asset_issues = missing_assets(
+        html_text,
+        page_path,
+        vault,
+        asset_mode=asset_mode,
+        source_input_kind=source_input_kind,
+        source_fields=source_fields,
+    )
     direct_provenance_ok = has_direct_source_provenance(
         html_text,
         text,
@@ -425,7 +471,6 @@ def audit_page(page_path: Path, vault: Path) -> dict[str, object]:
     layout_issues = layout_semantic_issues(reader_html)
     retired_route_issues = retired_taste_route_link_issues(html_text, "page")
     vault_body_issues = vault_body_layout_issues(html_text)
-    source_note = first_matching_source_note(vault, page_path.stem.replace("_outcome", ""))
     if source_note:
         vault_body_issues.extend(retained_source_issues(html_text, source_note.read_text(encoding="utf-8")))
     case_evidence_issues = case_evidence_source_local_issues(html_text, page_path, vault, source_note)
@@ -490,7 +535,13 @@ def audit_page(page_path: Path, vault: Path) -> dict[str, object]:
 
 
 def retained_source_issues(html_text: str, source_note: str) -> list[str]:
-    canonical = extract_canonical_body_markdown(source_note)
+    try:
+        mode = (frontmatter_fields(source_note).get("source_retention_mode") or "").strip().strip('"') or None
+        if retained_original_location(mode) != "source_note_body":
+            return []
+        canonical = read_retained_original(mode, note_text=source_note)
+    except ValueError:
+        return []
     if not canonical:
         return []
     rendered = [html.unescape(value).strip() for value in re.findall(
@@ -507,7 +558,7 @@ def infographic_source_status_issues(page_path: Path, vault: Path) -> list[str]:
         return []
     text = source_note.read_text(encoding="utf-8")
     fields = frontmatter_fields(text)
-    if str(fields.get("asset_mode") or "").strip().strip('"') == "case_evidence":
+    if str(fields.get("asset_mode") or "").strip().strip('"') in {"case_evidence", "knowledge_only"}:
         # Case evidence has its own screenshot/reproduction manifest; it must
         # not be marked down for formal gpt-image-2 receipt fields.
         return []
@@ -626,22 +677,171 @@ def has_direct_source_provenance(
     visible_page_text: str,
     source_input_kind: str,
 ) -> bool:
-    label = DIRECT_SOURCE_LABELS.get(source_input_kind)
-    if not label:
+    """The reader sees the content's source named on its provenance line; the identity stays a machine attribute."""
+    if source_input_kind not in DIRECT_SOURCE_KINDS:
         return False
     source_identity = body_attribute(html_text, "data-source-identity")
-    return bool(
-        re.fullmatch(rf"{re.escape(source_input_kind)}:[0-9a-f]{{64}}", source_identity)
-        and "source-provenance" in html_text
-        and label in visible_page_text
-    )
+    line = PROVENANCE_LINE_RE.search(html_text)
+    line_text = html.unescape(re.sub(r"<[^>]+>", "", line.group(1))).strip() if line else ""
+    named = bool(reader_safe_source_value(line_text, fallback=""))
+    return bool(re.fullmatch(rf"{re.escape(source_input_kind)}:[0-9a-f]{{64}}", source_identity) and named)
 
 
-def missing_assets(html_text: str, page_path: Path, vault: Path) -> list[str]:
+def _field_text(fields: dict[str, str] | None, key: str) -> str:
+    return str((fields or {}).get(key) or "").strip().strip('"').strip("'").strip()
+
+
+def registered_original_image(
+    vault: Path,
+    source_input_kind: str,
+    source_fields: dict[str, str] | None,
+) -> Path | None:
+    """Return the source note's registered original image, or None.
+
+    Only a user-provided-image source owns an original, and it is named by the
+    source note's ``source_original_image`` field (the same field the outcome
+    generator and the vault writer use), never guessed from a file name.
+    """
+    kind = _field_text(source_fields, "source_input_kind") or source_input_kind
+    if kind != "user_provided_image":
+        return None
+    relative = _field_text(source_fields, "source_original_image")
+    if not relative:
+        return None
+    original = (vault / relative).resolve()
+    return original if vault in original.parents else None
+
+
+def _png_stream_issue(raw: bytes) -> str | None:
+    """Check a complete PNG of any colour type, bit depth or interlace."""
+    if len(raw) < 45 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "not a PNG file"
+    offset, first, idat, end_seen = 8, True, [], False
+    while offset < len(raw) and not end_seen:
+        if offset + 12 > len(raw):
+            return "truncated PNG chunk"
+        length = struct.unpack(">I", raw[offset:offset + 4])[0]
+        kind = raw[offset + 4:offset + 8]
+        end = offset + 12 + length
+        if end > len(raw):
+            return "truncated PNG chunk"
+        payload = raw[offset + 8:end - 4]
+        if zlib.crc32(kind + payload) & 0xFFFFFFFF != struct.unpack(">I", raw[end - 4:end])[0]:
+            return "PNG chunk checksum mismatch"
+        if first:
+            if kind != b"IHDR" or length != 13:
+                return "PNG does not start with a valid header"
+            width, height, depth, colour = struct.unpack(">IIBB", payload[:10])
+            allowed = {0: {1, 2, 4, 8, 16}, 2: {8, 16}, 3: {1, 2, 4, 8}, 4: {8, 16}, 6: {8, 16}}
+            if width <= 0 or height <= 0 or depth not in allowed.get(colour, set()):
+                return "PNG header is invalid"
+            first = False
+        elif kind == b"IDAT":
+            idat.append(payload)
+        elif kind == b"IEND":
+            end_seen = True
+        offset = end
+    if not end_seen or offset != len(raw):
+        return "PNG is truncated or has trailing bytes"
+    if not idat:
+        return "PNG has no image data"
+    decoder = zlib.decompressobj()
+    try:
+        for chunk in idat:
+            decoder.decompress(chunk)
+        decoder.flush()
+    except zlib.error:
+        return "PNG image data cannot be decoded"
+    return None if decoder.eof else "PNG image data is incomplete"
+
+
+def _jpeg_stream_issue(raw: bytes) -> str | None:
+    body = raw.rstrip(b"\x00")
+    if len(body) < 4 or not body.startswith(b"\xff\xd8") or not body.endswith(b"\xff\xd9"):
+        return "JPEG is truncated or has no end marker"
+    cursor, frame_seen = 2, False
+    while cursor + 4 <= len(body):
+        if body[cursor] != 0xFF:
+            return "JPEG segment structure is invalid"
+        marker = body[cursor + 1]
+        if marker == 0xFF:
+            cursor += 1
+            continue
+        cursor += 2
+        if marker == 0x01 or 0xD0 <= marker <= 0xD7:
+            continue
+        length = struct.unpack(">H", body[cursor:cursor + 2])[0]
+        if length < 2 or cursor + length > len(body):
+            return "JPEG segment is truncated"
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            frame_seen = True
+        if marker == 0xDA:
+            return None if frame_seen and len(body) > cursor + length + 2 else "JPEG has no image data"
+        cursor += length
+    return "JPEG has no image data"
+
+
+def _webp_stream_issue(raw: bytes) -> str | None:
+    if len(raw) < 20 or raw[:4] != b"RIFF" or raw[8:12] != b"WEBP":
+        return "not a WebP file"
+    declared = struct.unpack("<I", raw[4:8])[0] + 8
+    if declared not in {len(raw), len(raw) + 1}:
+        return "WebP size does not match the file"
+    cursor, kinds = 12, set()
+    while cursor < len(raw):
+        if cursor + 8 > len(raw):
+            return "WebP chunk is truncated"
+        size = struct.unpack("<I", raw[cursor + 4:cursor + 8])[0]
+        if cursor + 8 + size > len(raw):
+            return "WebP chunk is truncated"
+        kinds.add(raw[cursor:cursor + 4])
+        cursor += 8 + size + (size & 1)
+    return None if kinds & {b"VP8 ", b"VP8L", b"ANMF"} else "WebP has no image data"
+
+
+def original_image_issue(path: Path, source_fields: dict[str, str] | None) -> str | None:
+    """Validate a user-provided original: complete PNG/JPEG/WebP bound to its registered hash.
+
+    An original is preserved byte for byte, so (unlike a generated infographic)
+    it may use any PNG colour type, including alpha.  Only its structure and
+    its registered SHA-256 / MIME are checked.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "original image is unreadable"
+    try:
+        mime_type = identify_image(raw)[0]
+    except ImageSourceContractError:
+        return "original image is not a readable PNG, JPEG or WebP file"
+    structure = {"image/png": _png_stream_issue, "image/jpeg": _jpeg_stream_issue, "image/webp": _webp_stream_issue}
+    problem = structure[mime_type](raw)
+    if problem:
+        return f"original image is incomplete or corrupt ({problem})"
+    expected = _field_text(source_fields, "source_image_sha256")
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        return "original image has no registered SHA-256"
+    if hashlib.sha256(raw).hexdigest() != expected:
+        return "original image does not match its registered SHA-256"
+    declared_mime = _field_text(source_fields, "source_image_mime")
+    if declared_mime and declared_mime != mime_type:
+        return "original image type does not match its registered MIME type"
+    return None
+
+
+def missing_assets(
+    html_text: str,
+    page_path: Path,
+    vault: Path,
+    *,
+    asset_mode: str = "formal_infographic",
+    source_input_kind: str = "",
+    source_fields: dict[str, str] | None = None,
+) -> list[str]:
     issues = []
     image_sources = re.findall(r'<img\s+[^>]*src="([^"]+)"', html_text)
     if not image_sources:
-        return ["missing infographic image"]
+        return [] if asset_mode == "knowledge_only" else ["missing infographic image"]
     # The shared reader shell supplies one project-owned brand PNG.  It keeps
     # existing reader pages visually stable while the outcome audit continues
     # to reject every other path outside the vault.
@@ -659,6 +859,9 @@ def missing_assets(html_text: str, page_path: Path, vault: Path) -> list[str]:
             approved_brand = reader_logo.resolve()
         except (CaseEvidenceError, OSError):
             pass
+    # The source note's registered original image is user evidence, not a
+    # generated infographic; it alone is exempt from the opaque-PNG rule.
+    original = registered_original_image(vault, source_input_kind, source_fields)
     for source in image_sources:
         candidate = (page_path.parent / html.unescape(source)).resolve()
         if vault not in candidate.parents and candidate != vault:
@@ -666,6 +869,10 @@ def missing_assets(html_text: str, page_path: Path, vault: Path) -> list[str]:
                 issues.append(f"image outside vault: {source}")
         elif not candidate.exists():
             issues.append(f"missing image file: {source}")
+        elif original is not None and candidate == original:
+            problem = original_image_issue(candidate, source_fields)
+            if problem:
+                issues.append(f"{problem}: {source}")
         elif not is_png_file(candidate):
             issues.append(f"invalid PNG image file: {source}")
     return issues
@@ -692,6 +899,28 @@ def reader_surface_text_issues(text: str, surface: str) -> list[str]:
     for term in placeholder_terms_in(text):
         issues.append(f"{surface} placeholder text: {term}")
     return issues
+
+
+def reader_surface_text_findings(text: str) -> list[tuple[str, str]]:
+    """The text checks of ``reader_surface_text_issues`` as (kind, detail) pairs.
+
+    ``text`` is normalised like ``visible_text`` output (collapsed whitespace).
+    A plan-derived string fails before the lock on exactly the findings the
+    post-writer audit would raise for the same text; the tests keep this
+    function in step with ``reader_surface_text_issues``.
+    """
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    findings: list[tuple[str, str]] = []
+    if text:
+        for code, pattern in reader_surface_internal_message_patterns():
+            if pattern.search(text):
+                findings.append(("internal_message", code))
+                break
+    findings += [("internal_language", term) for term in INTERNAL_LANGUAGE_TERMS if term in text]
+    findings += [("forbidden_generic", term) for term in FORBIDDEN_GENERIC_READER_TEXTS if term in text]
+    findings += [("forbidden_style", term) for term in FORBIDDEN_STYLE_TEXTS if term in text]
+    findings += [("placeholder", term) for term in placeholder_terms_in(text)]
+    return findings
 
 
 def layout_semantic_issues(html_text: str) -> list[str]:
@@ -761,7 +990,9 @@ def reader_style_issues(text: str) -> list[str]:
 
 
 def content_repetition_issues(html_text: str) -> list[str]:
-    blocks = visible_blocks(html_text)
+    # A provenance line may legitimately be the work title shown in the H1.
+    # Exempt that line alone; all other reader-visible duplication still counts.
+    blocks = visible_blocks(PROVENANCE_LINE_RE.sub("", html_text))
     normalized_blocks = [
         block
         for block in (normalize_visible_block(text) for _, text in blocks)

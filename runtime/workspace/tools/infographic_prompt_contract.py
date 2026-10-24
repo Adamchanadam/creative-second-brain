@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import unicodedata
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -37,14 +38,16 @@ except ModuleNotFoundError:
 
 
 INFOGRAPHIC_TEMPLATE_VERSION = "手繪知識卡片母版 v3"
-INFOGRAPHIC_PROMPT_CONTRACT_VERSION = "infographic_prompt_contract_v3.6"
-INFOGRAPHIC_LEGACY_PROMPT_CONTRACT_VERSION = "infographic_prompt_contract_v3.5"
+INFOGRAPHIC_PROMPT_CONTRACT_VERSION = "infographic_prompt_contract_v3.7"
+INFOGRAPHIC_LEGACY_PROMPT_CONTRACT_VERSION = "infographic_prompt_contract_v3.6"
+INFOGRAPHIC_OLDER_PROMPT_CONTRACT_VERSION = "infographic_prompt_contract_v3.5"
 INFOGRAPHIC_SEMANTIC_READBACK_CONTRACTS = (
     "infographic_prompt_contract_v3.0",
     "infographic_prompt_contract_v3.1",
     "infographic_prompt_contract_v3.2",
     "infographic_prompt_contract_v3.3",
     "infographic_prompt_contract_v3.4",
+    INFOGRAPHIC_OLDER_PROMPT_CONTRACT_VERSION,
     INFOGRAPHIC_LEGACY_PROMPT_CONTRACT_VERSION,
     INFOGRAPHIC_PROMPT_CONTRACT_VERSION,
 )
@@ -105,7 +108,6 @@ def load_infographic_reverse_review_contract() -> dict[str, str]:
 
 INFOGRAPHIC_REVERSE_REVIEW_CONTRACT = load_infographic_reverse_review_contract()
 INFOGRAPHIC_STYLE_BASIS = INFOGRAPHIC_REVERSE_REVIEW_CONTRACT["required_style_basis"]
-INFOGRAPHIC_OUTPUT_SIGNATURE = INFOGRAPHIC_REVERSE_REVIEW_CONTRACT["required_footer_signature"]
 INFOGRAPHIC_TEXT_JUDGMENT_RE = re.compile(
     r"(要|需|必須|可|能|會|不能|不得|不是|只|先|後|用|發布|更新|保存|載入|失敗|成立|變成|"
     r"取決|值得|需要|缺|過門|禁用|自包含|限制|支援|改做|分享|確認|保留|"
@@ -138,6 +140,19 @@ INFOGRAPHIC_TEMPLATE_PROMPT_V35 = (
     "頁碼固定右上，只出現一次。底部手寫來源註腳可用一至兩行以保持完整與清晰，可加手繪底線，不用深色底欄；footer 必須保留唯一簽名 (創造型 2nd Brain)，不得改字、漏字、加入表情、裝飾尾字或白名單以外的 footer 文字。"
 )
 
+INFOGRAPHIC_TEMPLATE_PROMPT_V36 = (
+    f"{INFOGRAPHIC_TEMPLATE_VERSION}｜直幅真 PNG；正式生成使用 Codex imagegen / gpt-image-2。Compiler 鎖定目標畫布 {INFOGRAPHIC_FORMAL_IMAGE_SIZE} 與品質方向 {INFOGRAPHIC_FORMAL_IMAGE_QUALITY}，不使用 OpenAI API/SDK worker，也不把尺寸或品質交給模型自由猜測。"
+    f"畫面採用 {INFOGRAPHIC_STYLE_BASIS}；Bauhaus 是幾何分區、原色提示、黑白灰基底、清楚對齊和非對稱平衡，不是加裝飾色塊。資訊路徑永遠比風格更重要。"
+    "固定視覺配方是 Bauhaus 幾何版式、克制的 3D 漸變色光影與藝術性手繪筆觸；3D 漸變色只附著於實際語義分區、層級、入口、限制或關係，不能遮蓋文字、取代關係表達或變成裝飾背景。畫面要像乾淨手寫教學卡片，不像 SVG、dashboard、簡報模板、UI card 或 vector icon 套件。"
+    "暖白或白色紙本底，可有極淡灰色 construction grid；正式 PNG 必須是不透明底，不得使用 alpha 透明或透明色；黑白灰為基底，只用明亮紅黃藍三原色作重點提示，綠色不得成為主色。"
+    "標題用粗筆手寫感，正文用清楚手寫印刷體；手機約 360px 仍可讀主標、段標和主要正文。"
+    f"{INFOGRAPHIC_TEXT_QUALITY_MARKER}：每句正文離開上下文仍要能讀懂，優先包含對象加判斷、動作、後果或用途；避免孤立名詞、半句、口號、純欄名或只有技術值。"
+    f"{INFOGRAPHIC_COLLECTION_ORIENTATION_MARKER}；若右上頁碼顯示為多頁的第 1 頁，畫面必須先讓冷讀者看見全文一句話、為何重要、以及後續頁面如何展開，才進入個別重點。"
+    "使用手繪幾何分區、圓角框、底線、箭頭、虛線、圈號、勾選框、便條、旗標或簡單手繪圖示建立閱讀路徑；避免完美等寬卡片、純裝飾漸層、暗色全寬 footer、企業儀表板感、舊紙粗顆粒、細字和漂浮碎片。"
+    "圖示最多 5 個，只服務理解；圖示本身不得含文字、字母、數字、檔名、縮寫、代碼或類似程式碼的符號，若難以避免就不用圖示。正文、標題、數字、年份、金額、百分比、頁碼與底部來源行仍按白名單顯示。"
+    "頁碼固定右上，只出現一次。底部手寫來源註腳可用一至兩行以保持完整與清晰，可加手繪底線，不用深色底欄；footer 必須保留唯一簽名 (創造型 2nd Brain)，不得改字、漏字、加入表情、裝飾尾字或白名單以外的 footer 文字。"
+)
+
 INFOGRAPHIC_TEMPLATE_PROMPT = (
     f"{INFOGRAPHIC_TEMPLATE_VERSION}｜直幅真 PNG；正式生成使用 Codex imagegen / gpt-image-2。Compiler 鎖定目標畫布 {INFOGRAPHIC_FORMAL_IMAGE_SIZE} 與品質方向 {INFOGRAPHIC_FORMAL_IMAGE_QUALITY}，不使用 OpenAI API/SDK worker，也不把尺寸或品質交給模型自由猜測。"
     f"畫面採用 {INFOGRAPHIC_STYLE_BASIS}；Bauhaus 是幾何分區、原色提示、黑白灰基底、清楚對齊和非對稱平衡，不是加裝飾色塊。資訊路徑永遠比風格更重要。"
@@ -148,7 +163,7 @@ INFOGRAPHIC_TEMPLATE_PROMPT = (
     f"{INFOGRAPHIC_COLLECTION_ORIENTATION_MARKER}；若右上頁碼顯示為多頁的第 1 頁，畫面必須先讓冷讀者看見全文一句話、為何重要、以及後續頁面如何展開，才進入個別重點。"
     "使用手繪幾何分區、圓角框、底線、箭頭、虛線、圈號、勾選框、便條、旗標或簡單手繪圖示建立閱讀路徑；避免完美等寬卡片、純裝飾漸層、暗色全寬 footer、企業儀表板感、舊紙粗顆粒、細字和漂浮碎片。"
     "圖示最多 5 個，只服務理解；圖示本身不得含文字、字母、數字、檔名、縮寫、代碼或類似程式碼的符號，若難以避免就不用圖示。正文、標題、數字、年份、金額、百分比、頁碼與底部來源行仍按白名單顯示。"
-    f"頁碼固定右上，只出現一次。底部手寫來源註腳可用一至兩行以保持完整與清晰，可加手繪底線，不用深色底欄；footer 必須保留唯一簽名 {INFOGRAPHIC_OUTPUT_SIGNATURE}，不得改字、漏字、加入表情、裝飾尾字或白名單以外的 footer 文字。"
+    "頁碼固定右上，只出現一次。底部手寫來源註腳必須清楚列出來源和資訊圖日期；可分一至兩行、可改用全形或半形標點及普通分隔，不用深色底欄。可保留既有品牌字樣 (創造型 2nd Brain) 作手寫視覺收尾，但它不是逐字驗收條件。來源名稱或日期不可遺漏、改錯或以未核實資料代替；不要求固定簽名、品牌字樣、分隔符或排版。"
 )
 
 
@@ -158,6 +173,8 @@ def template_prompt_for_contract(prompt_contract_version: str) -> str:
     if prompt_contract_version == INFOGRAPHIC_PROMPT_CONTRACT_VERSION:
         return INFOGRAPHIC_TEMPLATE_PROMPT
     if prompt_contract_version == INFOGRAPHIC_LEGACY_PROMPT_CONTRACT_VERSION:
+        return INFOGRAPHIC_TEMPLATE_PROMPT_V36
+    if prompt_contract_version == INFOGRAPHIC_OLDER_PROMPT_CONTRACT_VERSION:
         return INFOGRAPHIC_TEMPLATE_PROMPT_V35
     raise ValueError(f"unsupported infographic prompt contract: {prompt_contract_version}")
 
@@ -213,6 +230,8 @@ def internal_process_visible_text_errors(
     visible_lines: list[Any],
     *,
     context: str = "visible_text",
+    locked_title: str = "",
+    locked_footer: str = "",
 ) -> list[str]:
     """Block production, validation, and navigation instructions from image text."""
 
@@ -221,7 +240,18 @@ def internal_process_visible_text_errors(
         line = str(raw_line or "").strip()
         if not line:
             continue
-        if INFOGRAPHIC_INTERNAL_VISIBLE_TEXT_RE.search(line):
+        if index == 1 and locked_title and exact_visible_text_equivalent(locked_title, line):
+            continue
+        footer_suffix = None
+        if (
+            index == len(visible_lines)
+            and locked_footer
+            and footer_format_equivalent(locked_footer, line)
+        ):
+            footer_fields = _footer_fields(line)
+            footer_suffix = footer_fields[2] if footer_fields is not None else None
+        text_to_check = footer_suffix if footer_suffix is not None else line
+        if INFOGRAPHIC_INTERNAL_VISIBLE_TEXT_RE.search(text_to_check):
             errors.append(
                 f"{context}[{index}] looks like production/navigation instruction, "
                 f"not reader-facing content: {line}"
@@ -390,14 +420,14 @@ def render_gpt_image_2_prompt(
 {INFOGRAPHIC_VISIBLE_TEXT_MARKER}
 {whitelist_text}
 
-以上是圖面可見文字白名單。標題、頁碼、來源 footer、日期、數字、百分比、評分、URL、作者與來源身份文字必須逐字；{body_copy_rule}不得顯示白名單以外的新文字，不得把提示欄位名稱、製作指令、內容處理紀錄、審核狀態、儲存或發布流程、個人化備註、系統訊息畫入成品。所有頁面保持同一母版風格，但不要求像素級完全相同。"""
+以上是圖面可見文字白名單。標題、頁碼、來源名稱、資訊圖日期、數字、百分比、評分、URL、作者與來源身份文字必須逐字；footer 的品牌字樣、分隔符、全半形標點、換行和排列只作視覺提示，不作逐字驗收。{body_copy_rule}不得顯示白名單以外的新文字，不得把提示欄位名稱、製作指令、內容處理紀錄、審核狀態、儲存或發布流程、個人化備註、系統訊息畫入成品。所有頁面保持同一母版風格，但不要求像素級完全相同。"""
 
 
 def infographic_footer_text(source_label: str, generated_on: str) -> str:
-    """Return the exact reader-facing footer locked into one generation dispatch."""
+    """Return the source/date facts locked into one generation dispatch."""
 
     label = public_footer_source_label(source_label)
-    return f"來源:{label}　資訊圖:{generated_on} {INFOGRAPHIC_OUTPUT_SIGNATURE}"
+    return f"來源:{label}　資訊圖:{generated_on}"
 
 
 def visible_text_from_prompt(prompt: str) -> list[str]:
@@ -458,6 +488,74 @@ def comparable_visible_text(value: object) -> str:
     return re.sub(r"\s+", "", text.translate(translation)).casefold()
 
 
+def _presentation_text(value: object) -> str:
+    """Normalize documented layout variance without changing numeric content."""
+
+    text = "".join(
+        character
+        for character in unicodedata.normalize("NFKC", str(value or ""))
+        if not character.isspace()
+    )
+    normalized: list[str] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        is_punctuation = unicodedata.category(character).startswith("P") or character == "|"
+        if not is_punctuation:
+            normalized.append(character)
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text):
+            next_character = text[end]
+            if not (unicodedata.category(next_character).startswith("P") or next_character == "|"):
+                break
+            end += 1
+        before = text[index - 1] if index else ""
+        after = text[end] if end < len(text) else ""
+        if not before.isdigit() and not after.isdigit():
+            index = end
+            continue
+        normalized.extend(text[index:end])
+        index = end
+    return "".join(normalized)
+
+
+def visible_text_presentation_equivalent(expected: object, actual: object) -> bool:
+    """Compare text while allowing only documented presentation variance."""
+
+    return _presentation_text(expected) == _presentation_text(actual)
+
+
+def exact_visible_text_equivalent(expected: object, actual: object) -> bool:
+    """Permit only full/half-width presentation punctuation in locked text.
+
+    Never fold minus signs, mathematical relations, digits, decimal content, or
+    arbitrary Unicode.  Numeric and identity lines therefore remain a direct
+    content comparison while ``步驟 3：`` and ``步驟 3:`` are equivalent.
+    """
+
+    return visible_text_presentation_equivalent(expected, actual)
+
+
+def _footer_fields(value: object) -> tuple[str, str, str] | None:
+    """Parse the documented source/date identity and optional presentation tail."""
+
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    match = re.fullmatch(
+        r"\s*來源\s*:\s*(?P<source>.*?)\s*資訊圖\s*:\s*(?P<date>\d{4}-\d{2}-\d{2})(?P<suffix>\s*(?:\([^()]*\)|創造型 2nd Brain))?\s*",
+        text,
+        flags=re.S,
+    )
+    if not match:
+        return None
+    return (
+        match.group("source").strip(),
+        match.group("date"),
+        (match.group("suffix") or "").strip(),
+    )
+
+
 def footer_format_equivalent(expected: object, actual: object) -> bool:
     """Compare only the footer's documented presentation-only variance.
 
@@ -466,27 +564,14 @@ def footer_format_equivalent(expected: object, actual: object) -> bool:
     admission decision about author, source, date, or signature text.
     """
 
-    punctuation = str.maketrans({
-        "：": ":", "／": "/", "｜": "|", "％": "%",
-        "（": "(", "）": ")", "，": ",", "。": ".",
-        "；": ";", "！": "!", "？": "?",
-    })
-
-    def parse(value: object) -> tuple[str, str] | None:
-        text = str(value or "")
-        match = re.fullmatch(r"\s*來源[:：](.*?)資訊圖[:：](.*?)\s*", text, flags=re.S)
-        if not match:
-            return None
-        source, signature = match.groups()
-        # Only whitespace/newlines and one dot-style separator at this exact
-        # field boundary are presentation variance.  Source/signature content
-        # itself remains literal after existing full/half-width punctuation.
-        source = re.sub(r"(?:\s*[·・])?\s*$", "", source)
-        return (source.translate(punctuation), signature.strip().translate(punctuation))
-
-    expected_fields = parse(expected)
-    actual_fields = parse(actual)
-    return expected_fields is not None and expected_fields == actual_fields
+    expected_fields = _footer_fields(expected)
+    actual_fields = _footer_fields(actual)
+    return (
+        expected_fields is not None
+        and actual_fields is not None
+        and visible_text_presentation_equivalent(expected_fields[0], actual_fields[0])
+        and expected_fields[1] == actual_fields[1]
+    )
 
 
 def image_reverse_review_errors(
@@ -568,11 +653,7 @@ def quality_only_reverse_review_failure_errors(
     if readback.get("formal_ingestion_allowed") is not False:
         errors.append("historic reverse review was not a rejected result")
     axes = readback.get("review_axes")
-    legacy_core_axes = (
-        "source_fidelity",
-        "visible_text_line_review",
-        "footer_signature",
-    )
+    legacy_core_axes = ("source_fidelity", "visible_text_line_review")
     if not isinstance(axes, dict):
         errors.append("historic reverse review has no review axes")
         return errors
@@ -589,7 +670,12 @@ def quality_only_reverse_review_failure_errors(
         for axis, value in axes.items()
         if value == "failed" and str(axis).strip()
     }
-    if not failed_axes:
+    retired_footer_presentation_failure = axes.get("footer_signature") == "failed"
+    if retired_footer_presentation_failure:
+        # The old field previously enforced a fixed brand signature.  Current
+        # semantic review already proves the source/date footer is correct.
+        failed_axes.discard("footer_signature")
+    if not failed_axes and not retired_footer_presentation_failure:
         errors.append("historic reverse review has no quality-only failure")
     elif not failed_axes <= advisory_axes:
         errors.append(
@@ -601,35 +687,11 @@ def quality_only_reverse_review_failure_errors(
     return errors
 
 
-def footer_variance_errors(readback, png_sha256, prompt):
-    auth = readback.get("user_approved_footer_variance") if isinstance(readback, dict) else None
-    if auth is None:
-        return []
-    visible = visible_text_from_prompt(prompt)
-    expected = visible[-1] if visible else ""
-    prefix, separator, suffix = expected.partition("資訊圖:")
-    allowed = prefix.rstrip() + " · 資訊圖:" + suffix
-    if (not isinstance(auth, dict) or auth.get("schema") != "imagegen_footer_separator_acceptance_v1"
-            or auth.get("authorized_by") != "user" or auth.get("scope") != "one_footer_separator_only"
-            or len(str(auth.get("user_request") or "").strip()) < 6
-            or not separator or auth.get("expected_footer") != expected
-            or auth.get("png_sha256") != png_sha256
-            or auth.get("locked_prompt_sha256") != hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-            or comparable_visible_text(auth.get("accepted_footer")) != comparable_visible_text(allowed)
-            or not isinstance(readback.get("visible_text_readback"), list)
-            or not readback["visible_text_readback"]
-            or readback["visible_text_readback"][-1] != auth.get("accepted_footer")):
-        return ["invalid explicit footer separator acceptance"]
-    return []
-
-
 def accepted_footer_text(readback, png_sha256, prompt):
+    """The footer's source/date facts are locked; its presentation is not."""
+
     visible = visible_text_from_prompt(prompt)
-    expected = visible[-1] if visible else ""
-    auth = readback.get("user_approved_footer_variance") if isinstance(readback, dict) else None
-    if auth is not None and not footer_variance_errors(readback, png_sha256, prompt):
-        return auth["accepted_footer"]
-    return expected
+    return visible[-1] if visible else ""
 
 
 def image_semantic_readback_errors(
@@ -654,12 +716,30 @@ def image_semantic_readback_errors(
     if readback.get("inspected_prompt_sha256") != prompt_hash:
         errors.append("image semantic readback prompt hash mismatch")
     expected_visible = visible_text_from_prompt(prompt)
-    errors.extend(footer_variance_errors(readback, png_sha256, prompt))
-    if expected_visible:
-        expected_visible[-1] = accepted_footer_text(readback, png_sha256, prompt)
+    # Only the explicit source/primary-work headline form is source-owned.
+    # Match the first locked visible line back to its full layout instruction,
+    # rather than parsing quotation marks from a user-provided title.  The
+    # derived-topic form ends with ``」，並讓`` and must remain guarded.
+    candidate_title = expected_visible[0] if expected_visible else ""
+    layout_parts = prompt.split("【版面安排，不作圖中文字】", 1)
+    layout_text = (
+        layout_parts[1].split(INFOGRAPHIC_VISIBLE_TEXT_MARKER, 1)[0]
+        if len(layout_parts) == 2
+        else ""
+    )
+    locked_title = candidate_title if candidate_title and any(
+        headline in layout_text
+        for headline in (
+            f"最上方主標逐字使用「{candidate_title}」。",
+            f"最上方主標逐字使用作品名稱「{candidate_title}」。",
+        )
+    ) else ""
+    locked_footer = expected_visible[-1] if expected_visible else ""
     errors.extend(internal_process_visible_text_errors(
         expected_visible,
         context="prompt_visible_text",
+        locked_title=locked_title,
+        locked_footer=locked_footer,
     ))
     if expected_visible:
         errors.extend(
@@ -676,6 +756,8 @@ def image_semantic_readback_errors(
         errors.extend(internal_process_visible_text_errors(
             actual_visible,
             context="image_readback_visible_text",
+            locked_title=locked_title,
+            locked_footer=locked_footer,
         ))
         if actual_visible:
             errors.extend(
@@ -691,7 +773,10 @@ def image_semantic_readback_errors(
         ))
     body_matches = (
         len(actual_visible) == len(expected_visible)
-        and [str(item) for item in actual_visible[:-1]] == expected_visible[:-1]
+        and all(
+            visible_text_presentation_equivalent(expected, actual)
+            for expected, actual in zip(expected_visible[:-1], actual_visible[:-1])
+        )
     )
     footer_matches = bool(expected_visible and actual_visible) and footer_format_equivalent(
         expected_visible[-1], actual_visible[-1]
@@ -709,7 +794,7 @@ def image_semantic_readback_errors(
         missing_exact = [
             item
             for item in exact_expected
-            if item not in exact_actual
+            if not any(exact_visible_text_equivalent(item, actual) for actual in exact_actual)
         ]
         if missing_exact:
             errors.append("image semantic readback missing exact identity text: " + "; ".join(missing_exact))

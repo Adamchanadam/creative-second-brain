@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 ASSET_MODE_FORMAL = "formal_infographic"
 ASSET_MODE_CASE = "case_evidence"
+ASSET_MODE_KNOWLEDGE = "knowledge_only"
 MANIFEST_VERSION = "case_evidence_manifest_v1"
 MANIFEST_VERSION_V2 = "case_evidence_manifest_v2"
 SELECTION_CONTRACT_SCHEMA = "research_topic_selection_contract_v1"

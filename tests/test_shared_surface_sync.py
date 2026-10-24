@@ -17,6 +17,10 @@ else:
     subprocess.run([sys.executable, "-B", str(ROOT / "scripts" / "build_profiles.py"), "--output", str(build), "--profile", "public-portable"], cwd=ROOT, check=True)
     package = build / "public-portable"
 
+CURRENT_VERSION = json.loads((package / "profiles" / "profiles.json").read_text(encoding="utf-8"))["version"]
+_major, _minor, _patch = CURRENT_VERSION.split(".")
+NEXT_VERSION = f"{_major}.{_minor}.{int(_patch) + 1}"  # a strictly newer package than the one under test
+
 def run(*args: str, cwd: Path, expected: int = 0) -> dict:
     result = subprocess.run([sys.executable, "-B", *args], cwd=cwd, text=True, encoding="utf-8", errors="replace", capture_output=True)
     if result.returncode != expected:
@@ -76,7 +80,7 @@ applied = sync_apply(work, plan, ["tools/ask_second_brain.py"])
 assert applied["status"] == "applied" and digest(host) == host_before and digest(private) == private_before
 ready = run(str(work / "tools" / "brain.py"), "doctor", cwd=work)
 assert ready["status"] == "ready" and ready["host_runtime_overrides"]["files"] == ["tools/ask_second_brain.py"] and ready["shared_surface"]["status"] == "active"
-assert ready["shared_surface"]["source_package_version"] == "1.9.10"
+assert ready["shared_surface"]["source_package_version"] == CURRENT_VERSION
 assert json.loads(config_path.read_text(encoding="utf-8"))["schema"] == "creative_second_brain_workspace_v3"
 run(str(work / "tools" / "brain.py"), "guide", cwd=work)
 assert "目前使用：創造型第二大腦 v1.9.4" in (work / "index.html").read_text(encoding="utf-8")
@@ -136,7 +140,7 @@ assert inverted_doctor["status"] == "blocked" and inverted_doctor["configuration
 # managed runtime, and neither doctor nor a supported home regeneration may
 # treat that forged claim as a valid product upgrade.
 false_root = setup("false-root-version")
-false_config = json.loads((false_root / "brain.json").read_text(encoding="utf-8")); false_config["package_version"] = "1.9.11"; (false_root / "brain.json").write_text(json.dumps(false_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+false_config = json.loads((false_root / "brain.json").read_text(encoding="utf-8")); false_config["package_version"] = NEXT_VERSION; (false_root / "brain.json").write_text(json.dumps(false_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 false_home_before = digest(false_root / "index.html")
 false_doctor = run(str(false_root / "tools" / "brain.py"), "doctor", cwd=false_root, expected=1)
 assert false_doctor["configuration_error"] == "workspace product version disagrees with installed management binding"
@@ -144,15 +148,15 @@ run(str(false_root / "tools" / "brain.py"), "guide", cwd=false_root, expected=2)
 assert digest(false_root / "index.html") == false_home_before
 
 # A bounded shared sync may advance entry provenance while leaving the
-# installed product at 1.9.10, but an older entry package cannot replay and
+# installed product at the current version, but an older entry package cannot replay and
 # replace that newer shared binding.
-future = future_package("1.9.11")
+future = future_package(NEXT_VERSION)
 future_shared = setup("future-shared-source")
 future_plan = sync_plan(future_shared, [], package_path=future)
-assert future_plan["installed_product_version"]["after"] == "1.9.10"
+assert future_plan["installed_product_version"]["after"] == CURRENT_VERSION
 sync_apply(future_shared, future_plan, [], package_path=future)
 future_config = json.loads((future_shared / "brain.json").read_text(encoding="utf-8"))
-assert future_config["package_version"] == "1.9.10" and future_config["shared_surface"]["package_binding"]["package_version"] == "1.9.11"
+assert future_config["package_version"] == CURRENT_VERSION and future_config["shared_surface"]["package_binding"]["package_version"] == NEXT_VERSION
 future_before = digest(future_shared / "brain.json")
 future_blocked = sync_plan(future_shared, [], expected=2)
 assert future_blocked["reason"] == "shared entry source version predates existing shared surface" and digest(future_shared / "brain.json") == future_before

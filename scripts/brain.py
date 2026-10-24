@@ -58,7 +58,7 @@ _HASH = re.compile(r"[0-9a-f]{64}\Z")
 _PRODUCT_VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
 _SHARED_SCHEMA = "creative_second_brain_shared_surface_v1"
 _HOST_OVERLAY_SCHEMA = "creative_second_brain_host_runtime_overrides_v1"
-_READER_SERVICE_GENERATION = "knowledge-nebula-server-v6"
+_READER_SERVICE_GENERATION = "knowledge-nebula-server-v7"
 _READER_STARTUP_SECONDS = 45.0
 _READER_BUSY_RECOVERY_SECONDS = 10.0
 _READER_GENERATION = re.compile(r"knowledge-nebula-server-v([1-9]\d*)\Z")
@@ -196,11 +196,13 @@ def compat(source_note: str) -> int:
     # Preview-only parser. Heading matching is exact and only removes the matched
     # application section from the displayed source body; no file is rewritten.
     text = inside(source_note).read_text(encoding="utf-8")
-    legacy_heading = "## For " + "Ad" + "am" + ":個人化消化"
-    headings = (legacy_heading, "## 個人化消化")
-    position = min((p for h in headings if (p := text.find(h)) >= 0), default=-1)
-    if position < 0:
+    personal_layer = re.compile(
+        r"^ {0,3}##[ \t]+(?:個人化消化|For [^\r\n:：]{1,40}[:：]個人化消化)[ \t]*$",
+        re.MULTILINE,
+    ).search(text)
+    if personal_layer is None:
         return emit({"status": "preview", "legacy_application_found": False, "source_body": text.strip(), "application": ""})
+    position = personal_layer.start()
     end = text.find("\n## ", position + 3)
     end = len(text) if end < 0 else end
     block = text[position:end].strip()

@@ -187,6 +187,7 @@ def test_custom_vault_qc_routing(workspace: Path, vault_name: str) -> None:
 
 def test_source_evidence_and_complete_bundle_contract(workspace: Path, vault: Path) -> None:
     from tools import ask_second_brain as ask
+    from tools.ingest_plan_contract import content_errors
     from tools.obsidian_vault_adapter import AdapterStop, KnowledgePoint, KnowledgeRelation, parse_kp_rows, parse_relation_rows, validate_source_anchored_knowledge
 
     points = parse_kp_rows(
@@ -204,14 +205,49 @@ def test_source_evidence_and_complete_bundle_contract(workspace: Path, vault: Pa
 """
     )
     assert points[0].text == "3D | scroll method" and relations[0].evidence.endswith("boundary.")
-    canonical = "The complete source sentence has enough context to preserve the mechanism and its evidence boundary."
+    canonical = "The complete source sentence has enough context to preserve the mechanism and its evidence boundary.\n短句  可證。\nThe source describes a deliberate and repeatable review method."
     validate_source_anchored_knowledge(points, relations, canonical)
-    try:
-        validate_source_anchored_knowledge([KnowledgePoint("KP-02", "translated claim", "原文方法", "高", "short label")], [], canonical)
-    except AdapterStop as exc:
-        assert "complete verbatim" in str(exc)
-    else:
-        raise AssertionError("short, indirect KP evidence was accepted")
+    short_anchor = "短句 可證。"
+    paraphrase_anchor = "The source describes a deliberate and repeatable review method."
+    validate_source_anchored_knowledge(
+        [
+            KnowledgePoint("KP-02", "短句已被來源支持。", "原文方法", "高", short_anchor),
+            KnowledgePoint("KP-03", "審閱方法可重複進行。", "原文方法", "高", paraphrase_anchor),
+        ],
+        [KnowledgeRelation("KP-02", "KP-03", "supports", short_anchor, "高")],
+        canonical,
+    )
+
+    package = workspace / "outputs" / "evidence-anchor-fixture"
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "canonical_source.md").write_text(canonical, encoding="utf-8")
+    (package / "input_bundle.json").write_text("{}\n", encoding="utf-8")
+
+    def preflight_payload(anchor: str, source_claim_anchor: str | None = None) -> dict:
+        return {
+            "source": {"source_input_kind": "url"},
+            "knowledge": [{"kp_id": "KP-02", "claim": "短句已被來源支持。", "layer": "原文方法", "confidence": "高", "evidence_anchor": anchor}],
+            "relations": [{"source_kp": "KP-02", "target_kp": "KP-02", "relation": "supports", "confidence": "高", "evidence_anchor": anchor}],
+            "analysis": {"source_claims": [{"evidence_anchor": source_claim_anchor or anchor}]},
+            "application": {"adoption_reason": "fixture", "compounding_next_action": "fixture", "taste_reason": "fixture", "knowledge_use": "學習材料", "compounding_insight_status": "no_compounding_insight", "adoption_status": "暫存"},
+        }
+
+    assert content_errors(preflight_payload(short_anchor), package) == []
+    assert content_errors(preflight_payload(short_anchor, "短句\r\n可證。"), package) == []
+    assert content_errors(preflight_payload(paraphrase_anchor), package) == []
+    for invalid_anchor in ("", "待補", "not present in the canonical source"):
+        try:
+            validate_source_anchored_knowledge([KnowledgePoint("KP-04", "claim", "原文方法", "高", invalid_anchor)], [], canonical)
+        except AdapterStop:
+            pass
+        else:
+            raise AssertionError(f"writer accepted invalid source anchor: {invalid_anchor!r}")
+        assert content_errors(preflight_payload(invalid_anchor), package)
+
+    image_payload = preflight_payload("IMG-001")
+    image_payload["source"] = {"source_input_kind": "user_provided_image"}
+    with patch("tools.ingest_plan_contract.validate_source_anchored_knowledge", side_effect=AssertionError("text gate used for image route")):
+        assert content_errors(image_payload, package)
 
     graph = {"must_read_notes": [], "missing_or_weak_links": [], "path_text": "fixture"}
     bundle = []

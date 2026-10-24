@@ -135,7 +135,7 @@ def main() -> None:
         assert json.loads(output.getvalue())["vault_target_verified"] is True
         generated = setup_workspace.skill_entry_payloads("public-portable")
         skill_files = [content.decode("utf-8") for path, content in generated.items() if path.endswith("SKILL.md") and not path.endswith("brain-ask/SKILL.md")]
-        assert len(skill_files) == 14
+        assert len(skill_files) == 15
         assert all("tools/brain.py obsidian" in content and "Graph 保留原生 UI 手動入口" in content for content in skill_files)
     print(json.dumps({"status": "passed", "coverage": ["explicit vault ID and info=path verification", "read search open check only", "wrong vault, missing CLI, timeout, error and empty output", "traversal, link and injection rejection", "no writes and brain/setup consumer chain"]}, ensure_ascii=False))
 

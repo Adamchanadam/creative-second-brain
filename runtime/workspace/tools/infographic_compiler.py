@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import copy
 import re
 from datetime import date
 from pathlib import Path
@@ -569,6 +570,96 @@ def validate_primary_work_metadata(
     return errors
 
 
+def materialize_infographic_page_bindings(
+    coverage_units: list[Any],
+    infographics: list[Any],
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Derive page copy bindings from reviewed coverage without hiding authored drift.
+
+    ``content_map``, ``visible_text`` and ``source_anchors`` are projections of
+    selected coverage, rather than a second AI-authored rendition of the same
+    facts. A nonempty legacy/manual value is still accepted when it is exactly
+    the projection, but a differing value is reported before this materializer
+    can replace it. The returned pages are always the program-derived form so
+    every caller hashes the same reader page after accepting the draft.
+    """
+    pages = copy.deepcopy(infographics)
+    units = {
+        str(unit.get("id") or "").strip(): unit
+        for unit in coverage_units
+        if isinstance(unit, dict) and str(unit.get("id") or "").strip()
+    }
+    issues: list[dict[str, str]] = []
+
+    def lines(value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [value.strip()] if value.strip() else []
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        return []
+
+    def dedupe(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(value for value in values if value))
+
+    def authored(value: Any) -> bool:
+        return value not in (None, "", [], {})
+
+    for index, page in enumerate(pages, start=1):
+        if not isinstance(page, dict):
+            continue
+        page_id = str(page.get("page_id") or index)
+        mappings = []
+        for coverage_id in lines(page.get("coverage_ids")):
+            unit = units.get(coverage_id, {})
+            mappings.append({
+                "coverage_id": coverage_id,
+                "source_evidence": str(unit.get("source_evidence") or "").strip(),
+                "visible_text": lines(unit.get("infographic_text")),
+            })
+        visible = dedupe([
+            line
+            for mapping in mappings
+            for line in mapping["visible_text"]
+        ])
+        anchors = dedupe([mapping["source_evidence"] for mapping in mappings])
+        expected = {
+            "content_map": mappings,
+            "visible_text": visible,
+            "source_anchors": anchors,
+        }
+        for field, value in expected.items():
+            if authored(page.get(field)) and page.get(field) != value:
+                issues.append({
+                    "page_id": page_id,
+                    "field": field,
+                    "message": (
+                        f"infographic page {page_id} authored {field} differs from "
+                        "the deterministic reviewed-coverage binding"
+                    ),
+                })
+            page[field] = value
+
+    if len(pages) > 1 and isinstance(pages[0], dict):
+        first = pages[0]
+        # The roadmap's title and role are independently authored reader
+        # summaries.  Only provide a missing compatibility default; replacing
+        # a valid authored roadmap with focus/takeaway narrows the contract.
+        if not authored(first.get("collection_roadmap")):
+            first["collection_roadmap"] = [
+                {
+                    "page_number": index,
+                    "page_id": str(page.get("page_id") or ""),
+                    "page_title": str(page.get("page_focus") or ""),
+                    "page_role": str(page.get("reader_takeaway") or ""),
+                }
+                for index, page in enumerate(pages, start=1)
+                if isinstance(page, dict)
+            ]
+        if not first.get("collection_role"):
+            first["collection_role"] = "orientation"
+    return pages, issues
+
+
 def detect_primary_work_candidates(canonical_body: str) -> list[str]:
     """Detect works explicitly framed as the source's main subject."""
 
@@ -598,6 +689,22 @@ def _coverage_dispositions(unit: dict[str, Any]) -> set[str]:
     return set()
 
 
+def _source_anchor_is_canonical(canonical_body: str, anchor: str) -> bool:
+    """Reuse the source adapter's fragment-aware canonical anchor check.
+
+    Importing this at module load would create a cycle because the adapter
+    imports the canonical infographic filename from this module.  The
+    validator is needed only while preflighting a reviewed page, after both
+    modules have loaded.
+    """
+
+    try:
+        from tools.obsidian_vault_adapter import canonical_body_contains_anchor
+    except ModuleNotFoundError:
+        from obsidian_vault_adapter import canonical_body_contains_anchor  # type: ignore
+    return canonical_body_contains_anchor(canonical_body, anchor)
+
+
 def validate_content_map(
     coverage_units: list[dict[str, Any]],
     infographics: list[dict[str, Any]],
@@ -616,7 +723,7 @@ def validate_content_map(
     errors: list[str] = []
     for coverage_id, unit in units.items():
         evidence = str(unit.get("source_evidence") or "").strip()
-        if not evidence or evidence not in canonical_body:
+        if not evidence or not _source_anchor_is_canonical(canonical_body, evidence):
             errors.append(f"coverage unit {coverage_id} lacks canonical source evidence")
         reader_text = unit.get("infographic_text")
         if isinstance(reader_text, str):
@@ -661,7 +768,10 @@ def validate_content_map(
             unit = units.get(coverage_id)
             if isinstance(unit, dict):
                 unit_evidence = str(unit.get("source_evidence") or "").strip()
-                if source_evidence != unit_evidence or source_evidence not in canonical_body:
+                if (
+                    source_evidence != unit_evidence
+                    or not _source_anchor_is_canonical(canonical_body, source_evidence)
+                ):
                     errors.append(
                         f"infographic {page_index} content_map source evidence mismatch for {coverage_id}"
                     )
@@ -798,7 +908,7 @@ def validate_reader_metadata(
         if not subtitle_evidence or subtitle_evidence not in canonical_body:
             errors.append("infographic visible subtitle lacks canonical evidence")
     for anchor in infographic.get("source_anchors") or []:
-        if str(anchor).strip() not in canonical_body:
+        if not _source_anchor_is_canonical(canonical_body, str(anchor).strip()):
             errors.append(f"infographic source anchor is not canonical: {anchor}")
     number_labels = [
         str(item).strip()

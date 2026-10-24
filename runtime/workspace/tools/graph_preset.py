@@ -13,7 +13,7 @@ import json
 
 GRAPH_PRESET: dict[str, object] = {
     "collapse-filter": False,
-    "search": "path:concepts",
+    "search": "path:concepts -[concept_status:superseded]",
     "showTags": False,
     "showAttachments": False,
     "hideUnresolved": True,
@@ -48,6 +48,16 @@ REQUIRED_PRESET_KEYS = tuple(key for key in GRAPH_PRESET if key not in {"scale",
 
 def default_graph_settings() -> dict[str, object]:
     return deepcopy(GRAPH_PRESET)
+
+
+def reviewed_active_concept_filter(vault: Path) -> bytes | None:
+    """Upgrade only the exact old system query; preserve every other setting."""
+    path = vault / ".obsidian" / "graph.json"
+    if not path.is_file(): return None
+    settings = json.loads(path.read_text(encoding="utf-8-sig"))
+    if settings.get("search") != "path:concepts": return None
+    settings["search"] = GRAPH_PRESET["search"]
+    return (json.dumps(settings, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
 
 
 def graph_settings_status(vault: Path) -> dict[str, object]:

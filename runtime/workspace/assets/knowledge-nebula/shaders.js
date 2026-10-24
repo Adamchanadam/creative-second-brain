@@ -1,5 +1,6 @@
     const VS=`attribute vec3 p;attribute vec3 c;attribute float s;uniform mat4 m;varying vec3 v;varying float f;void main(){gl_Position=m*vec4(p,1.);gl_PointSize=s/max(1.,gl_Position.w);v=c;f=clamp(1.-(gl_Position.w-4.)/19.,.05,1.);}`;
     const FS=`precision mediump float;varying vec3 v;varying float f;uniform float g;void main(){vec2 q=gl_PointCoord*2.-1.;float d=dot(q,q);if(d>1.)discard;float core=exp(-d*13.);float halo=exp(-d*3.);gl_FragColor=vec4(v*(core+halo*g), (core*.92+halo*.18*g)*f);}`;
+    const GFS=`precision mediump float;varying vec3 v;varying float f;void main(){vec2 q=gl_PointCoord*2.-1.;float d=dot(q,q);if(d>1.)discard;float g=exp(-d*3.2)*(1.-d);gl_FragColor=vec4(v,g*f);}`;
     const LVS=`attribute vec3 p;attribute vec4 c;uniform mat4 m;varying vec4 v;void main(){gl_Position=m*vec4(p,1.);v=c;}`;
     const LFS=`precision mediump float;varying vec4 v;void main(){gl_FragColor=v;}`;
     const QVS=`attribute vec2 p;varying vec2 u;void main(){u=p*.5+.5;gl_Position=vec4(p,0.,1.);}`;

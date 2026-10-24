@@ -113,16 +113,20 @@ class RepairDispatch(unittest.TestCase):
     def test_rail_exposes_bound_edit_arguments(self):
         action = {**self.contract(), 'attempt_kind': 'blocking_repair', 'expected_asset': 'failed.png',
             'prompt': self.prompt, **{k: 'fixture' for k in ('action_identity', 'attempt_id', 'provider', 'model', 'generation_request')}}
+        action['page_id'] = 'IG-1'
         w.write_json(self.root / 'action.json', action)
+        w.write_json(self.root / 'knowledge_package.json', {'infographics': [{'page_id': 'IG-1', 'locked_prompt_path': 'prompt.txt'}]})
         with patch.object(rail, 'work_order', return_value={'action': 'authorize_blocking_repair', 'page_id': 'IG-1',
                                                           'failure': 'wrong_or_missing_locked_text'}), \
              patch.object(rail, 'paths', return_value=({}, self.root, self.root / 'knowledge_package.json')), \
              patch.object(rail, 'measured', return_value={'action_envelope': 'action.json'}):
             order = rail.advance(self.root, 'fixture-job', self.root / 'vault')
         self.assertEqual(order['action'], 'generate_image_once')
-        self.assertEqual(order['imagegen']['imagegen_tool_arguments'], action['imagegen_tool_arguments'])
+        self.assertNotIn('imagegen', order)  # the full action is in the envelope file, not in the order
+        envelope = w.read_json(self.root / order['action_envelope'])
+        self.assertEqual(envelope['imagegen_tool_arguments'], action['imagegen_tool_arguments'])
         self.assertIn('not the original prompt', order['next'])
-        self.assertEqual(order['response_template']['imagegen_tool_arguments'], {})
+        self.assertEqual(w.read_json(self.root / order['response_draft_file'])['imagegen_tool_arguments'], {})
 
     def test_authorizer_preserves_count_on_failure_and_blocks_third(self):
         # Isolate source compilation; use the actual authorization, ledger and envelope code.

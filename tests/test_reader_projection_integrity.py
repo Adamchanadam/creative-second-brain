@@ -54,7 +54,7 @@ def assert_catalogue_publication(work: Path) -> None:
             [sys.executable, "-c", probe, str(output), str(TOOLS)],
             text=True, encoding="utf-8", errors="replace", capture_output=True, check=True,
         )
-        assert "another reader projection is active" in result.stdout
+        assert "reader projection lock timed out" in result.stdout
     outcome_catalog.write_catalog_pages([], output, 8, vault=vault)
 
     # A read from the live filename observes a complete old document until the
@@ -93,13 +93,22 @@ def assert_reproject_rejects_incomplete_and_stale_pages(work: Path) -> None:
     writer_blocked = {"value": False}
 
     def actual_writer_between_compare_and_replace(page, rendered):
-        try:
-            thinking_archive.atomic_text(vault, Path(page), replacement)
-        except ValueError as error:
-            assert "another reader projection is active" in str(error)
-            writer_blocked["value"] = True
-        else:
+        # A competing writer waits for the shared lock for a bounded time and is then refused.
+        # (The same thread can never wait for its own lock: that is refused immediately.)
+        outcome: dict[str, str] = {}
+
+        def competing_writer() -> None:
+            try:
+                thinking_archive.atomic_text(vault, Path(page), replacement)
+            except ValueError as error:
+                outcome["error"] = str(error)
+
+        thread = threading.Thread(target=competing_writer)
+        thread.start()
+        thread.join(30)
+        if "reader projection lock timed out" not in outcome.get("error", ""):
             raise AssertionError("an actual thinking writer bypassed the shared shell lock")
+        writer_blocked["value"] = True
         outer_write(page, rendered)
 
     with patch.object(reader_shell, "atomic_reader_write", side_effect=actual_writer_between_compare_and_replace):
@@ -121,6 +130,7 @@ def assert_server_never_reports_ready_after_reader_failure(work: Path) -> None:
 
     class FakeServer:
         closed = False
+        initial_refresh_called = False
 
         def __init__(self, root, port, idle):
             self.root = Path(root)
@@ -138,6 +148,10 @@ def assert_server_never_reports_ready_after_reader_failure(work: Path) -> None:
 
         def refresh_projections(self):
             return server.refresh_reader_projections(self.root)
+
+        def initial_refresh(self):
+            self.initial_refresh_called = True
+            return self.refresh_projections()
 
         def serve_until_idle(self):
             raise AssertionError("a failed reader projection was served as ready")

@@ -84,7 +84,7 @@ async function main() {
   const tool = path.join(workspace, 'tools', 'case_reproduction_capture.js');
   assert(fs.existsSync(tool), 'capture tool is missing from the installed workspace');
   const check = await runNode(tool, workspace, ['--check']);
-  assert(check.stdout.includes('"status":"ready"'), `browser capture readiness failed\n${check.stdout}\n${check.stderr}`);
+  assert(check.stdout.includes('"status":"dependencies_ready"') && check.stdout.includes('"capture_verified":true'), `browser capture readiness failed\n${check.stdout}\n${check.stderr}`);
 
   const testRoot = path.join(workspace, 'outputs', 'browser-capture-acceptance');
   assert(!fs.existsSync(testRoot), 'browser capture acceptance root must be new');
@@ -124,8 +124,8 @@ async function main() {
     assert(fs.statSync(path.join(workspace, goodOutput, 'mobile-after.png')).size > 100);
 
     const badCases = [
-      ['overlay', requestFor(`${origin}/overlay.html`), 'blocked by another visible layer'],
-      ['repeated', requestFor(`${origin}/repeated.html`, '.open'), 'match exactly one visible element'],
+      ['overlay', requestFor(`${origin}/overlay.html`), 'covered by a visible layer'],
+      ['repeated', requestFor(`${origin}/repeated.html`, '.open'), 'matched 2 elements'],
       ['blank', requestFor(`${origin}/blank.html`), 'page has no visible source surface'],
     ];
     for (const [name, request, expectedMessage] of badCases) {
@@ -134,7 +134,9 @@ async function main() {
       const result = await runNode(tool, workspace, [
         '--root', workspace, '--request', requestPath, '--output-dir', path.join('outputs', 'browser-capture-acceptance', name),
       ], 2);
-      assert((result.stdout + result.stderr).includes(expectedMessage), `${name} did not reject the intended counterexample`);
+      assert((result.stdout + result.stderr).includes(expectedMessage), `${name} did not reject the intended counterexample
+${result.stdout}
+${result.stderr}`);
     }
   } finally {
     await new Promise(resolve => server.close(resolve));

@@ -27,13 +27,15 @@ ENTRIES = (
     ("tidy", "brain-tidy", 12, "維護", "整理目錄"),
     ("nebula", "brain-nebula", 13, "維護", "知識星雲"),
     ("update", "brain-update", 14, "維護", "安全更新"),
+    ("infographic", "brain-infographic", 15, "使用", "製作資訊圖"),
 )
 CONTRACT_PROMPTS = {
     "think": "$brain-think [問題]", "url": "$brain-url [網址]", "text": "$brain-text\n[貼上原文]",
     "image": "$brain-image [附上一張圖片]", "grow": "$brain-grow [來源]", "create": "$brain-create [想做的成品]",
     "research": "$brain-research 查看目前研究主題", "tidy": "$brain-tidy", "guide": "$brain-guide", "nebula": "$brain-nebula",
     "check": "$brain-check [來源或工作編號]", "resume": "$brain-resume [來源或工作編號]",
-    "fix": "$brain-fix [哪裏有甚麼問題]", "update": "$brain-update",
+    "fix": "$brain-fix [來源或問題描述]", "update": "$brain-update",
+    "infographic": "$brain-infographic <知識頁ID>",
 }
 
 
@@ -110,7 +112,7 @@ def main() -> int:
     assert "舊名相容" in alias and "brain-think" in alias
 
     print(json.dumps({"status": "passed", "coverage": [
-        "14 fixed public entry prompts", "package guide fields", "installed workspace fields",
+        "15 fixed public entry prompts", "package guide fields", "installed workspace fields",
         "installed skill metadata", "portable Obsidian setup image",
     ]}, ensure_ascii=False))
     return 0

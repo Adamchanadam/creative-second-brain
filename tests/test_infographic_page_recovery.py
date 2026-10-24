@@ -22,7 +22,9 @@ from tools import compiler_worker_v2 as worker
 from tools.infographic_prompt_contract import (
     INFOGRAPHIC_STANDALONE_PROMPT_MARKER,
     INFOGRAPHIC_VISIBLE_TEXT_MARKER,
+    footer_format_equivalent,
     image_semantic_readback_errors,
+    quality_only_reverse_review_failure_errors,
 )
 
 
@@ -265,7 +267,7 @@ class PageScopedRecoveryTests(unittest.TestCase):
             self.assertEqual((self.package / "assets" / f"ig-{number}.png").read_bytes(), png)
             self.assertEqual((self.package / "prompts" / f"ig-{number}.txt").read_bytes(), prompt)
 
-    def test_footer_equivalence_does_not_break_legal_body_compression(self):
+    def test_footer_provenance_is_mandatory_but_presentation_is_advisory(self):
         prompt = (
             f"{INFOGRAPHIC_VISIBLE_TEXT_MARKER}\n- Title\n- 可合法壓縮的正文描述\n"
             f"- 1/1\n- {self.footer}\n\n以上是圖面可見文字白名單"
@@ -274,27 +276,84 @@ class PageScopedRecoveryTests(unittest.TestCase):
         readback = {
             "inspection_method": "independent_image_readback", "inspector_identity": "offline-reviewer",
             "inspected_png_sha256": png_hash, "inspected_prompt_sha256": worker.sha256_text(prompt),
-            "visible_text_readback": ["Title", "壓縮正文", "1/1", "來源：Example Source ・ 資訊圖：2026-10-12 （Creative Brain）"],
+            "visible_text_readback": ["Title", "壓縮正文", "1/1", "來源：Example Source\n資訊圖：2026-10-12"],
             "unexpected_visible_text": [], "internal_process_text_detected": False,
             "semantic_alignment": {"status": "passed", "checked_prompt_visible_text_count": 4, "semantic_errors": []},
         }
         self.assertEqual(image_semantic_readback_errors(readback, png_sha256=png_hash, prompt=prompt), [])
-        approved = copy.deepcopy(readback)
-        approved_footer = "來源:Example Source · 資訊圖:2026-10-12 (Creative Brain)"
-        approved["visible_text_readback"][-1] = approved_footer
-        approved["user_approved_footer_variance"] = {
-            "schema": "imagegen_footer_separator_acceptance_v1", "authorized_by": "user",
-            "scope": "one_footer_separator_only", "user_request": "Approve this exact footer separator variance.",
-            "expected_footer": self.footer, "accepted_footer": approved_footer,
-            "png_sha256": png_hash, "locked_prompt_sha256": worker.sha256_text(prompt),
-        }
-        self.assertEqual(image_semantic_readback_errors(approved, png_sha256=png_hash, prompt=prompt), [])
-        approved["visible_text_readback"][-1] = approved_footer.replace("Example Source", "Wrong Author")
-        self.assertTrue(image_semantic_readback_errors(approved, png_sha256=png_hash, prompt=prompt))
-        readback["visible_text_readback"][1] = "比例 11%"
-        numeric_prompt = prompt.replace("可合法壓縮的正文描述", "比例 10%")
-        readback["inspected_prompt_sha256"] = worker.sha256_text(numeric_prompt)
-        self.assertTrue(image_semantic_readback_errors(readback, png_sha256=png_hash, prompt=numeric_prompt))
+        self.assertTrue(footer_format_equivalent(
+            "來源:研究文章　資訊圖:2026-10-13 (創造型 2nd Brain)",
+            "來源:研究\n文章　資訊圖:2026-10-13",
+        ))
+        self.assertTrue(footer_format_equivalent(
+            "來源:研究文章　資訊圖:2026-10-13 (創造型 2nd Brain)",
+            "來源:研究文章　資訊圖:2026-10-13 創造型 2nd Brain",
+        ))
+        self.assertFalse(footer_format_equivalent(
+            "來源:研究文章　資訊圖:2026-10-13 (創造型 2nd Brain)",
+            "來源:錯誤文章　資訊圖:2026-10-13",
+        ))
+        self.assertFalse(footer_format_equivalent(
+            "來源:研究文章　資訊圖:2026-10-13 (創造型 2nd Brain)",
+            "來源:研究文章　資訊圖:2026-10-14",
+        ))
+        historic_footer_brand_only = copy.deepcopy(readback)
+        historic_footer_brand_only.update({
+            "formal_ingestion_allowed": False,
+            "reader_review": "Historic review rejected only its fixed brand presentation.",
+            "review_axes": {
+                "source_fidelity": "passed",
+                "visible_text_line_review": "passed",
+                "footer_signature": "failed",
+            },
+        })
+        self.assertEqual(
+            quality_only_reverse_review_failure_errors(
+                historic_footer_brand_only, png_sha256=png_hash, prompt=prompt,
+            ),
+            [],
+        )
+        wrong_source = copy.deepcopy(readback)
+        wrong_source["visible_text_readback"][-1] = "來源:Wrong Author　資訊圖:2026-10-12 (Creative Brain)"
+        self.assertTrue(image_semantic_readback_errors(wrong_source, png_sha256=png_hash, prompt=prompt))
+        missing_date = copy.deepcopy(readback)
+        missing_date["visible_text_readback"][-1] = "來源:Example Source"
+        self.assertTrue(image_semantic_readback_errors(missing_date, png_sha256=png_hash, prompt=prompt))
+
+    def test_presentation_punctuation_and_negative_wording_stay_semantic_but_numbers_and_math_do_not(self):
+        png_hash = "b" * 64
+
+        def readback_for(prompt, visible):
+            return {
+                "inspection_method": "independent_image_readback", "inspector_identity": "offline-reviewer",
+                "inspected_png_sha256": png_hash, "inspected_prompt_sha256": worker.sha256_text(prompt),
+                "visible_text_readback": visible, "unexpected_visible_text": [], "internal_process_text_detected": False,
+                "semantic_alignment": {"status": "passed", "checked_prompt_visible_text_count": len(visible), "semantic_errors": []},
+            }
+
+        def prompt_for(body):
+            return (
+                f"{INFOGRAPHIC_VISIBLE_TEXT_MARKER}\n- Title\n- {body}\n- 1/1\n"
+                f"- {self.footer}\n\n以上是圖面可見文字白名單"
+            )
+
+        punctuation_prompt = prompt_for("步驟 3：核對來源。")
+        punctuation_readback = readback_for(
+            punctuation_prompt, ["Title", "步驟 3:核對來源。", "1/1", self.footer]
+        )
+        self.assertEqual(image_semantic_readback_errors(punctuation_readback, png_sha256=png_hash, prompt=punctuation_prompt), [])
+        negative_prompt = prompt_for("不得刪除來源證據")
+        negative_readback = readback_for(
+            negative_prompt, ["Title", "不可以刪除來源證據", "1/1", self.footer]
+        )
+        self.assertEqual(image_semantic_readback_errors(negative_readback, png_sha256=png_hash, prompt=negative_prompt), [])
+        for expected, observed in (
+            ("比例 10%", "比例 11%"),
+            ("上限 ≤ 3", "上限 < 3"),
+        ):
+            locked_prompt = prompt_for(expected)
+            failed = readback_for(locked_prompt, ["Title", observed, "1/1", self.footer])
+            self.assertTrue(image_semantic_readback_errors(failed, png_sha256=png_hash, prompt=locked_prompt), (expected, observed))
 
 
 if __name__ == "__main__":

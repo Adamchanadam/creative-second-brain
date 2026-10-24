@@ -12,6 +12,11 @@ from pathlib import Path
 
 VERSION = "thinking-map/3"
 KINDS = {"hypothesis": "待驗假說", "deduction": "有條件推導", "design": "設計提案"}
+# Box width 256 plus a 70-unit corridor, so a four-character edge label never touches either box.
+COLUMN_STEP = 326
+MAP_WIDTH = 960
+NO_LINE_START = set("，。、；：！？）」』】》〉,.;:!?)]}…")
+NO_LINE_END = set("（「『【《〈([{")
 LENSES = [
     ("shift", "01", "問題怎樣改變", "沿著原先的問法，找到材料帶出的新問題。"),
     ("collision", "02", "材料在哪裏拉扯", "先看每份材料的作用，再比較新判斷與另一個解釋。"),
@@ -84,13 +89,19 @@ def model(item: dict, evidence: list[dict]) -> dict:
 
 
 def excerpt_lines(value: str, width=19, count=4):
-    """Use explicit ellipsis, never pretend an excerpt is a semantic summary."""
+    """Use explicit ellipsis, never pretend an excerpt is a semantic summary.
+
+    Line breaks avoid a closing mark opening a line or an opening mark closing one; the characters themselves never change.
+    """
     chars, lines, length = "", [], 0.0
     for char in re.sub(r"\s+", " ", value):
         size = 1  # Conservative across CJK and wide Latin glyphs; never shrink labels.
         if length + size > width:
+            carry = ""
+            if len(chars) > 1 and (char in NO_LINE_START or chars[-1] in NO_LINE_END):
+                carry, chars = chars[-1], chars[:-1]
             lines.append(chars)
-            chars, length = "", 0
+            chars, length = carry, float(len(carry))
         chars += char
         length += size
     if chars:
@@ -103,14 +114,19 @@ def excerpt_lines(value: str, width=19, count=4):
 
 def scene_svg(data, lens):
     view, key = data["views"][lens], data["id"]
-    positions = {node: (26 + col * 306, 36 + row * 240) for row, cells in enumerate(view["rows"]) for col, node in enumerate(cells) if node}
+    positions = {node: (26 + col * COLUMN_STEP, 36 + row * 240) for row, cells in enumerate(view["rows"]) for col, node in enumerate(cells) if node}
     height = len(view["rows"]) * 240 + 22
-    parts = [f'<svg class="concept-map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 918 {height}" role="group" aria-label="{esc(dict((x[0], x[2]) for x in LENSES)[lens])}">', '<defs>']
+    parts = [f'<svg class="concept-map" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {MAP_WIDTH} {height}" role="group" aria-label="{esc(dict((x[0], x[2]) for x in LENSES)[lens])}">', '<defs>']
     for role, color in [("evidence", "#48706c"), ("inference", "#344c98"), ("challenge", "#a54e3d"), ("condition", "#8b6a27"), ("adjacent", "#695699")]:
         parts.append(f'<marker id="{key}-{lens}-{role}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 1 L 8 5 L 0 9" fill="none" stroke="{color}" stroke-width="1.5"/></marker>')
     parts.append('</defs>')
+    labelled = set()
     for e in view["edges"]:
         ax, ay = positions[e["from"]]; bx, by = positions[e["to"]]
+        # Edges that converge on one box with the same meaning share a single label; the others stay readable and the
+        # complete list of connections remains under the map and in the accessible name.
+        label_text = '' if (e["to"], e["label"]) in labelled else esc(e["label"])
+        labelled.add((e["to"], e["label"]))
         if ax == bx:
             down = by > ay
             x1, y1, x2, y2 = ax + 128, ay + (168 if down else 0), bx + 128, by + (0 if down else 168)
@@ -123,7 +139,8 @@ def scene_svg(data, lens):
             mid = (x1 + x2) / 2
             d = f'M{x1} {y1} C{mid} {y1} {mid} {y2} {x2} {y2}'
             tx, ty, anchor = mid, (y1 + y2)/2 - 12, 'middle'
-        parts.append(f'<g class="connection {e["kind"]}" data-from="{e["from"]}" data-to="{e["to"]}"><path d="{d}" marker-end="url(#{key}-{lens}-{e["kind"]})"/><text x="{tx}" y="{ty}" text-anchor="{anchor}">{esc(e["label"])}</text></g>')
+        text_element = ('<text x="' + str(tx) + '" y="' + str(ty) + '" text-anchor="' + anchor + '">' + label_text + '</text>') if label_text else ''
+        parts.append(f'<g class="connection {e["kind"]}" data-from="{e["from"]}" data-to="{e["to"]}"><path d="{d}" marker-end="url(#{key}-{lens}-{e["kind"]})"/>{text_element}</g>')
     for node, (x, y) in positions.items():
         n = data["nodes"][node]
         focus = 'mechanism' if node == 'mechanism' else node

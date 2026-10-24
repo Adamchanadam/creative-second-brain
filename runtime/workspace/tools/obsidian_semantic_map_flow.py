@@ -27,6 +27,8 @@ try:
         render_concept_note,
         safe_note_stem,
         write_graph_settings,
+        build_reusable_concept_entries,
+        concept_is_active,
     )
 except ModuleNotFoundError:
     from tools.obsidian_vault_adapter import (  # type: ignore
@@ -40,6 +42,8 @@ except ModuleNotFoundError:
         render_concept_note,
         safe_note_stem,
         write_graph_settings,
+        build_reusable_concept_entries,
+        concept_is_active,
     )
 
 try:
@@ -510,19 +514,13 @@ def write_concept_note_updates(root: Path, vault: Path, updated: str, *, rewrite
             continue
         if path.exists() and not rewrite:
             continue
+        if path.exists() and (not is_generated_concept_note(path) or not concept_is_active(frontmatter_fields(path))):
+            continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rendered, encoding="utf-8", newline="\n")
         written.append(relative_to_root(root, path))
-    if rewrite:
-        expected_paths = set(entries)
-        concept_dir = vault / "concepts"
-        for path in sorted(concept_dir.glob("*.md")):
-            if path in expected_paths:
-                continue
-            if not is_generated_concept_note(path):
-                continue
-            path.unlink()
-            pruned.append(relative_to_root(root, path))
+    # Rebuild is not authority to delete obsolete notes. Reviewed source-local
+    # withdrawal belongs to the adapter's same-path content revision owner.
     return {
         "enabled": True,
         "rewrite": rewrite,
@@ -534,79 +532,24 @@ def write_concept_note_updates(root: Path, vault: Path, updated: str, *, rewrite
 
 
 def build_concept_entries(vault: Path) -> tuple[dict[Path, dict[str, object]], dict[str, Path]]:
-    entries: dict[Path, dict[str, object]] = {}
-    kp_uid_to_concept: dict[str, Path] = {}
-    kp_root = vault / "knowledge-points" / "by-source"
-    if not kp_root.exists():
-        return entries, kp_uid_to_concept
-    for kp_file in sorted(kp_root.glob("*/*.md")):
-        fields = frontmatter_fields(kp_file)
-        if fields.get("type") != "knowledge_point":
-            continue
-        knowledge_point = str(fields.get("knowledge_point") or fields.get("definition") or kp_file.stem)
-        concept = concept_title_from_knowledge_point(knowledge_point)
-        path = concept_note_path(vault, knowledge_point)
-        source_note = str(fields.get("source_note") or "")
-        source_id = str(fields.get("kp_uid") or "").split(":", 1)[0]
-        app_link = application_link_for_source(vault, source_id)
-        entry = entries.setdefault(
-            path,
-            {
-                "concept": concept,
-                "source_records": set(),
-                "application_records": set(),
-                "knowledge_point_records": set(),
-                "related_concepts": set(),
-                "definitions": set(),
-            },
-        )
-        entry["knowledge_point_records"].add(kp_file.stem)  # type: ignore[union-attr]
-        entry["definitions"].add(knowledge_point)  # type: ignore[union-attr]
-        if source_note:
-            entry["source_records"].add(plain_record_id(source_note))  # type: ignore[union-attr]
-        if app_link:
-            entry["application_records"].add(app_link)  # type: ignore[union-attr]
-        kp_uid = str(fields.get("kp_uid") or "")
-        if kp_uid:
-            kp_uid_to_concept[kp_uid] = path
-    return entries, kp_uid_to_concept
+    return build_reusable_concept_entries(vault)
 
 
 def add_related_concept_links(vault: Path, entries: dict[Path, dict[str, object]], kp_uid_to_concept: dict[str, Path]) -> None:
-    for relation in read_relation_registry(vault).values():
-        source_path = kp_uid_to_concept.get(str(relation.get("source_kp_uid", "")))
-        target_path = kp_uid_to_concept.get(str(relation.get("target_kp_uid", "")))
-        if not source_path or not target_path or source_path == target_path:
-            continue
-        source_entry = entries.get(source_path)
-        target_entry = entries.get(target_path)
-        if source_entry and target_path.exists():
-            source_entry["related_concepts"].add(f"[[{target_path.stem}]]")  # type: ignore[union-attr]
-        if target_entry and source_path.exists():
-            target_entry["related_concepts"].add(f"[[{source_path.stem}]]")  # type: ignore[union-attr]
+    # Source-local relations (including linked ones) are not idea bridges.
+    # Their evidence remains available from KP/APP/material, never promoted here.
+    return None
 
 
 def missing_concept_notes(vault: Path) -> list[dict[str, str]]:
-    registry = vault / "_registry" / "knowledge_points.jsonl"
-    if not registry.exists():
-        return []
     missing: list[dict[str, str]] = []
-    for line in registry.read_text(encoding="utf-8-sig").splitlines():
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        knowledge_point = str(row.get("knowledge_point") or "")
-        if not knowledge_point:
-            continue
-        concept_path = concept_note_path(vault, knowledge_point)
+    entries, _ = build_reusable_concept_entries(vault)
+    for concept_path, entry in entries.items():
         if not concept_path.exists():
             missing.append(
                 {
                     "expected": concept_path.relative_to(vault).as_posix(),
-                    "kp_note": str(row.get("kp_note_path") or ""),
+                    "kp_note": next(iter(sorted(entry["knowledge_point_records"])), ""),
                 }
             )
     return missing
@@ -638,7 +581,8 @@ def current_concept_links(vault: Path) -> list[str]:
     concept_dir = vault / "concepts"
     if not concept_dir.exists():
         return []
-    return [path.stem for path in sorted(concept_dir.glob("*.md"), key=lambda path: path.stem.casefold())[:24]]
+    return [path.stem for path in sorted(concept_dir.glob("*.md"), key=lambda path: path.stem.casefold())
+            if concept_is_active(frontmatter_fields(path))][:24]
 
 
 def directory_items() -> tuple[DirectoryItem, ...]:

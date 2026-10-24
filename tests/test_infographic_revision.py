@@ -52,6 +52,9 @@ def proof(page):
             "relationship_explanation":"Synthetic relation evidence for testing only.","unexplained_terms":[],"missing_context":[],"misleading_relations":[]}
 
 class RevisionTests(unittest.TestCase):
+    def envelope(self,order):
+        return w.read_json(self.root/order['action_envelope'])
+
     def test_heading_requires_paired_visible_body(self):
         from tools.infographic_prompt_contract import contextual_heading_labels, visible_text_quality_errors
         heading='誰負責甚麼'
@@ -64,8 +67,12 @@ class RevisionTests(unittest.TestCase):
 
     def test_additional_edit_needs_bound_user_authorization(self):
         self.prepare()
-        action=rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))['imagegen']
+        action=self.envelope(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault')))
         asset=self.root/action['expected_asset']; review=fixture_image(asset,action['prompt'])
+        review.update(failure_code='wrong_or_missing_locked_text',content_failure_evidence={
+            'failure_code':'wrong_or_missing_locked_text','expected_locked_text':BODY,
+            'observed_problem':'The locked source sentence is not faithfully visible in the PNG.',
+            'reader_impact':'Reader cannot verify the stated workflow.'})
         response=rail.image_response_template(self.root,action)
         response.update(runtime_tool='Codex imagegen',imagegen_dispatch_evidence='OFFLINE-TEST-ONLY',outcome='blocking_failure',failure_code='wrong_or_missing_locked_text',semantic_evidence='Missing locked text: '+BODY,semantic_readback=review,imagegen_tool_arguments=action['imagegen_tool_arguments'])
         path=self.kp_path.parent/'failed.json';w.write_json(path,response)
@@ -90,12 +97,12 @@ class RevisionTests(unittest.TestCase):
         import tempfile
         self.root=Path(tempfile.gettempdir())/('revision-contract-'+uuid.uuid4().hex[:12]);self.root.mkdir()
         source=self.root/'source.md';source.write_text(BODY,encoding='utf-8')
-        rail.start(SimpleNamespace(root=self.root,url=None,image_file=None,text_file=source,source_id='KS-VS-0001',job_id='RAIL-TEST',title='固定流程',slug='fixture',profile='article'))
+        rail.start(SimpleNamespace(root=self.root,url=None,image_file=None,text_file=source,source_id='KS-VS-0001',job_id='RAIL-TEST',title='固定流程',slug='fixture',profile='article',asset_mode=w.ASSET_MODE_FORMAL))
         _,package,self.kp_path=rail.paths(self.root,'RAIL-TEST');self.original=self.kp_path
         kp=build_kp(semantic_plan(package),package,root=self.root)
         for page in kp['infographics']:page['reader_review']=proof(page)
         w.write_json(self.kp_path,kp)
-        self.finish(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))['imagegen'])
+        self.finish(self.envelope(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))))
         (self.root/'brain.json').write_text('{}',encoding='utf-8')
         (self.root/'tools').mkdir();(self.root/'tools/compiler_worker_v2.py').write_text('# root marker',encoding='utf-8')
         self.first=w.read_json(w.job_file(self.root,'RAIL-TEST'))['first_accepted_at']
@@ -151,7 +158,7 @@ class RevisionTests(unittest.TestCase):
     def test_fullwidth_footer_reaches_writer(self):
         self.prepare()
         self.fullwidth_footer=True
-        self.finish(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))['imagegen'])
+        self.finish(self.envelope(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))))
 
     def test_two_revisions_writer_and_ancestors(self):
         original_bytes=self.original.read_bytes();original_receipt=(self.original.parent/'completion_receipt.json').read_bytes()
@@ -159,7 +166,7 @@ class RevisionTests(unittest.TestCase):
         for number in (2,3):
             self.prepare(f'text-r{number-1}')
             self.assertNotIn('outcome_recovery',w.read_json(w.job_file(self.root,'RAIL-TEST')))
-            action=rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))['imagegen']
+            action=self.envelope(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault')))
             self.assertEqual(action['attempt_number'],number)
             same=rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))
             self.assertEqual(same['action'],'reconcile_image_result')
@@ -200,7 +207,7 @@ class RevisionTests(unittest.TestCase):
         self.assertEqual(saved['action_identity'],actual['action_identity']);self.assertEqual(actual['attempt_number'],2)
 
     def test_missing_dispatch_history_and_ancestor_drift_rejected(self):
-        self.prepare();action=rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault'))['imagegen']
+        self.prepare();action=self.envelope(rail.advance(self.root,'RAIL-TEST',Path('knowledge-base-vault')))
         ledger=w.read_json(w.image_attempt_ledger_path(self.kp_path.parent));record=ledger['pages'][action['page_id']]
         fake=copy.deepcopy(record);fake['attempts'][0]['status']='accepted';fake['attempts'][0].pop('text_revision_dispatch')
         with self.assertRaisesRegex(w.CompilerWorkerV2Error,'dispatch contract'):revision.validate_record(w,self.root,self.kp_path.parent,fake)

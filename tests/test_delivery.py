@@ -19,7 +19,8 @@ PROMPTS = {
     "image": "$brain-image [附上一張圖片]", "grow": "$brain-grow [來源]", "create": "$brain-create [想做的成品]",
     "research": "$brain-research 查看目前研究主題", "tidy": "$brain-tidy", "guide": "$brain-guide", "nebula": "$brain-nebula",
     "check": "$brain-check [來源或工作編號]", "resume": "$brain-resume [來源或工作編號]",
-    "fix": "$brain-fix [哪裏有甚麼問題]", "update": "$brain-update",
+    "fix": "$brain-fix [來源或問題描述]", "update": "$brain-update",
+    "infographic": "$brain-infographic <知識頁ID>",
 }
 
 
@@ -108,7 +109,7 @@ def main() -> int:
     logo = package / "runtime" / "workspace" / "assets" / "brand" / "creative-second-brain-nebula-logo-v4.png"
     assert hashlib.sha256(logo.read_bytes()).hexdigest() == "961ea9c3a7dc7af9c3311a100995a7ad2aaa060232908e2195b4db27c60abeb9"
     assert "設定 → 關於 → 進階" in guide_text and "設定 → 關於 → 進階" in package_guide_text
-    graph_experience = "核心主題、取捨、偏好線索與應用場景會用不同顏色閱讀"
+    graph_experience = "一般概念用同一顏色；日後若有核心主題、取捨、偏好線索或應用場景類筆記，會用不同顏色顯示"
     assert graph_experience in guide_text and graph_experience in package_guide_text
     assert "即使首份材料暫未有可連線的關係，概念仍會顯示" in guide_text
     assert "即使首份材料暫未有可連線的關係，概念仍會顯示" in package_guide_text
@@ -199,7 +200,7 @@ def main() -> int:
     doctor = json.loads(run(str(brain), "doctor", cwd=workspace))
     assert doctor["status"] == "ready" and doctor["vault"] == "My Notes"
     graph_settings = json.loads((workspace / "My Notes" / ".obsidian" / "graph.json").read_text(encoding="utf-8"))
-    assert graph_settings["search"] == "path:concepts"
+    assert graph_settings["search"] == "path:concepts -[concept_status:superseded]"
     assert graph_settings["showOrphans"] is True
     assert graph_settings["nodeSizeMultiplier"] == 1 and graph_settings["lineSizeMultiplier"] == 1
     assert graph_settings["centerStrength"] == 0.518713248970312
@@ -220,6 +221,9 @@ def main() -> int:
             "type: knowledge_point\n"
             + f"knowledge_point: {json.dumps(concept, ensure_ascii=False)}\n"
             + f"kp_uid: DELIVERY-GRAPH:KP-{number}\n"
+            + "reusable_concept_status: reusable\n"
+            + f"reusable_concept_name: {json.dumps(concept, ensure_ascii=False)}\n"
+            + "reusable_concept_reason: 測試用的可重用概念\n"
             "---\n\n正式交付測試用知識點。\n",
             encoding="utf-8",
         )
@@ -235,7 +239,9 @@ def main() -> int:
     assert graph_projection["status"] == "ready"
     assert graph_projection["verification"]["passed"] is True
     graph_concepts = [frontmatter_fields(path) for path in (workspace / "My Notes" / "concepts").glob("*.md")]
-    assert {str(fields.get("graph_group")) for fields in graph_concepts} == {"tension", "application_scene"}
+    # Since 1.9.18 every adapter-generated concept uses the one neutral "concept" graph group.
+    assert {str(fields.get("graph_group")) for fields in graph_concepts} == {"concept"}
+    assert {str(fields.get("concept")) for fields in graph_concepts} == {"資料保存 vs 立即行動的取捨", "如何把知識變成可用的工作流程"}
     compiler_source = (workspace / "tools" / "compiler_worker_v2.py").read_text(encoding="utf-8")
     assert "project_concept_graph_for_sources(vault, {str(source[\"source_id\"])})" in compiler_source
     refresh = json.loads(run(str(brain), "guide", cwd=work))
@@ -265,7 +271,7 @@ def main() -> int:
 
     print(json.dumps({"status": "passed", "coverage": [
         "root guide links", "generated PUBLIC root links", "formal PUBLIC root readback", "ZIP top-level boundary", "SHA-256", "fresh extraction",
-        "package verification", "zero-to-ready installer prompt", "14 prompt fields in root/package/home", "Obsidian setup image and three steps", "guide section and footer content",
+        "package verification", "zero-to-ready installer prompt", "15 prompt fields in root/package/home", "Obsidian setup image and three steps", "guide section and footer content",
         "generated skill metadata", "new named workspace", "guide refresh route", "research workflow route",
         "text work order", "portable graph preset", "completed-source graph projection", "empty-safe graph",
         "fresh-ZIP custom-vault research integrity root-fix counterexamples",

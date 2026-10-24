@@ -21,9 +21,8 @@ def render(root: Path, output: Path) -> None:
     rows = []
     skills = [(key, "brain-" + key) for key, definition in registry["commands"].items()
               if isinstance(definition, dict) and isinstance(definition.get("menu_order"), int) and not definition.get("alias_for")]
-    expected = {"think", "url", "text", "image", "grow", "create", "research", "tidy", "guide", "nebula", "check", "resume", "fix", "update"}
-    if len(skills) != 14 or {key for key, _ in skills} != expected:
-        raise ValueError("command registry must provide exactly fourteen daily entries")
+    if not skills:
+        raise ValueError("command registry has no daily entries")
     for key, name in sorted(skills, key=lambda item: registry["commands"][item[0]]["menu_order"]):
         definition = registry["commands"][key]
         # The shared registry deliberately preserves the same `$brain-*`

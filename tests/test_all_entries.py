@@ -12,9 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 ENTRIES = (
-    "brain-url", "brain-text", "brain-image", "brain-think", "brain-ask", "brain-grow", "brain-create",
+    "brain-url", "brain-text", "brain-image", "brain-infographic", "brain-think", "brain-ask", "brain-grow", "brain-create",
     "brain-tidy", "brain-guide", "brain-nebula", "brain-check", "brain-resume", "brain-fix", "brain-research", "brain-update",
 )
+
+# Normal single-source intake and one-shot infographic entries are single-pass: they must not open a task progress card.
+SINGLE_PASS_ENTRIES = ("brain-url", "brain-text", "brain-image", "brain-infographic")
 
 
 def run(*items: str, cwd: Path, expected: int = 0) -> str:
@@ -54,6 +57,8 @@ def main() -> int:
         content = skill.read_text(encoding="utf-8")
         if entry == "brain-ask":
             assert "舊名相容" in content and "../brain-think/SKILL.md" in content
+        elif entry in SINGLE_PASS_ENTRIES:
+            assert "不建立任務進度卡" in content and "🧭 任務進度卡" not in content and "execution" in content
         else:
             assert "🧭 任務進度卡" in content and "outputs/task-progress/current.md" in content
     assert "outputs/task-progress/current.md" in (workspace / "AGENTS.md").read_text(encoding="utf-8")
@@ -83,9 +88,9 @@ def main() -> int:
     assert image["continuation"]["directive"] == "continue_same_job"
     assert image["continuation"]["task_complete"] is False
 
-    ask = json.loads(run(str(brain), "think", "prepare", "--question", "這份新庫目前有甚麼證據？", cwd=workspace))
-    alias = json.loads(run(str(brain), "ask", "prepare", "--question", "這份新庫目前有甚麼證據？", cwd=workspace))
-    grow = json.loads(run(str(brain), "think", "prepare", "--question", "評估這個來源是否值得保存？", cwd=workspace))
+    ask = json.loads(run(str(brain), "think", "prepare", "--question", "這份新庫目前有甚麼證據？", "--no-expand", "這是安裝驗收的固定問題", cwd=workspace))
+    alias = json.loads(run(str(brain), "ask", "prepare", "--question", "這份新庫目前有甚麼證據？", "--no-expand", "這是安裝驗收的固定問題", cwd=workspace))
+    grow = json.loads(run(str(brain), "think", "prepare", "--question", "評估這個來源是否值得保存？", "--no-expand", "這是安裝驗收的固定問題", cwd=workspace))
     assert ask["status"] == "insufficient_evidence" and grow["status"] == "insufficient_evidence"
     assert alias["status"] == ask["status"]
     assert "brain-think" in (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
@@ -147,9 +152,13 @@ def main() -> int:
     assert "--workspace" in update_help and "--check" in update_help and "--apply" in update_help
     assert "tools/brain_update.py" in update_skill and "舊版 workspace 不可先要求 `doctor` 或 `context`" in update_skill
     assert "Adamchanadam/creative-second-brain" in update_skill and "不用 npm" in update_skill
+    infographic = json.loads(run(str(brain), "rail", "add-infographic", cwd=workspace))
+    infographic_skill = (workspace / ".agents" / "skills" / "brain-infographic" / "SKILL.md").read_text(encoding="utf-8")
+    assert infographic["action"] == "select_infographic_source" and infographic["candidates"] == []
+    assert "--source-id <知識頁ID>" in infographic_skill and "不自動畫" in infographic_skill
     report = {"status": "passed", "covered_entries": list(ENTRIES), "coverage": [
         "URL route parser", "text work order", "image work order", "canonical think and legacy ask alias", "grow", "create", "tidy",
-        "guide refresh", "nebula entry route", "check", "resume", "fix inspect", "research list and workflow route", "safe update route", "task-progress-card dry-run",
+        "guide refresh", "nebula entry route", "check", "resume", "fix inspect", "optional infographic route", "research list and workflow route", "safe update route", "task-progress-card dry-run",
     ], "not_proven": ["live user-selected URL capture", "host skill discovery", "native Obsidian", "new image generation"]}
     (work / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))

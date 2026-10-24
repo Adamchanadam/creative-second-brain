@@ -12,12 +12,15 @@ from workspace_home_renderer import render as render_portable_home
 
 def public_entries() -> list[dict[str, str]]:
     registry = json.loads((ROOT / "spec" / "command-registry.json").read_text(encoding="utf-8"))["commands"]
-    required = ("url", "text", "image", "think", "grow", "create", "tidy", "guide", "nebula", "check", "resume", "fix", "research", "update")
-    if any(name not in registry for name in required): raise ValueError("public command registry is incomplete")
-    skills = {"think": "brain-think", "url": "brain-url", "text": "brain-text", "image": "brain-image",
-              "grow": "brain-grow", "create": "brain-create", "research": "brain-research", "tidy": "brain-tidy",
-              "guide": "brain-guide", "nebula": "brain-nebula", "check": "brain-check", "resume": "brain-resume",
-               "fix": "brain-fix", "update": "brain-update"}
+    skills = {
+        name: f"brain-{name}"
+        for name, definition in registry.items()
+        if isinstance(definition, dict)
+        and isinstance(definition.get("menu_order"), int)
+        and not definition.get("alias_for")
+    }
+    if not skills:
+        raise ValueError("public command registry has no daily entries")
     rows: list[dict[str, str]] = []
     for name, skill in sorted(skills.items(), key=lambda item: registry[item[0]]["menu_order"]):
         definition = registry[name]

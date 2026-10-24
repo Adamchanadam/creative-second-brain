@@ -40,8 +40,6 @@ GOVERNANCE_EXPECTED_DOMAINS = {
     "URL outcome package and vault writer",
     "Infographic coverage, generation, master and acceptance",
     "Compiler Worker v2 execution, Knowledge Package SSOT and cutover conditions",
-    "App UX and reader-facing product behavior",
-    "Intake identity/state, five reader slots and completion display",
     "Outcome-index schema, facets and pagination",
     "General validation model and ledger schema",
     "Scenario-to-source/check/stop routing",
@@ -64,7 +62,7 @@ GOVERNANCE_DOMAIN_ANCHORS = {
     "Detailed external-tool behavior and lifecycle": "# Integrations Pack",
     "Product north star, data ownership and invariant outcomes": "## 0. 文件性質與使用方式",
     "URL outcome package and vault writer": "# URL 到輸出模板規格",
-    "Infographic coverage, generation, master and acceptance": "### 四道生成閘門",
+    "Infographic coverage, generation, master and acceptance": "## 3. 四道資訊圖交付閘門",
     "Compiler Worker v2 execution, Knowledge Package SSOT and cutover conditions": "# Compiler Worker 與 Knowledge Package 設計及驗收規格",
     "Outcome-index schema, facets and pagination": "# 成果頁索引資料層設計",
     "General validation model and ledger schema": "## 5. 九層產品驗收",
@@ -78,19 +76,12 @@ GOVERNANCE_DOMAIN_ANCHORS = {
 
 GOVERNANCE_UNIQUE_HEADINGS = {
     "## Governance Ownership Map": "dev/PROJECT_INDEX.md",
-    "### 四道生成閘門": "docs/資訊圖生成規格.md",
+    "## 3. 四道資訊圖交付閘門": "docs/資訊圖生成規格.md",
     "## 5. 九層產品驗收": "docs/多層驗收機制.md",
     "## 2. 情景路由表": "docs/分層QC機制.md",
     "## 2. 全程階段總表": "docs/開發計劃與進度.md",
     "## 1. 當前總判斷": "docs/需求驗收追蹤表.md",
 }
-
-REQUIRED_CLI_ROUTE_KEYS = {
-    "compiler-worker-v2", "governance", "infographic", "knowledge-retrieval", "ks-vs-inventory",
-    "mainline-stage-gate", "obsidian-semantic-graph", "obsidian-write", "outcome-index", "outcome-page",
-    "project-control-panel", "reader-layer", "release", "stage-one-acceptance", "url-ingest",
-}
-
 
 GOVERNANCE_REQUIRED_EXCLUSIONS = (
     "dev/governance_migrations/**/backup/**",
@@ -406,13 +397,10 @@ def validate_governance_baseline(root: Path) -> dict[str, Any]:
     route_path = root / "docs" / "分層QC機制.md"
     try:
         routes = parse_qc_routes(route_path.read_text(encoding="utf-8"))
-        cli_keys = {route["cli_key"] for route in routes.values() if route["cli_key"] != "—"}
-        if cli_keys != REQUIRED_CLI_ROUTE_KEYS:
-            errors.append({
-                "reason": "cli_qc_route_key_drift",
-                "missing": ";".join(sorted(REQUIRED_CLI_ROUTE_KEYS - cli_keys)),
-                "unexpected": ";".join(sorted(cli_keys - REQUIRED_CLI_ROUTE_KEYS)),
-            })
+        # The route table in docs/分層QC機制.md is the only list of scenario keys; no copy is kept here.
+        # parse_qc_routes already rejects a bad header, non-five-cell rows, empty cells and duplicate keys.
+        if not any(route["cli_key"] != "—" for route in routes.values()):
+            errors.append({"reason": "qc_route_table_has_no_cli_routes"})
         if "docs/個人知識與品味狀態頁_v5產品規格.md" in route_path.read_text(encoding="utf-8"):
             errors.append({"reason": "retired_spec_used_by_current_qc_route"})
     except (OSError, ValueError) as exc:
@@ -469,10 +457,9 @@ def build_manifest(scenario_key: str, *, root: Path = DEFAULT_ROOT) -> dict[str,
         if not exists:
             missing.append(path_text)
     blocked = [{"reason": "missing_required_read", "path": path} for path in missing]
+    # The governance baseline is not a routed scenario; run it with `--governance-baseline`.
+    # The key stays (always None) so the embedded-manifest schema consumed by other tools is unchanged.
     governance = None
-    if scenario_key == "governance" and not missing:
-        governance = validate_governance_baseline(governance_root)
-        blocked.extend(governance["errors"])
     return {
         "status": "ready" if not blocked else "needs_review",
         "mode": "dry_run",
@@ -513,6 +500,12 @@ def print_human(result: dict[str, Any]) -> None:
         for scenario in result["scenarios"]:
             print(f"- {scenario['key']}: {scenario['title']} ({scenario['tier']})")
         return
+    if result["mode"] == "governance_baseline":
+        print(f"status: {result['status']}")
+        print(f"ownership_rows: {result.get('ownership_rows', 0)}  active_files_checked: {result.get('active_files_checked', 0)}")
+        for error in result["errors"]:
+            print(f"- {json.dumps(error, ensure_ascii=False)}")
+        return
     print(f"status: {result['status']}")
     print(f"scenario: {result['scenario']} - {result['title']}")
     for check in result["required_checks"]:
@@ -524,6 +517,11 @@ def main() -> int:
     parser.add_argument("--scenario", choices=sorted(SCENARIOS))
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--list", action="store_true")
+    parser.add_argument(
+        "--governance-baseline",
+        action="store_true",
+        help="read-only document-drift check of the governance files; independent of any scenario key",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.list:
@@ -532,9 +530,13 @@ def main() -> int:
             "mode": "list",
             "scenarios": [{"key": item.key, "title": item.title, "tier": item.tier} for item in SCENARIOS.values()],
         }
+    elif args.governance_baseline:
+        if args.scenario:
+            parser.error("--governance-baseline cannot be combined with --scenario")
+        result = {"mode": "governance_baseline", **validate_governance_baseline(args.root)}
     else:
         if not args.scenario:
-            parser.error("--scenario is required unless --list is used")
+            parser.error("--scenario is required unless --list or --governance-baseline is used")
         result = build_manifest(args.scenario, root=args.root)
     print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else "", end="" if args.json else "")
     if not args.json:

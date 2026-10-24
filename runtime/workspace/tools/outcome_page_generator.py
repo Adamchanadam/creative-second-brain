@@ -15,19 +15,21 @@ except ModuleNotFoundError:
     from validation_manifest import build_embedded_manifest  # type: ignore
 
 try:
-    from tools.obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields
+    from tools.obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE
     from tools.source_identity import normalize_url as normalize_public_url
     from tools.reader_surface_guard import (
         has_reader_surface_internal_message,
         reader_source_attribution_details,
+        reader_safe_source_value,
         reader_source_attribution_label,
     )
 except ModuleNotFoundError:
-    from obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields  # type: ignore
+    from obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE  # type: ignore
     from source_identity import normalize_url as normalize_public_url  # type: ignore
     from reader_surface_guard import (  # type: ignore
         has_reader_surface_internal_message,
         reader_source_attribution_details,
+        reader_safe_source_value,
         reader_source_attribution_label,
     )
 
@@ -43,6 +45,7 @@ DEFAULT_INDEX_PAGE_SIZE = 20
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a read-only local outcome page from Obsidian vault data.")
     parser.add_argument("--source-id", action="append")
+    parser.add_argument("--root", type=Path, default=REPO_ROOT, help="Verified installed workspace root for completed-source refreshes.")
     parser.add_argument(
         "--incremental-source-id",
         help="Regenerate one source outcome page, then incrementally rebuild the index without regenerating historical outcome pages.",
@@ -69,6 +72,7 @@ def main() -> int:
             output_dir=args.output_dir,
             portal=args.portal,
             page_size=args.page_size,
+            root=args.root,
         )
     elif args.index:
         source_ids = args.source_id or discover_source_ids(args.vault)
@@ -78,6 +82,7 @@ def main() -> int:
             output_dir=args.output_dir,
             portal=args.portal,
             page_size=args.page_size,
+            root=args.root,
         )
     else:
         if not args.source_id:
@@ -87,22 +92,31 @@ def main() -> int:
             if args.output:
                 parser.error("--output accepts one source only; use --output-dir for multiple sources")
             results = [generate_outcome_page(source_id=source_id, vault=args.vault,
-                       output=args.output_dir / f"{source_id}_outcome.html") for source_id in source_ids]
+                       output=args.output_dir / f"{source_id}_outcome.html", root=args.root) for source_id in source_ids]
             result = {"status": "ready", "output_dir": str(args.output_dir), "results": results}
         else:
-            result = generate_outcome_page(source_id=source_ids[0], vault=args.vault, output=args.output)
+            output_dir_requested = any(
+                value == "--output-dir" or value.startswith("--output-dir=") for value in os.sys.argv[1:]
+            )
+            output = args.output or (args.output_dir / f"{source_ids[0]}_outcome.html" if output_dir_requested else None)
+            result = generate_outcome_page(source_id=source_ids[0], vault=args.vault, output=output, root=args.root)
     if not (args.refresh_index or args.incremental_source_id or args.index):
         try:
             from .knowledge_nebula import refresh_installed
         except ImportError:
             from knowledge_nebula import refresh_installed
-        refresh_installed(args.vault, Path(result['output']).parent if result.get('output') else args.output_dir)
+        paused = paused_nebula(refresh_installed(args.vault, Path(result['output']).parent if result.get('output') else args.output_dir))
+        if paused:
+            result["nebula"] = paused
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"status: {result['status']}")
         output = result.get("output") or result.get("current_page") or result.get("html_index") or result.get("output_dir")
         print(f"output: {output}")
+        paused = paused_nebula(result.get("nebula"))
+        if paused:
+            print(f"nebula: paused - {paused['reason']}")
     return 0
 
 
@@ -124,6 +138,7 @@ def generate_outcome_index(
     output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
     portal: Path = DEFAULT_PORTAL,
     page_size: int = DEFAULT_INDEX_PAGE_SIZE,
+    root: Path = REPO_ROOT,
 ) -> dict[str, object]:
     if page_size < 1:
         raise ValueError("page_size must be greater than 0")
@@ -140,7 +155,7 @@ def generate_outcome_index(
     for source_id in source_ids:
         page_path = output_dir / f"{source_id}_outcome.html"
         try:
-            page_results.append(generate_outcome_page(source_id, vault, page_path))
+            page_results.append(generate_outcome_page(source_id, vault, page_path, root=root))
         except SystemExit as exc:
             # Preserve an existing historical result when it cannot be
             # regenerated, so it cannot block a different source's ingest.
@@ -154,9 +169,11 @@ def generate_outcome_index(
     cleaned_retired_routes = cleanup_retired_taste_routes(output_dir)
     entries = sort_entries_newest_first(entries)
 
-    index_pages = write_paginated_index(entries, output_dir, page_size, vault=vault)
+    nebula_report: dict[str, object] = {}
+    index_pages = write_paginated_index(entries, output_dir, page_size, vault=vault, nebula_report=nebula_report)
     index_path = index_pages[0] if index_pages else output_dir / "index.html"
     portal.write_text(render_portal_markdown(entries, portal, vault), encoding="utf-8")
+    paused = paused_nebula(nebula_report.get("nebula"))
 
     return {
         "status": "ready" if not blocked_reasons else "needs_review",
@@ -172,6 +189,7 @@ def generate_outcome_index(
         "cleaned_retired_taste_routes": [str(path) for path in cleaned_retired_routes],
         "blocked_reasons": blocked_reasons,
         "validation_manifest": outcome_manifest(),
+        **({"nebula": paused} if paused else {}),
     }
 
 
@@ -182,6 +200,7 @@ def generate_incremental_outcome(
     output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
     portal: Path = DEFAULT_PORTAL,
     page_size: int = DEFAULT_INDEX_PAGE_SIZE,
+    root: Path = REPO_ROOT,
 ) -> dict[str, object]:
     """Refresh one outcome page and rebuild only the lightweight reader index.
 
@@ -200,7 +219,7 @@ def generate_incremental_outcome(
     portal.parent.mkdir(parents=True, exist_ok=True)
 
     current_page = output_dir / f"{source_id}_outcome.html"
-    current_result = generate_outcome_page(source_id, vault, current_page)
+    current_result = generate_outcome_page(source_id, vault, current_page, root=root)
     cleaned_retired_routes = cleanup_retired_taste_routes(output_dir)
     entries: list[dict[str, object]] = []
     warnings: list[dict[str, str]] = []
@@ -219,9 +238,11 @@ def generate_incremental_outcome(
                 raise
             warnings.append({"source_id": known_source_id, "reason": str(exc)})
     entries = sort_entries_newest_first(entries)
-    index_pages = write_paginated_index(entries, output_dir, page_size, vault=vault)
+    nebula_report: dict[str, object] = {}
+    index_pages = write_paginated_index(entries, output_dir, page_size, vault=vault, nebula_report=nebula_report)
     index_path = index_pages[0] if index_pages else output_dir / "index.html"
     portal.write_text(render_portal_markdown(entries, portal, vault), encoding="utf-8")
+    paused = paused_nebula(nebula_report.get("nebula"))
     return {
         "status": "ready",
         "incremental": True,
@@ -239,6 +260,7 @@ def generate_incremental_outcome(
         "cleaned_retired_taste_routes": [str(path) for path in cleaned_retired_routes],
         "historical_warnings": warnings,
         "validation_manifest": outcome_manifest(),
+        **({"nebula": paused} if paused else {}),
     }
 
 
@@ -252,6 +274,13 @@ def thinking_needs_review(output_dir: Path) -> bool:
         return True
     match = re.search(r'<script type="application/json" id="catalog-data">(.*?)</script>', path.read_text(encoding='utf-8'), re.S)
     return not match or any(row.get('needs_review') for row in json.loads(match.group(1))['items'])
+
+
+def paused_nebula(value: object) -> dict[str, object] | None:
+    """The answer of ``knowledge_nebula.refresh_installed`` when it paused (unregistered reader code: nothing was rebuilt), else None.
+
+    A pause is always reported in the result of the tool that asked; an ordinary result keeps exactly the fields it always had."""
+    return value if isinstance(value, dict) and value.get("status") == "paused" else None
 
 
 def refresh_outcome_index(*, vault: Path, output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
@@ -275,14 +304,18 @@ def refresh_outcome_index(*, vault: Path, output_dir: Path = DEFAULT_VAULT_OUTPU
         except (SystemExit, OSError, ValueError) as exc:
             warnings.append({"source_id": source_id, "reason": str(exc)})
     entries = sort_entries_newest_first(entries)
+    nebula_report: dict[str, object] = {}
     pages = write_paginated_index(entries, output_dir, page_size, vault=vault,
-                                  defer_nebula=defer_nebula)
+                                  defer_nebula=defer_nebula, nebula_report=nebula_report)
     portal.write_text(render_portal_markdown(entries, portal, vault), encoding="utf-8")
-    return {"status": "needs_review" if warnings or thinking_needs_review(output_dir) else "ready",
-            "thinking_status": "needs_review" if thinking_needs_review(output_dir) else "ready",
-            "html_index": str(pages[0]), "source_count": len(entries),
-            "index_pages": [str(p) for p in pages], "historical_warnings": warnings,
-            "obsidian_portal": str(portal), "historical_pages_rewritten": 0}
+    result = {"status": "needs_review" if warnings or thinking_needs_review(output_dir) else "ready",
+              "thinking_status": "needs_review" if thinking_needs_review(output_dir) else "ready",
+              "html_index": str(pages[0]), "source_count": len(entries),
+              "index_pages": [str(p) for p in pages], "historical_warnings": warnings,
+              "obsidian_portal": str(portal), "historical_pages_rewritten": 0}
+    if not defer_nebula:  # the caller that defers the nebula (reader service, release gate, thinking archive) rebuilds it itself
+        result["nebula"] = nebula_report.get("nebula") or {"status": "not_installed"}
+    return result
 
 
 def related_source_block(vault, source_id, output_parent):
@@ -319,18 +352,60 @@ def related_source_block(vault, source_id, output_parent):
     return '<section class="related-sources"><h2>相關知識紀錄</h2><ul>' + ''.join(rows) + '</ul></section>'
 
 
-def generate_outcome_page(source_id: str, vault: Path, output: Path | None = None) -> dict[str, object]:
+PRIOR_EFFECT_LABELS = (("supports", "鞏固"), ("contradicts", "反駁"), ("limits", "限制"),
+                       ("extends", "延伸"), ("tradeoff", "形成取捨"), ("applies_to", "可應用於"))
+
+
+def prior_knowledge_effect_block(vault, source_id, output_parent):
+    """What this source did to older knowledge, read from the registry only (outcome-page spec, section 2).
+
+    Absent (empty text) when the source has no linked cross-source relation and merged no existing concept,
+    so a page of a source that did nothing to older knowledge keeps its bytes.
+    """
+    labels = dict(PRIOR_EFFECT_LABELS)
+    relations_file, kp_file = vault / "_registry" / "relations.jsonl", vault / "_registry" / "knowledge_points.jsonl"
+    kp_rows = {str(row.get("kp_uid")): row for row in read_jsonl_rows(kp_file)} if kp_file.is_file() else {}
+    linked = lambda uid: uid in kp_rows and str(kp_rows[uid].get("status", "linked")) == "linked"
+    links = [row for row in (read_jsonl_rows(relations_file) if relations_file.is_file() else [])
+             if row.get("scope") == "cross_source" and row.get("source_id") == source_id
+             and str(row.get("status", "linked")) == "linked" and row.get("relation") in labels
+             and linked(str(row.get("source_kp_uid"))) and linked(str(row.get("target_kp_uid")))]
+    merged = {str(row.get("concept_name")) for uid, row in kp_rows.items()
+              if row.get("source_id") == source_id and linked(uid)
+              and str(row.get("concept_name") or "").strip() and str(row.get("understanding_delta") or "").strip()}
+    if not links and not merged:
+        return ""
+    order = [relation for relation, _ in PRIOR_EFFECT_LABELS]
+    counts = {relation: sum(1 for row in links if row["relation"] == relation) for relation in order}
+    summary = "、".join(f"{label} {counts[relation]}" for relation, label in PRIOR_EFFECT_LABELS) + f"、併入既有概念 {len(merged)}。"
+    items = []
+    for row in sorted(links, key=lambda row: (order.index(str(row["relation"])), str(row.get("target_kp_uid")), str(row.get("relation_id")))):
+        other = str(row.get("target_source_id") or "")
+        title = other
+        try:
+            title = str(read_markdown_record(resolve_source_note(vault, other))[0].get("title") or other)
+        except (SystemExit, OSError, ValueError):
+            pass
+        href = relative_url(vault / "outcome-pages" / f"{other}_outcome.html", output_parent)
+        items.append(f'<li><strong>{escape(labels[str(row["relation"])])}</strong>：{escape(row.get("insight") or "")}'
+                     f'（對方來源：<a href="{escape(href)}">{escape(title)}</a>）</li>')
+    return ('<section class="prior-knowledge-effect"><h2>這份來源對舊知識的作用</h2><p>' + escape(summary) + '</p>'
+            + (f'<ul>{"".join(items)}</ul>' if items else "") + '</section>')
+
+
+def generate_outcome_page(source_id: str, vault: Path, output: Path | None = None, *, root: Path = REPO_ROOT) -> dict[str, object]:
     vault = vault.resolve()
     if output is None:
         output = DEFAULT_OUTPUT_DIR / f"{source_id}_outcome.html"
     output = output.resolve()
-    completed_kp = completed_v2_package_for_standard_outcome(vault, source_id, output)
+    root = Path(root).resolve()
+    completed_kp = completed_v2_package_for_standard_outcome(vault, source_id, output, root=root)
     if completed_kp is not None:
         try:
             from tools.compiler_worker_v2 import refresh_completed_outcome
         except ModuleNotFoundError:
             from compiler_worker_v2 import refresh_completed_outcome
-        refreshed = refresh_completed_outcome(vault.parent, completed_kp)
+        refreshed = refresh_completed_outcome(root, completed_kp)
         return {
             "status": str(refreshed.get("status") or "ready"),
             "source_id": source_id,
@@ -358,19 +433,22 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
     kp_notes = sorted(kp_dir.glob("*.md")) if kp_dir.exists() else []
     kp_records = [(path, *read_markdown_record(path)) for path in kp_notes]
     try:
-        from .obsidian_vault_adapter import resolved_kp_relations
+        from .obsidian_vault_adapter import CROSS_SOURCE_SECTIONS, resolved_kp_relations
     except ImportError:
-        from obsidian_vault_adapter import resolved_kp_relations
-    kp_records = [(path, *resolved_kp_relations(vault, fields, body)) for path, fields, body in kp_records]
+        from obsidian_vault_adapter import CROSS_SOURCE_SECTIONS, resolved_kp_relations
+    # The reader sees the concept-page section names for the relation vocabulary, from the one table.
+    relation_labels = {relation: heading for relation, heading, *_ in CROSS_SOURCE_SECTIONS}
+    kp_records = [(path, *resolved_kp_relations(vault, fields, body, relation_labels)) for path, fields, body in kp_records]
     knowledge_points = [fields for _, fields, _ in kp_records]
 
-    asset_mode = str(source_fields.get("asset_mode") or "formal_infographic")
-    asset_rels = (
-        list_value(source_fields.get("evidence_screenshots"))
-        if asset_mode == "case_evidence"
-        else list_value(source_fields.get("infographics"))
-    )
-    if not asset_rels and asset_mode != "case_evidence":
+    asset_mode = str(source_fields.get("asset_mode") or "formal_infographic").strip()
+    if asset_mode == "case_evidence":
+        asset_rels = list_value(source_fields.get("evidence_screenshots"))
+    elif asset_mode == "knowledge_only":
+        asset_rels = []
+    else:
+        asset_rels = list_value(source_fields.get("infographics"))
+    if not asset_rels and asset_mode not in {"case_evidence", "knowledge_only"}:
         fallback_asset = str(app_fields.get("PNG") or "").strip()
         asset_rels = [fallback_asset] if fallback_asset else []
     asset_paths = [(vault / asset_rel).resolve() for asset_rel in asset_rels]
@@ -379,7 +457,7 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
         for asset_rel, asset_path in zip(asset_rels, asset_paths)
         if not asset_path.exists()
     ]
-    if not asset_paths or missing_assets:
+    if asset_mode != "knowledge_only" and (not asset_paths or missing_assets):
         missing = ", ".join(missing_assets) if missing_assets else "<empty>"
         raise SystemExit(f"Missing outcome page asset for {source_id}: {missing}")
     try:
@@ -505,6 +583,7 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
             app_body=app_body,
             kp_records=kp_records,
             reader_title=str(source_fields.get("reader_title") or ""),
+            source_fields=source_fields,
         ),
         source_overview_heading=(
             "這條 URL 講甚麼" if source_input_kind == "url"
@@ -520,7 +599,8 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
         from .reader_shell import apply_theme, atomic_reader_write, catalogue_projection_lock
     except ImportError:
         from reader_shell import apply_theme, atomic_reader_write, catalogue_projection_lock
-    page = page.replace('<section class="vault-body">', related_source_block(vault, source_id, output.parent) + '<section class="vault-body">', 1)
+    page = page.replace('<section class="vault-body">', prior_knowledge_effect_block(vault, source_id, output.parent)
+                        + related_source_block(vault, source_id, output.parent) + '<section class="vault-body">', 1)
     page = apply_theme(page, output, vault, 'knowledge')
     with catalogue_projection_lock(output.parent):
         atomic_reader_write(output, page)
@@ -532,7 +612,7 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
         "source_note": str(source_note),
         "application_note": str(app_note),
         "knowledge_points": len(knowledge_points),
-        "asset": str(asset_paths[0]),
+        "asset": str(asset_paths[0]) if asset_paths else "",
         "assets": [str(asset_path) for asset_path in asset_paths],
         "supplementary_assets": [str(asset_path) for asset_path in supplementary_asset_paths],
         "compounding_status": compounding_status,
@@ -541,12 +621,21 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
     }
 
 
-def completed_v2_package_for_standard_outcome(vault: Path, source_id: str, output: Path) -> Path | None:
+def completed_v2_package_for_standard_outcome(vault: Path, source_id: str, output: Path, *, root: Path = REPO_ROOT) -> Path | None:
     """Route a completed v2 source's live page through its receipt-bound refresh only."""
     standard = (vault / "outcome-pages" / f"{source_id}_outcome.html").resolve()
     if output != standard:
         return None
-    package_root = vault.parent / "outputs" / "compiler_worker_v2"
+    try:
+        from .workspace_paths import WorkspacePathError, bound_vault_path
+    except ImportError:
+        from workspace_paths import WorkspacePathError, bound_vault_path
+    root = Path(root).resolve()
+    try:
+        bound_vault_path(root, vault)
+    except WorkspacePathError as exc:
+        raise SystemExit("standard completed outcome cannot verify the workspace-bound vault") from exc
+    package_root = root / "outputs" / "compiler_worker_v2"
     if not package_root.is_dir():
         return None
     jobs_root = package_root / "_jobs"
@@ -578,7 +667,6 @@ def completed_v2_package_for_standard_outcome(vault: Path, source_id: str, outpu
         found_completed_source = True
         if receipt.get('schema_version') != worker.COMPLETION_SCHEMA_VERSION:
             continue
-        root = vault.parent
         kp_path = worker.relative_to_root(root / str(receipt.get('knowledge_package_path') or ''), root, 'completed Knowledge Package')
         if (receipt.get("status") != "completed" or not kp_path.is_file()
                 or receipt.get('payload_sha256') != worker.canonical_payload_sha256(receipt)):
@@ -612,7 +700,7 @@ def completed_v2_package_for_standard_outcome(vault: Path, source_id: str, outpu
             except (OSError, json.JSONDecodeError):
                 raise SystemExit(f"{source_id} completed v2 pointer is unreadable; use the receipt-bound repair entry")
             current_receipt = str(pointer.get("current_completion_path") or "")
-            if current_receipt and current_receipt != receipt_path.relative_to(vault.parent).as_posix():
+            if current_receipt and current_receipt != receipt_path.relative_to(root).as_posix():
                 continue
         origin_path = receipt_path.parent / 'revision_origin.json'
         if origin_path.is_file():
@@ -705,6 +793,8 @@ def source_citation_evidence(source_body: str) -> dict[str, str]:
         "_original_date": ("原文日期",),
         "_original_source_url": ("原文 URL",),
         "_original_source_url_status": ("原文 URL 核對狀態",),
+        "source_label": ("來源標示",),
+        "_primary_work_title": ("主要作品標題",),
     }
     evidence: dict[str, str] = {}
     for key, label_options in labels.items():
@@ -1131,12 +1221,17 @@ def stored_note_sections(
     app_body: str,
     kp_records: list[tuple[Path, dict[str, object], str]],
     reader_title: str,
+    source_fields: dict[str, object] | None = None,
 ) -> list[dict[str, str]]:
-    safe_source_body = reader_safe_source_body(source_body)
+    archive_mode = str((source_fields or {}).get("source_retention_mode") or "") == TRANSCRIPT_ARCHIVE_MODE
+    safe_source_body = (
+        transcript_archive_reader_body(source_fields or {}, source_body)
+        if archive_mode else reader_safe_source_body(source_body)
+    )
     safe_app_body = reader_safe_application_body(app_body, reader_title)
     sections = [
         {
-            "title": "來源筆記正文",
+            "title": "📺 影片與字幕存檔" if archive_mode else "來源筆記正文",
             "path": vault_relative(source_note, vault),
             "body": safe_source_body,
         },
@@ -1158,8 +1253,35 @@ def stored_note_sections(
     return sections
 
 
+def transcript_archive_reader_body(source_fields: dict[str, object], source_body: str) -> str:
+    """Reader section for a YouTube caption archive source.
+
+    The note holds no transcript, so the whole source note is never rendered as
+    the "stored body".  The reader gets the video link and where the full
+    transcript is kept; the knowledge points show their own short quotations.
+    """
+    declared: dict[str, str] = {}
+    for line in section_after_h2(source_body, "字幕存檔").splitlines():
+        match = re.match(r"^\|\s*([^|]+?)\s*\|\s*(.*?)\s*\|\s*$", line)
+        if match:
+            declared[match.group(1)] = match.group(2)
+    url = str(source_fields.get("source_url") or declared.get("影片 URL") or "").strip()
+    language = declared.get("字幕語言", "")
+    track = declared.get("字幕軌道", "")
+    lines = ["# 📺 影片與字幕存檔", ""]
+    if url:
+        lines.append(f"- 影片連結：[{url}]({url})")
+    if language or track:
+        lines.append("- 字幕語言：" + "／".join(part for part in (language, track) if part))
+    lines.extend([
+        "- 完整字幕只保存在工作包存檔，不放入知識庫；知識點的引述可由存檔重建核對。",
+        "- 各知識點下方的短引述附有影片時間點連結，可直接跳到對應片段。",
+    ])
+    return "\n".join(lines)
+
+
 def reader_safe_source_body(source_body: str) -> str:
-    original_body = section_after_h2(source_body, "正文保存區")
+    original_body = retained_note_body_section(source_body)
     if original_body:
         # The retained source is data, including quoted internal-looking words.
         # Escape it during rendering; never censor or truncate the full body.
@@ -1235,11 +1357,12 @@ def render_html(
     overview = url_overview or summary
     source_url = str(source_fields.get("source_url") or "")
     original_source_url = str(source_fields.get("_original_source_url") or "")
-    original_title = str(source_fields.get("_original_title") or "")
+    original_title = reader_safe_source_value(source_fields.get("_original_title"), fallback="")
     original_publication, original_author, original_date = reader_source_attribution_details(source_fields)
     source_attribution_label = reader_source_attribution_label(source_fields, fallback="")
     source_input_kind = validated_source_input_kind
     source_identity = validated_source_identity
+    asset_mode = str(source_fields.get("asset_mode") or "formal_infographic").strip()
     adoption = str(app_fields.get("AI總判斷") or app_fields.get("adoption_status") or "")
     confidence = str(app_fields.get("AI信心") or app_fields.get("ai_review_confidence") or "")
     taste = str(app_fields.get("品味") or app_fields.get("taste_network_status") or "")
@@ -1259,13 +1382,26 @@ def render_html(
         )
         if part
     ]
-    original_detail = " / ".join(original_parts)
-    copied_text_detail = (
-        f"（使用者提供文字副本；內容身分：{escape(source_identity or source_input_kind)}）"
+    original_detail = reader_safe_source_value(" / ".join(original_parts), fallback="")
+    # A lone author is attribution, not a full citation.  Preserve a richer
+    # reader label such as "Erin Higgins／IES" instead of collapsing it to a name.
+    if (
+        original_detail == original_author
+        and source_attribution_label
+        and source_attribution_label != original_detail
+    ):
+        original_detail = ""
+    work_title = reader_safe_source_value(
+        source_fields.get("_primary_work_title") or source_fields.get("primary_work_title"),
+        fallback="",
     )
+    if not work_title:
+        work_title = reader_safe_source_value(title, fallback="")
+    work_title = work_title.strip().removeprefix("《").removesuffix("》").strip()  # stored titles may already carry 《》
+    work_title = reader_safe_source_value(f"《{work_title}》", fallback="") if work_title else ""
+    reader_source = original_detail or source_attribution_label or work_title
     commentary_source = source_input_kind == 'user_provided_text' and source_fields.get('source_type') == '使用者評註'
-    if commentary_source:
-        copied_text_detail = '（保存的是使用者評註，並非該文章全文）'
+    copied_text_detail = '（保存的是評註，並非該文章全文）' if commentary_source else ''
     if source_url:
         source_provenance = (
             '<p class="source-link"><span>原始 URL</span>'
@@ -1276,25 +1412,24 @@ def render_html(
             '<p class="source-link source-original"><span>原文 URL</span>'
             f'<a href="{escape(original_source_url)}" target="_blank" rel="noreferrer">{escape(original_source_url)}</a></p>'
             '<p class="source-link source-provenance"><span>正式來源</span>'
-            f'{escape(original_detail or source_attribution_label or "原文來源資料未完整提供")}{copied_text_detail}</p>'
+            f'{escape(reader_source)}{copied_text_detail}</p>'
         )
         if commentary_source:
             source_provenance = source_provenance.replace('<span>正式來源</span>', '<span>評註引用來源</span>')
-    elif source_input_kind == "user_provided_text" and (original_detail or source_attribution_label):
-        source_provenance = (
-            '<p class="source-link source-provenance"><span>正式來源</span>'
-            f'{escape(original_detail or source_attribution_label)}{copied_text_detail}</p>'
-        )
     else:
         source_provenance = (
             '<p class="source-link source-provenance"><span>正式來源</span>'
-            f'使用者提供圖片（原圖身分：{escape(source_identity or source_input_kind)}）</p>'
-            if source_input_kind == "user_provided_image"
-            else (
-            '<p class="source-link source-provenance"><span>正式來源</span>'
-            f'使用者提供文字（內容身分：{escape(source_identity or source_input_kind)}）</p>'
-            )
+            f'{escape(reader_source)}{copied_text_detail}</p>'
         )
+
+    footer_copy = (
+        "本頁由 Obsidian 內的原文、應用筆記與知識點重建；只作閱讀入口，不取代正式筆記。"
+        if asset_mode == "knowledge_only"
+        else "本頁由 Obsidian 內的原文、應用筆記、知識點與資訊圖重建；只作閱讀入口，不取代正式筆記。"
+    )
+    media_html = outcome_media_block(asset_srcs, supplementary_asset_srcs, title, asset_mode)
+    top_class = "grid top" if media_html else "grid top top-no-media"
+    infographic_action = optional_infographic_action(source_id, asset_mode)
 
     return f"""<!doctype html>
 <html lang="zh-Hant">
@@ -1353,6 +1488,7 @@ def render_html(
     .grid {{ display: grid; gap: 18px; }}
     .grid > * {{ min-width: 0; }}
     .top {{ grid-template-columns: minmax(260px, 0.92fr) minmax(320px, 1.08fr); align-items: start; }}
+    .top-no-media {{ grid-template-columns: minmax(0, 1fr); }}
     .media-stack {{ display: grid; gap: 12px; min-width: 0; }}
     section {{ margin: 18px 0; }}
     .panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; overflow-wrap: anywhere; }}
@@ -1398,6 +1534,13 @@ def render_html(
     .kp-evidence .kp-anchor {{ margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--line); color: #3d4248; }}
     .small {{ color: var(--muted); font-size: 14px; }}
     .action {{ border-left: 5px solid var(--orange); background: #fff8f1; }}
+    .optional-infographic-action {{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:0 0 20px; color:var(--muted); font-size:14px; }}
+    .optional-infographic-action p {{ margin:0; }}
+    .optional-infographic-action .copy {{ border:1px solid var(--line); border-radius:999px; padding:8px 12px; background:var(--panel); color:var(--blue); cursor:pointer; font:inherit; font-weight:700; }}
+    .optional-infographic-action .copy:hover {{ color:var(--orange); border-color:var(--orange); }}
+    .optional-infographic-action .copy-source {{ position:absolute; width:1px; height:1px; padding:0; border:0; opacity:0; pointer-events:none; }}
+    .optional-infographic-action .copy-source.is-visible {{ position:static; flex:1 1 100%; width:100%; height:auto; min-height:42px; padding:8px; border:1px solid var(--line); border-radius:8px; opacity:1; pointer-events:auto; background:var(--panel); color:var(--ink); font:14px/1.5 Consolas, "Noto Sans Mono", monospace; }}
+    .optional-infographic-action .status-line {{ min-height:1.5em; color:var(--muted); }}
     .source-evidence img {{ width: 100%; max-height: 460px; object-fit: contain; background: var(--soft); border-radius: 8px; }}
     .vault-body {{ margin-top: 26px; }}
     .vault-body .body-intro {{ color: var(--muted); font-size: 14px; max-width: 760px; }}
@@ -1476,8 +1619,8 @@ def render_html(
     </div>
   </header>
 
-  <section class="grid top">
-    {outcome_media_block(asset_srcs, supplementary_asset_srcs, title, str(source_fields.get("asset_mode") or "formal_infographic"))}
+  <section class="{top_class}">
+    {media_html}
     <div class="grid">
       <div class="panel emphasis">
         <h2>🔎 {escape(source_overview_heading)}</h2>
@@ -1489,6 +1632,8 @@ def render_html(
       </div>
     </div>
   </section>
+
+  {infographic_action}
 
   {source_image_evidence_block(source_original_image_src, title)}
 
@@ -1516,9 +1661,31 @@ def render_html(
 
   <footer>
     <p><a href="index.html">回成果頁總覽</a></p>
-    <p>本頁由 Obsidian 內的原文、應用筆記、知識點與資訊圖重建；只作閱讀入口，不取代正式筆記。</p>
+    <p>{escape(footer_copy)}</p>
   </footer>
 </main>
+<script>
+(() => {{
+  document.querySelectorAll("[data-infographic-command]").forEach((field) => {{
+    const action = field.closest(".optional-infographic-action");
+    const button = action?.querySelector("button.copy");
+    const status = action?.querySelector(".status-line");
+    if (!button || !status) return;
+    button.addEventListener("click", async () => {{
+      try {{
+        if (!navigator.clipboard) throw new Error("clipboard unavailable");
+        await navigator.clipboard.writeText(field.value);
+        status.textContent = "已複製。貼到 AI 對話即可。";
+      }} catch (error) {{
+        field.classList.add("is-visible");
+        field.focus();
+        field.select();
+        status.textContent = "已選取整段文字。請使用系統的複製功能，再貼到 AI。";
+      }}
+    }});
+  }});
+}})();
+</script>
 </body>
 </html>
 """
@@ -1648,14 +1815,60 @@ def render_inline_markdown(text: str) -> str:
         lambda match: f'<span class="note-ref">{match.group(2) or match.group(1)}</span>',
         rendered,
     )
-    rendered = re.sub(
-        r"\[([^\]]+)\]\((https?://[^)]+)\)",
-        lambda match: f'<a href="{match.group(2)}" target="_blank" rel="noreferrer">{match.group(1)}</a>',
-        rendered,
-    )
+    rendered = _markdown_links_and_images(rendered, _linked_text_html)
     rendered = re.sub(r"`([^`]+)`", r"<code>\1</code>", rendered)
     rendered = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", rendered)
     return rendered
+
+
+# Web Markdown (images and links) only changes how the reader page *shows* a
+# text; stored evidence, hashes and vault notes keep the exact original string.
+_MD_DEST = r"[^\s()]*(?:\([^\s()]*\)[^\s()]*)*"
+_MD_TITLE = r"(?:\s+\\*(?:&quot;.*?&quot;|&#x27;.*?&#x27;|\"[^\"]*\"|'[^']*'))?"
+_MD_TEXT = r"((?:\\*\[[^\[\]]*\]|\\+[\[\]]|\\+[^\[\]\\]|\[[^\[\]]*\]|[^\[\]\\])*)"
+_MD_IMAGE = re.compile(r"!\[" + _MD_TEXT + r"\]\((" + _MD_DEST + r")" + _MD_TITLE + r"\)")
+_MD_LINK = re.compile(r"\[" + _MD_TEXT + r"\]\((" + _MD_DEST + r")" + _MD_TITLE + r"\)")
+_MD_BRACKET_ESCAPE = re.compile(r"\\+([\[\]])")
+
+
+def _markdown_links_and_images(text: str, link_renderer, *, tidy: bool = False) -> str:
+    """Replace web-Markdown images and links; text without them is returned unchanged.
+
+    ``![alt](url)`` becomes its alt text (nothing when empty); ``[text](url)`` is
+    handed to ``link_renderer(text, url)``.  Bare reference brackets stay text.
+    """
+    if "](" not in text:
+        return text
+    without_images = _MD_IMAGE.sub(lambda match: _MD_BRACKET_ESCAPE.sub(r"\1", match.group(1)).strip(), text)
+    projected = _MD_LINK.sub(
+        lambda match: link_renderer(_MD_BRACKET_ESCAPE.sub(r"\1", match.group(1)).strip(), match.group(2)),
+        without_images,
+    )
+    if projected == text:
+        return text
+    return re.sub(r"[ \t]{2,}", " ", projected).strip()
+
+
+def _is_web_url(url: str) -> bool:
+    return re.match(r"https?://", url, flags=re.IGNORECASE) is not None
+
+
+def _linked_text_html(text: str, url: str) -> str:
+    """Escaped-text projection: a safe http(s) anchor, otherwise just the link text."""
+    if not text:
+        return ""
+    if not _is_web_url(url):
+        return text
+    return f'<a href="{url}" target="_blank" rel="noreferrer">{text}</a>'
+
+
+def _linked_text_plain(text: str, url: str) -> str:
+    return text
+
+
+def web_markdown_reader_text(text: str) -> str:
+    """Readable plain text for a stored web-Markdown excerpt (callers escape it)."""
+    return _markdown_links_and_images(str(text), _linked_text_plain, tidy=True)
 
 
 def is_markdown_table_start(lines: list[str], index: int) -> bool:
@@ -1718,10 +1931,25 @@ def render_markdown_table(lines: list[str]) -> str:
 
 
 def outcome_media_block(asset_srcs: list[str], supplementary_asset_srcs: list[str], title: str, asset_mode: str) -> str:
-    blocks = [infographic_gallery(asset_srcs, title, asset_mode)]
+    blocks = [block for block in [infographic_gallery(asset_srcs, title, asset_mode)] if block]
     if supplementary_asset_srcs:
         blocks.append(supplementary_image_gallery(supplementary_asset_srcs, title))
-    return '<div class="media-stack">' + "\n".join(blocks) + "</div>"
+    return '<div class="media-stack">' + "\n".join(blocks) + "</div>" if blocks else ""
+
+
+def optional_infographic_action(source_id: str, asset_mode: str) -> str:
+    """Offer the separate image workflow without turning it into a completion state."""
+    if asset_mode != "knowledge_only":
+        return ""
+    command = f"$brain-infographic {source_id}"
+    return (
+        '<section class="optional-infographic-action" aria-label="可選資訊圖操作">'
+        '<p>想以圖像整理這頁？</p>'
+        f'<textarea class="copy-source" data-infographic-command readonly aria-label="為這頁製作資訊圖指令">{escape(command)}</textarea>'
+        '<button class="copy" type="button">為這頁製作資訊圖</button>'
+        '<span class="status-line" role="status" aria-live="polite"></span>'
+        '</section>'
+    )
 
 
 def escape(value: object) -> str:
@@ -1733,6 +1961,8 @@ def strip_trailing_whitespace(text: str) -> str:
 
 
 def infographic_gallery(asset_srcs: list[str], title: str, asset_mode: str = "formal_infographic") -> str:
+    if asset_mode == "knowledge_only":
+        return ""
     figures = []
     total = len(asset_srcs)
     for index, asset_src in enumerate(asset_srcs, start=1):
@@ -1870,7 +2100,7 @@ def source_image_evidence_block(source_original_image_src: str, title: str) -> s
         '<section class="source-evidence">'
         '<div class="panel">'
         '<h2>🖼️ 原始圖片證據</h2>'
-        '<p class="small">這是使用者提供的原圖；視覺解讀、知識點和主張均應回指這份證據，而非把資訊圖當成來源。</p>'
+        '<p class="small">這是原圖；視覺解讀、知識點和主張均應回指這份證據，而非把資訊圖當成來源。</p>'
         f'<a href="{escape(source_original_image_src)}" target="_blank" rel="noreferrer">開啟原圖</a>'
         f'<img src="{escape(source_original_image_src)}" alt="{escape(title)} 原始圖片證據">'
         '</div></section>'
@@ -1900,7 +2130,10 @@ def coverage_audit_block(
     case_evidence_reproduction_url: str = "",
     method_verification: dict[str, str] | None = None,
 ) -> str:
-    if str(source_fields.get("asset_mode") or "") == "case_evidence":
+    asset_mode = str(source_fields.get("asset_mode") or "").strip()
+    if asset_mode == "knowledge_only":
+        return ""
+    if asset_mode == "case_evidence":
         metrics = [
             ("資產模式", "case_evidence"),
             ("已讀截圖", str(asset_count)),
@@ -2248,7 +2481,7 @@ def knowledge_point_cards(points: list[dict[str, object]]) -> str:
         if normalized_anchor == normalized_visible_text(str(title)) or normalized_anchor in seen_anchors:
             anchor_text = ""
         else:
-            anchor_text = str(anchor)
+            anchor_text = web_markdown_reader_text(str(anchor))
             if normalized_anchor:
                 seen_anchors.add(normalized_anchor)
         cards.append(
@@ -2409,7 +2642,8 @@ def normalized_visible_text(value: str) -> str:
 
 
 def write_paginated_index(entries: list[dict[str, object]], output_dir: Path, page_size: int,
-                          vault: Path | None = None, defer_nebula: bool = False) -> list[Path]:
+                          vault: Path | None = None, defer_nebula: bool = False,
+                          nebula_report: dict[str, object] | None = None) -> list[Path]:
     """Keep the caller API while routing all catalogue UI through one renderer."""
     try:
         from tools.outcome_catalog import write_catalog_pages
@@ -2423,7 +2657,9 @@ def write_paginated_index(entries: list[dict[str, object]], output_dir: Path, pa
             from .knowledge_nebula import refresh_installed
         except ImportError:
             from knowledge_nebula import refresh_installed
-        refresh_installed(vault, output_dir)
+        refreshed = refresh_installed(vault, output_dir)
+        if nebula_report is not None:  # None: no nebula installed here; a pause is reported by the callers, never hidden
+            nebula_report["nebula"] = refreshed
     if vault is not None and output_dir.resolve().is_relative_to(vault.resolve()):
         try:
             from . import thinking_archive as archive

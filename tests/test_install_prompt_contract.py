@@ -30,7 +30,7 @@ def main() -> None:
     registry = json.loads(text(ROOT / "spec" / "command-registry.json"))["commands"]
     canonical = [name for name, entry in sorted(registry.items(), key=lambda item: item[1].get("menu_order", 999))
                  if "menu_order" in entry and not entry.get("alias_for")]
-    assert canonical == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update"]
+    assert canonical == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update", "infographic"]
     rendered = re.findall(r'<textarea id="daily-([^\"]+)"[^>]*>(.*?)</textarea>', guide, flags=re.DOTALL)
     assert [name for name, _ in rendered] == canonical
     assert [html.unescape(value).strip() for _, value in rendered] == [registry[name]["host_prompt"] for name in canonical]

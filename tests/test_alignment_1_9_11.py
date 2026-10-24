@@ -50,11 +50,44 @@ class Alignment1911Tests(unittest.TestCase):
             preserved, archive = worker.preserve_visual_repair_reference(
                 package, original, first, authorization
             )
-            self.assertEqual(archive.name, "image.attempt-1-reference.png")
+            self.assertEqual(archive.name, f"ref-1-{first['png_sha256'][:12]}.png")
             original.write_bytes(b"edited image")
             self.assertEqual(
                 worker.validate_visual_repair_authorization(package, kp, page, first, preserved),
                 archive,
+            )
+
+            legacy = package / "legacy-image.png"
+            legacy.write_bytes(b"legacy first image")
+            legacy_first = {
+                "attempt_number": 1,
+                "attempt_id": "IMGATT-LEGACY-1",
+                "png_sha256": hashlib.sha256(legacy.read_bytes()).hexdigest(),
+                "failure_code": "reverse_review_failed",
+                "status": "blocking_failure",
+            }
+            legacy_archive = legacy.with_name("legacy-image.attempt-1-reference.png")
+            legacy_archive.write_bytes(legacy.read_bytes())
+            legacy.write_bytes(b"replacement image")
+            legacy_authorization = dict(
+                authorization,
+                first_attempt_id="IMGATT-LEGACY-1",
+                reference_png_sha256=legacy_first["png_sha256"],
+                reference_asset="legacy-image.png",
+            )
+            self.assertEqual(
+                worker.validate_visual_repair_authorization(
+                    package, kp, page, legacy_first, legacy_authorization,
+                ),
+                legacy_archive,
+            )
+            preserved_legacy, reused_archive = worker.preserve_visual_repair_reference(
+                package, legacy, legacy_first, legacy_authorization,
+            )
+            self.assertEqual(reused_archive, legacy_archive)
+            self.assertEqual(
+                preserved_legacy["preserved_reference_asset"],
+                legacy_archive.relative_to(package).as_posix(),
             )
 
     def test_direct_capture_mode_is_frozen_on_the_accepted_rail_job(self):

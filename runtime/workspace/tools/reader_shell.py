@@ -1,10 +1,13 @@
 """Shared offline reader identity and navigation. No data or catalogue writes."""
 from contextlib import contextmanager
 from pathlib import Path
+import errno
 import html
+import json
 import os
 import re
 import threading
+import time
 from uuid import uuid4
 from urllib.parse import quote
 
@@ -16,6 +19,9 @@ PRODUCT_FOOTER = '<footer class="brain-product-footer" data-brain-footer="creati
 CATALOG_PAGE_NAMES = frozenset(("index.html", "knowledge.html", "thinking.html"))
 _projection_lock_guard = threading.Lock()
 _projection_locks: dict[str, threading.Lock] = {}
+_projection_lock_state = threading.local()
+CATALOGUE_PROJECTION_LOCK_WAIT_SECONDS = 3.0
+_CATALOGUE_PROJECTION_LOCK_POLL_SECONDS = 0.05
 
 def brand_content(logo_href=None):
     """The same identity for guides and readers; the wordmark remains real text."""
@@ -131,29 +137,45 @@ def catalogue_projection_lock(output_dir):
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     lock = output / '.reader-projection.lock'
+    lock_key = str(lock)
+    held = getattr(_projection_lock_state, 'held', None)
+    if held is None:
+        held = set()
+        _projection_lock_state.held = held
+    if lock_key in held:
+        raise RuntimeError('catalogue projection lock cannot be reacquired by the same thread')
     with _projection_lock_guard:
-        local_lock = _projection_locks.setdefault(str(lock), threading.Lock())
-    if not local_lock.acquire(blocking=False):
-        raise ValueError('another reader projection is active; keep the existing readers and retry after it finishes')
+        local_lock = _projection_locks.setdefault(lock_key, threading.Lock())
+    deadline = time.monotonic() + CATALOGUE_PROJECTION_LOCK_WAIT_SECONDS
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not local_lock.acquire(timeout=remaining):
+        raise ValueError('reader projection lock timed out; existing readers were kept')
     handle = None
+    locked = False
     try:
         handle = lock.open('a+', encoding='utf-8')
         if lock.stat().st_size == 0:
             handle.write('\0')
             handle.flush()
-        handle.seek(0)
-        if os.name == 'nt':
-            import msvcrt
-            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError as error:
-        if handle is not None:
-            handle.close()
-        local_lock.release()
-        raise ValueError('another reader projection is active; keep the existing readers and retry after it finishes') from error
-    try:
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('reader projection lock timed out; existing readers were kept') from error
+                time.sleep(min(_CATALOGUE_PROJECTION_LOCK_POLL_SECONDS, remaining))
+        held.add(lock_key)
         handle.seek(0)
         handle.write(str(os.getpid()) + '\n')
         handle.flush()
@@ -161,15 +183,18 @@ def catalogue_projection_lock(output_dir):
         yield
     finally:
         try:
-            handle.seek(0)
-            if os.name == 'nt':
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if locked:
+                handle.seek(0)
+                if os.name == 'nt':
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         finally:
             try:
-                handle.close()
+                if handle is not None:
+                    handle.close()
             finally:
+                held.discard(lock_key)
                 local_lock.release()
 
 
@@ -188,7 +213,22 @@ def atomic_reader_write(page, document: str) -> None:
             pending.unlink()
 
 
-def refresh_current_reader_visuals(vault):
+def _active_compiler_job_for_source(root: Path, source_id: str) -> bool:
+    """Keep a writing source untouched; ``None`` is not automatically legacy."""
+    jobs = Path(root).resolve() / 'outputs' / 'compiler_worker_v2' / '_jobs'
+    for job_path in jobs.glob('*.json') if jobs.is_dir() else ():
+        try:
+            job = json.loads(job_path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        if (job.get('schema_version') == 'compiler_worker_v2_job_v1'
+                and job.get('source_id') == source_id
+                and job.get('status') in {'running', 'awaiting_imagegen', 'committing'}):
+            return True
+    return False
+
+
+def refresh_current_reader_visuals(vault, *, root=None):
     """Reproject only current HTML reader envelopes from saved local pages.
 
     This never reads or changes source notes, citations, receipts, or generated
@@ -202,15 +242,65 @@ def refresh_current_reader_visuals(vault):
                 'thinking/ASK-*.html', 'notes/N-*.html', 'canvases/canvas-*.html')
     pages = sorted({path for pattern in patterns for path in output.glob(pattern) if path.is_file()})
     changed = []
+    ordinary_pages = []
+    changed_standard_outcomes = []
+    try:
+        from tools.outcome_page_generator import completed_v2_package_for_standard_outcome
+    except ModuleNotFoundError:
+        from outcome_page_generator import completed_v2_package_for_standard_outcome
+    for page in pages:
+        source = page.read_text(encoding='utf-8')
+        _catalogue_document(page, source)
+        active = {'index.html': 'overview', 'knowledge.html': 'knowledge', 'thinking.html': 'thinking'}.get(page.name, 'thinking' if page.parts[-2:-1] == ('thinking',) else 'knowledge')
+        rendered = apply_theme(source, page, vault, active)
+        # A no-op never needs receipt classification.  In particular, a
+        # historical source drift must not make opening an unchanged reader
+        # page fail just because the shared shell is already current.
+        source_id = page.name.removesuffix('_outcome.html') if page.name.endswith('_outcome.html') else ''
+        pending_shell_candidate = (
+            page.with_name(f'.{source_id}_outcome_shell_candidate.html').is_file()
+            if source_id else False
+        )
+        if rendered == source and not pending_shell_candidate:
+            continue
+        if page.name.endswith('_outcome.html'):
+            if root is None:
+                raise ValueError('completed outcome visual refresh requires the verified workspace root')
+            changed_standard_outcomes.append((page, source, rendered))
+        else:
+            ordinary_pages.append((page, source, rendered))
     with catalogue_projection_lock(output):
-        for page in pages:
-            source = page.read_text(encoding='utf-8')
-            _catalogue_document(page, source)
-            active = {'index.html': 'overview', 'knowledge.html': 'knowledge', 'thinking.html': 'thinking'}.get(page.name, 'thinking' if page.parts[-2:-1] == ('thinking',) else 'knowledge')
-            rendered = apply_theme(source, page, vault, active)
-            if rendered != source:
-                if page.read_text(encoding='utf-8') != source:
-                    raise ValueError('reader page changed during visual projection; existing content was not overwritten')
-                atomic_reader_write(page, rendered)
-                changed.append(str(page))
+        for page, source, rendered in ordinary_pages:
+            if page.read_text(encoding='utf-8') != source:
+                raise ValueError('reader page changed during visual projection; existing content was not overwritten')
+            atomic_reader_write(page, rendered)
+            changed.append(str(page))
+    try:
+        from tools.compiler_worker_v2 import compiler_process_lock, refresh_completed_outcome
+    except ModuleNotFoundError:
+        from compiler_worker_v2 import compiler_process_lock, refresh_completed_outcome
+    for page, source, rendered in changed_standard_outcomes:
+        source_id = page.name.removesuffix('_outcome.html')
+        try:
+            # Keep classification and any legacy write under the same compiler
+            # lock; otherwise a committing source can turn completed between a
+            # ``None`` lookup and a direct reader write.
+            with compiler_process_lock(Path(root).resolve()):
+                package = completed_v2_package_for_standard_outcome(vault, source_id, page.resolve(), root=Path(root))
+                if package is not None:
+                    refreshed = refresh_completed_outcome(
+                        Path(root), package, shell_only=True, _compiler_lock_held=True,
+                    )
+                    if refreshed.get('write_performed'):
+                        changed.append(str(page))
+                    continue
+                if _active_compiler_job_for_source(Path(root), source_id):
+                    continue
+                with catalogue_projection_lock(output):
+                    if page.read_text(encoding='utf-8') != source:
+                        raise ValueError('reader page changed during visual projection; existing content was not overwritten')
+                    atomic_reader_write(page, rendered)
+                    changed.append(str(page))
+        except SystemExit as exc:
+            raise ValueError(str(exc)) from exc
     return {'status': 'ready', 'pages_scanned': len(pages), 'visual_pages_reprojected': len(changed)}

@@ -13,15 +13,28 @@ import os
 import re
 import shutil
 from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from tools.workspace_paths import WorkspacePathError, vault_path, vault_relative_path
+    from tools.workspace_paths import WorkspacePathError, managed_vault_path, vault_path, vault_relative_path
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, vault_path, vault_relative_path  # type: ignore
+    from workspace_paths import WorkspacePathError, managed_vault_path, vault_path, vault_relative_path  # type: ignore
+
+try:
+    from tools.reader_surface_guard import (
+        has_personal_layer,
+        next_level_two_heading_offset,
+        personal_layer_heading_match,
+    )
+except ModuleNotFoundError:
+    from reader_surface_guard import (  # type: ignore
+        has_personal_layer,
+        next_level_two_heading_offset,
+        personal_layer_heading_match,
+    )
 
 try:
     from tools.management_exclusion import assert_management_idle_for_vault
@@ -59,6 +72,7 @@ try:
     from tools.case_evidence_contract import (
         ASSET_MODE_CASE,
         ASSET_MODE_FORMAL,
+        ASSET_MODE_KNOWLEDGE,
         CaseEvidenceError,
         case_asset_paths as contract_case_asset_paths,
         package_manifest as case_package_manifest,
@@ -67,15 +81,33 @@ except ModuleNotFoundError:
     from case_evidence_contract import (  # type: ignore
         ASSET_MODE_CASE,
         ASSET_MODE_FORMAL,
+        ASSET_MODE_KNOWLEDGE,
         CaseEvidenceError,
         case_asset_paths as contract_case_asset_paths,
         package_manifest as case_package_manifest,
     )
 
 try:
-    from tools.graph_preset import ensure_initial_graph_preset, graph_settings_status
+    from tools.graph_preset import ensure_initial_graph_preset, graph_settings_status, reviewed_active_concept_filter
 except ModuleNotFoundError:
-    from graph_preset import ensure_initial_graph_preset, graph_settings_status  # type: ignore
+    from graph_preset import ensure_initial_graph_preset, graph_settings_status, reviewed_active_concept_filter  # type: ignore
+
+try:
+    from tools.youtube_transcript_capture import (
+        TRANSCRIPT_ARCHIVE_MODE,
+        caption_fragments_grounded,
+        caption_reading_chunks,
+        has_cue_timing_line,
+        is_youtube_caption_transcript,
+    )
+except ModuleNotFoundError:
+    from youtube_transcript_capture import (  # type: ignore
+        TRANSCRIPT_ARCHIVE_MODE,
+        caption_fragments_grounded,
+        caption_reading_chunks,
+        has_cue_timing_line,
+        is_youtube_caption_transcript,
+    )
 
 
 DEFAULT_SLICE = Path("inputs/source.md")
@@ -89,7 +121,10 @@ INDEX_FIELD_MARKERS = (
 BLOCKING_READABILITY_STATUSES = {"partial_capture", "source_blocked", "invalidated", "user_text_pending_review", "user_image_pending_review"}
 VALID_SOURCE_TYPES = {"Facebook", "Twitter/X", "公司官網", "新聞", "部落格", "影片", "官方文件", "使用者提供文字", "使用者提供圖片", "其他"}
 VALID_SOURCE_INPUT_KINDS = {"url", "user_provided_text", "user_provided_image"}
-VALID_SOURCE_RETENTION_MODES = {"summarized_allowed", "full_body_required", "original_image_required"}
+VALID_SOURCE_RETENTION_MODES = {"summarized_allowed", "full_body_required", "original_image_required", TRANSCRIPT_ARCHIVE_MODE}
+# Modes that record the accepted body hash.  The archive mode keeps the body in
+# the package, so its hash points at the archive, not at a Vault section.
+CANONICAL_HASH_RETENTION_MODES = {"full_body_required", TRANSCRIPT_ARCHIVE_MODE}
 VALID_KNOWLEDGE_USE = {"事實真源", "工作流程", "學習材料", "判斷材料", "品味材料", "行動材料", "噪音暫存"}
 DEFAULT_AI_ADOPTION_STATUS = "暫存"
 DEFAULT_AI_ADOPTION_REASON = "AI 尚未形成採納判斷。"
@@ -211,6 +246,11 @@ class KnowledgePoint:
     kind: str
     confidence: str
     evidence: str
+    title: str = ""
+    reusable_concept_status: str = "needs_review"
+    reusable_concept_name: str = ""
+    reusable_concept_reason: str = ""
+    understanding_delta: str = ""
 
 
 @dataclass(frozen=True)
@@ -218,6 +258,17 @@ class KnowledgeRelation:
     source_kp_id: str
     target_kp_id: str
     relation: str
+    evidence: str
+    confidence: str
+
+
+@dataclass(frozen=True)
+class CrossSourceLink:
+    """A plan-validated relation from a KP of this source to a linked KP of an older source."""
+    source_kp_id: str
+    target_kp_uid: str
+    relation: str
+    insight: str
     evidence: str
     confidence: str
 
@@ -251,9 +302,11 @@ class SliceData:
     taste_network_status: str
     taste_network_reason: str
     source_confidence: str
+    retrieval_aliases: list[str]
     source_markdown: str
     application_markdown: str
     asset_mode: str
+    infographic_status: str
     asset_path: Path | None
     asset_paths: tuple[Path, ...]
     case_evidence_manifest_path: Path | None
@@ -280,6 +333,10 @@ class SliceData:
     infographic_multi_volume_status: str
     knowledge_points: list[KnowledgePoint]
     relations: list[KnowledgeRelation]
+    # Present only when the slice carries a prior_knowledge_json projection (current compact plans).
+    cross_source_links: tuple[CrossSourceLink, ...] = ()
+    prior_knowledge_applies: bool = False
+    prior_job_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -439,8 +496,12 @@ def render_result(
         "application_note": str(plan["application_note"].relative_to(root)),
         "knowledge_points": [str(path.relative_to(root)) for path in plan["knowledge_point_notes"]],
         "concepts": [
-            str(concept_note_path(plan["vault"], kp.text).relative_to(root))
-            for kp in plan["data"].knowledge_points
+            str(path.relative_to(root))
+            for path in (
+                planned_concept_note_path(plan["vault"], kp, note)
+                for kp, note in zip(plan["data"].knowledge_points, plan["knowledge_point_notes"])
+            )
+            if path is not None
         ],
         "asset": str(plan["asset_dest"].relative_to(root)) if plan["asset_dest"] else None,
         "assets": [
@@ -461,18 +522,19 @@ def resolve_inside(root: Path, target: Path) -> Path:
     return resolved
 
 
-def parse_slice(source_slice: Path, max_kp: int) -> SliceData:
-    text = source_slice.read_text(encoding="utf-8-sig")
+def parse_slice(source_slice: Path, max_kp: int, *, markdown: str | None = None) -> SliceData:
+    text = source_slice.read_text(encoding="utf-8-sig") if markdown is None else markdown
     source_id = source_slice.stem.split("_", 1)[0]
     slug = source_slice.stem.split("_", 1)[1] if "_" in source_slice.stem else source_slice.stem
     title = first_heading(text).replace(" — ", " - ")
     audit = parse_table_after_heading(text, "## 來源稽核")
+    source_input_kind = (audit.get("來源輸入類型", "url") or "url").strip().lower()
     tldr = parse_numbered_list_after_heading(text, "## TL;DR")
     routing = parse_table_after_heading(text, "## 知識用途分流")
     kp_rows = parse_kp_rows(text)[:max_kp]
     relations = parse_relation_rows(text)
     asset_mode = (audit.get("資產模式") or ASSET_MODE_FORMAL).strip()
-    if asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE}:
+    if asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}:
         raise AdapterStop("blocked", "source slice has an unsupported asset mode")
     infographic_blocks = extract_infographic_blocks(text)
     coverage_audit = parse_table_after_heading(text, "## 覆蓋審計")
@@ -482,7 +544,26 @@ def parse_slice(source_slice: Path, max_kp: int) -> SliceData:
     asset_path = asset_paths[0] if asset_paths else None
     infographic = infographic_blocks[0] if infographic_blocks else ""
     canonical_body_markdown = extract_canonical_body_markdown(text)
-    validate_source_anchored_knowledge(kp_rows, relations, canonical_body_markdown)
+    # User-provided images have no canonical text body.  Their IMG-* evidence
+    # is checked only after the original bytes and formal visual analysis have
+    # been verified in user_image_provenance_issues().
+    grounding_body = canonical_body_markdown
+    if (audit.get("正文保存模式") or "").strip() == TRANSCRIPT_ARCHIVE_MODE:
+        # The source note holds no transcript; quotations are grounded in the
+        # package archive that sits beside the slice.
+        archive_body = source_slice.parent / "canonical_source.md"
+        if not archive_body.is_file():
+            raise AdapterStop("blocked", "transcript archive canonical_source.md is missing beside the source slice")
+        grounding_body = archive_body.read_text(encoding="utf-8-sig").rstrip("\n")
+    cross_source_links, prior_knowledge_applies, prior_job_id = parse_prior_knowledge(text)
+    if source_input_kind != "user_provided_image":
+        validate_source_anchored_knowledge(kp_rows, relations, grounding_body)
+        validate_source_anchored_knowledge(
+            [],
+            [KnowledgeRelation(link.source_kp_id, link.target_kp_uid, link.relation, link.evidence, link.confidence)
+             for link in cross_source_links],
+            grounding_body,
+        )
     source_image_path = slice_local_asset_path(source_slice.parent, audit.get("原始圖片檔", ""))
     case_evidence_manifest_path: Path | None = None
     case_evidence_manifest_sha256 = ""
@@ -511,12 +592,15 @@ def parse_slice(source_slice: Path, max_kp: int) -> SliceData:
         image_paths.append(slice_local_asset_path(source_slice.parent, case_manifest["reproduction"].get("comparison_screenshot_path", "")))
         case_evidence_image_paths = tuple(path for path in image_paths if path is not None)
 
+    retrieval_aliases = parse_retrieval_aliases(text)
+    source_markdown = prepare_source_markdown(remove_retrieval_aliases_transport_comment(text), source_id)
+
     return SliceData(
         source_id=source_id,
         slug=slug,
         title=audit.get("來源名稱") or title,
         source_url=audit.get("URL") or audit.get("來源 URL") or audit.get("來源URL") or "",
-        source_input_kind=(audit.get("來源輸入類型", "url") or "url").strip().lower(),
+        source_input_kind=source_input_kind,
         declared_source_identity=audit.get("來源身分", ""),
         source_content_sha256=audit.get("來源內容 SHA-256", ""),
         source_image_sha256=audit.get("來源圖片 SHA-256") or audit.get("原始圖片 SHA-256", ""),
@@ -545,9 +629,15 @@ def parse_slice(source_slice: Path, max_kp: int) -> SliceData:
             or DEFAULT_TASTE_NETWORK_REASON
         ),
         source_confidence="高" if "官方" in audit.get("來源類型", "") else "中",
-        source_markdown=prepare_source_markdown(text, source_id),
+        retrieval_aliases=retrieval_aliases,
+        source_markdown=source_markdown,
         application_markdown=extract_application_markdown(text),
         asset_mode=asset_mode,
+        infographic_status=(
+            audit.get("資訊圖狀態", "not_requested")
+            if asset_mode == ASSET_MODE_KNOWLEDGE
+            else "completed"
+        ),
         asset_path=asset_path,
         asset_paths=tuple(asset_paths),
         case_evidence_manifest_path=case_evidence_manifest_path,
@@ -602,6 +692,9 @@ def parse_slice(source_slice: Path, max_kp: int) -> SliceData:
         infographic_multi_volume_status=coverage_audit.get("多卷狀態", "missing"),
         knowledge_points=kp_rows,
         relations=relations,
+        cross_source_links=cross_source_links,
+        prior_knowledge_applies=prior_knowledge_applies,
+        prior_job_id=prior_job_id,
     )
 
 
@@ -616,12 +709,46 @@ def parse_table_after_heading(text: str, heading: str) -> dict[str, str]:
     block = section_after(text, heading)
     rows: dict[str, str] = {}
     for line in block.splitlines():
-        if not line.startswith("|") or "---" in line:
+        if not line.startswith("|") or is_markdown_table_divider(line):
             continue
         cells = [cell.strip() for cell in split_markdown_table_cells(line)]
         if len(cells) >= 2 and cells[0] not in {"欄位", "類型"}:
             rows[clean_table_cell(cells[0])] = clean_table_cell(cells[1])
     return rows
+
+
+RETRIEVAL_ALIASES_TRANSPORT_RE = re.compile(
+    r"(?m)^<!-- retrieval_aliases_json: (?P<aliases>.*?) -->\r?\n(?:\r?\n)?\Z"
+)
+ORIGINAL_LAYER_HEADING_RE = re.compile(r"(?m)^## 原文層[ \t]*\r?$")
+
+
+def retrieval_aliases_transport_match(text: str) -> re.Match[str] | None:
+    """Return only the compiler annotation immediately before the original layer."""
+    original_layer = ORIGINAL_LAYER_HEADING_RE.search(text)
+    if original_layer is None:
+        return None
+    return RETRIEVAL_ALIASES_TRANSPORT_RE.search(text[:original_layer.start()])
+
+
+def parse_retrieval_aliases(text: str) -> list[str]:
+    """Read the compiler-only alias projection without making it reader-visible."""
+    match = retrieval_aliases_transport_match(text)
+    if not match:
+        return []
+    try:
+        aliases = json.loads(match.group("aliases"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(aliases, list) or not all(isinstance(item, str) for item in aliases):
+        return []
+    return [item.strip() for item in aliases if item.strip()]
+
+
+def remove_retrieval_aliases_transport_comment(text: str) -> str:
+    """Drop the compiler transport line and its following blank line from output."""
+    match = retrieval_aliases_transport_match(text)
+    return text[:match.start()] + text[match.end():] if match else text
 
 
 def split_markdown_table_cells(line: str) -> list[str]:
@@ -641,6 +768,15 @@ def split_markdown_table_cells(line: str) -> list[str]:
             escaped = False
     cells.append("".join(current))
     return cells
+
+
+def is_markdown_table_divider(line: str) -> bool:
+    """Recognize only a complete Markdown divider row, never cell content."""
+
+    if not line.startswith("|"):
+        return False
+    cells = [cell.strip() for cell in split_markdown_table_cells(line)]
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
 
 
 def clean_table_cell(value: str) -> str:
@@ -719,8 +855,83 @@ def extract_canonical_body_markdown(text: str) -> str:
     return match.group(2).strip() if match else ""
 
 
+def retained_original_location(mode: str | None) -> str:
+    """Return the sole retained-original location for an accepted retention mode."""
+    if mode == "full_body_required":
+        return "source_note_body"
+    if mode in {"original_image_required", "transcript_archive_required", "summarized_allowed", None, ""}:
+        return "package_canonical"
+    raise ValueError("unsupported source retention mode: " + str(mode))
+
+
+def read_retained_original(mode: str | None, *, note_text: str | None = None, package: Path | None = None) -> str:
+    """Read the immutable original from the location owned by ``mode``."""
+    if retained_original_location(mode) == "source_note_body":
+        if note_text is None:
+            raise ValueError("retained source note text is required")
+        body = extract_canonical_body_markdown(note_text)
+        if not body:
+            raise ValueError("retained source note lacks canonical body")
+        return body
+    if package is None:
+        raise ValueError("retained source package is required")
+    canonical = package / "canonical_source.md"
+    if not canonical.is_file():
+        raise ValueError("retained source package lacks canonical_source.md")
+    text = canonical.read_text(encoding="utf-8")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def retained_note_body_section(text: str) -> str:
+    """Return the source-note retained-body section, preserving its exact slice."""
+    # Original text is fenced and may itself contain H2 headings.
+    collected: list[str] = []
+    active = False
+    fence = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if fence:
+            if re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", stripped):
+                fence = ""
+        else:
+            match = re.match(r"^(`{3,}|~{3,})", stripped)
+            if match:
+                fence = match.group(1)
+            elif re.match(r"^##\s+", line):
+                if active:
+                    break
+                if re.fullmatch(r"##\s+正文保存區\s*", line):
+                    active = True
+                continue
+        if active:
+            collected.append(line)
+    return "\n".join(collected).strip()
+
+
+def retained_note_body_offsets(text: str) -> tuple[int, int] | None:
+    """Return canonical body bounds for packet projection, or reject bad delimiters."""
+    sections = list(re.finditer(r"(?m)^## 正文保存區[ \t]*(?=\n|\Z)", text))
+    if not sections:
+        return None
+    starts = list(re.finditer(r"(?m)^### Canonical article body[ \t]*\n", text))
+    ends = list(re.finditer(r"(?m)^## 知識用途分流[ \t]*(?=\n|\Z)", text))
+    if len(sections) != 1 or len(starts) != 1 or len(ends) != 1:
+        raise ValueError("canonical body is not delimited")
+    if not (sections[0].start() < starts[0].start() < ends[0].start()):
+        raise ValueError("canonical body is not delimited")
+    return starts[0].end(), ends[0].start()
+
+
+def canonical_body_markdown_present(text: str) -> bool:
+    return "## 正文保存區" in text or bool(extract_canonical_body_markdown(text))
+
+
 def canonical_body_fingerprint(markdown: str) -> str:
     return hashlib.sha256(markdown.strip().encode("utf-8")).hexdigest()
+
+
+SOURCE_EVIDENCE_FRAGMENT_MARKER = "【來源片段】"
+SOURCE_EVIDENCE_FRAGMENT_SEPARATOR = f"\n\n{SOURCE_EVIDENCE_FRAGMENT_MARKER}\n\n"
 
 
 def canonical_body_contains_anchor(body: str, anchor: str) -> bool:
@@ -729,16 +940,40 @@ def canonical_body_contains_anchor(body: str, anchor: str) -> bool:
     PDF-to-text extraction commonly wraps a sentence mid-phrase.  The source
     body remains byte- and hash-preserved; this readback check only collapses
     whitespace on both sides before testing whether the same anchor is present.
+    A compiler-created multi-fragment anchor is valid only when every displayed
+    source fragment is independently present; it never fabricates a continuous
+    quotation from non-adjacent paragraphs.
     """
 
-    normalized_anchor = re.sub(r"\s+", " ", anchor).strip()
-    if not normalized_anchor:
-        return False
     normalized_body = re.sub(r"\s+", " ", body).strip()
-    return normalized_anchor in normalized_body
+    # Table rendering folds newlines to spaces, so retain the unique marker
+    # while accepting the same compiler-created fragments after that roundtrip.
+    fragments = anchor.split(SOURCE_EVIDENCE_FRAGMENT_MARKER)
+    normalized_fragments = [re.sub(r"\s+", " ", fragment).strip() for fragment in fragments]
+    if bool(normalized_fragments) and all(
+        fragment and fragment in normalized_body for fragment in normalized_fragments
+    ):
+        return True
+    # A YouTube caption archive keeps the cue lines in the package.  Its
+    # program-built quotations are de-duplicated reading chunks (plus one time
+    # link), so they are grounded by re-deriving the chunks from the archive.
+    return caption_fragments_grounded(body, fragments) is True
+
+
+def transcript_archive_declaration(text: str) -> dict[str, str]:
+    """The ## 字幕存檔 table of a slice or source note (empty when absent)."""
+    return parse_table_after_heading(text, "## 字幕存檔")
+
+
+def transcript_archive_anchors(text: str) -> list[str]:
+    """Reading-version anchors listed under ## 字幕存檔; only the list marker is removed."""
+    block = markdown_subsection(section_after(text, "## 字幕存檔"), "閱讀版代表錨點")
+    return [line.strip()[2:].strip() for line in block.splitlines() if line.strip().startswith("- ") and line.strip()[2:].strip()]
 
 
 def canonical_body_representative_anchors(text: str, audit: dict[str, str]) -> list[str]:
+    if (audit.get("正文保存模式") or "").strip() == TRANSCRIPT_ARCHIVE_MODE:
+        return transcript_archive_anchors(text)
     anchors: list[str] = []
     block = markdown_subsection(section_after(text, "## 正文保存區"), "正文代表錨點")
     anchors.extend(concrete_list_items(block))
@@ -758,8 +993,15 @@ def canonical_body_representative_anchors(text: str, audit: dict[str, str]) -> l
 def parse_kp_rows(text: str) -> list[KnowledgePoint]:
     block = section_after(text, "### 知識點草案") or section_after(text, "## 原子知識點與關係")
     points: list[KnowledgePoint] = []
+    match = re.search(r"^<!-- knowledge_semantics_json: (.+) -->$", text, re.M)
+    semantics = json.loads(match[1]) if match else []
+    if not isinstance(semantics, list) or any(not isinstance(row, dict) for row in semantics):
+        raise AdapterStop("blocked", "invalid knowledge semantics projection")
+    by_id = {row.get("kp_id"): row for row in semantics}
+    if len(by_id) != len(semantics):
+        raise AdapterStop("blocked", "duplicate knowledge semantics identity")
     for line in block.splitlines():
-        if not line.startswith("|") or "---" in line or "知識點 ID" in line:
+        if not line.startswith("|") or is_markdown_table_divider(line) or "知識點 ID" in line:
             continue
         cells = [clean_table_cell(cell) for cell in split_markdown_table_cells(line)]
         if cells and cells[0] in {"ID", "來源知識點"}:
@@ -767,7 +1009,18 @@ def parse_kp_rows(text: str) -> list[KnowledgePoint]:
         if cells and cells[0].startswith("KP-") and len(cells) != 5:
             raise AdapterStop("blocked", "knowledge-point row must contain exactly five cells")
         if len(cells) == 5 and cells[0].startswith("KP-") and not cells[1].startswith("KP-"):
-            points.append(KnowledgePoint(cells[0], cells[1], cells[2], cells[3], cells[4]))
+            item = by_id.get(cells[0], {})
+            concept = item.get("reusable_concept", {})
+            if not isinstance(concept, dict) or concept.get("status", "needs_review") not in {"reusable", "not_reusable", "needs_review"}:
+                raise AdapterStop("blocked", "invalid reusable concept decision")
+            if concept.get("status") == "reusable" and (not concept.get("name") or not concept.get("reason")):
+                raise AdapterStop("blocked", "reusable concept lacks analysed name/reason")
+            points.append(KnowledgePoint(cells[0], cells[1], cells[2], cells[3], cells[4],
+                str(item.get("title") or ""), str(concept.get("status") or "needs_review"),
+                str(concept.get("name") or ""), str(concept.get("reason") or ""),
+                str(concept.get("understanding_delta") or "")))
+    if set(by_id) - {point.kp_id for point in points}:
+        raise AdapterStop("blocked", "knowledge semantics references an unwritten point")
     return points
 
 
@@ -775,32 +1028,84 @@ def validate_source_anchored_knowledge(
     points: list[KnowledgePoint],
     relations: list[KnowledgeRelation],
     canonical_body: str,
+    *,
+    verified_image_anchor_ids: set[str] | None = None,
 ) -> None:
     """Reject a write when a supposedly source-backed KP cannot be traced.
 
     This is intentionally a provenance gate, not an attempt to have Python
-    invent semantic judgement.  The compiler must provide a complete verbatim
-    source excerpt; human review still decides whether that excerpt supports
-    the translated or transformed statement.
+    invent semantic judgement. The compiler must provide a nonempty,
+    non-placeholder excerpt that can be located in the canonical source;
+    AI and human review still decide whether it fully supports the translated
+    or transformed statement.
     """
     for label, anchor, claim in [
         *((f"knowledge point {point.kp_id}", point.evidence, point.text) for point in points),
         *((f"knowledge relation {relation.source_kp_id}->{relation.target_kp_id}", relation.evidence, relation.relation) for relation in relations),
     ]:
-        compact = re.sub(r"\s+", " ", anchor).strip()
-        claim_compact = re.sub(r"\s+", " ", claim).strip()
-        if (len(compact) < 24 or compact in {"待補", "待 AI 補寫", "待 AI 判斷"}
-                or (len(compact) < 80 and compact != claim_compact)):
-            raise AdapterStop("blocked", f"{label} requires a complete verbatim source evidence anchor")
-        if not canonical_body_contains_anchor(canonical_body, compact):
-            raise AdapterStop("blocked", f"{label} evidence anchor is not present in the canonical source")
+        normalized_anchor = re.sub(r"\s+", " ", anchor).strip()
+        if not normalized_anchor or normalized_anchor in {"待補", "待 AI 補寫", "待 AI 判斷"}:
+            raise AdapterStop("blocked", f"{label} requires a nonempty, non-placeholder source evidence anchor")
+        if verified_image_anchor_ids is not None:
+            # Image-analysis only requires an ID to start with IMG-.  Match
+            # the already-verified, complete IDs instead of imposing a second
+            # grammar here; longest first prevents IMG-001 matching a prefix
+            # of a different ID.  Every remaining IMG- marker is rejected.
+            image_evidence = anchor
+            matched_image_anchor_spans: list[tuple[int, int]] = []
+            for image_anchor_id in sorted(verified_image_anchor_ids, key=len, reverse=True):
+                offset = 0
+                while True:
+                    start = image_evidence.find(image_anchor_id, offset)
+                    if start < 0:
+                        break
+                    end = start + len(image_anchor_id)
+                    offset = start + 1
+                    overlaps_existing = any(start < existing_end and end > existing_start for existing_start, existing_end in matched_image_anchor_spans)
+                    left_is_boundary = start == 0 or not (image_evidence[start - 1].isalnum() or image_evidence[start - 1] in "_-")
+                    right_is_boundary = end == len(image_evidence) or not (image_evidence[end].isalnum() or image_evidence[end] in "_-")
+                    if not overlaps_existing and left_is_boundary and right_is_boundary:
+                        matched_image_anchor_spans.append((start, end))
+            has_unverified_image_marker = any(
+                not any(start <= marker.start() < end for start, end in matched_image_anchor_spans)
+                for marker in re.finditer(r"IMG-", image_evidence)
+            )
+            if has_unverified_image_marker:
+                raise AdapterStop("blocked", f"{label} evidence anchor references an unverified image anchor")
+            if matched_image_anchor_spans:
+                continue
+        # Preserve explicit fragment boundaries so a compact-plan citation to
+        # non-adjacent accepted source blocks is checked fragment-by-fragment,
+        # never as a fabricated contiguous quotation.
+        if not canonical_body_contains_anchor(canonical_body, anchor):
+            raise AdapterStop("blocked", f"{label} evidence anchor: quote not in complete source")
+
+
+def parse_prior_knowledge(text: str) -> tuple[tuple[CrossSourceLink, ...], bool, str]:
+    """Cross-source links projected by the compiler beside the relation draft (absent for older slices)."""
+    match = re.search(r"^<!-- prior_knowledge_json: (.+) -->$", text, re.M)
+    if not match:
+        return (), False, ""
+    payload = json.loads(match[1])
+    if not isinstance(payload, dict) or not isinstance(payload.get("cross_links"), list):
+        raise AdapterStop("blocked", "invalid prior knowledge projection")
+    links: list[CrossSourceLink] = []
+    for item in payload["cross_links"]:
+        if not isinstance(item, dict):
+            raise AdapterStop("blocked", "invalid prior knowledge projection")
+        link = CrossSourceLink(*(str(item.get(key) or "").strip() for key in (
+            "source_kp_id", "target_kp_uid", "relation", "insight", "evidence", "confidence")))
+        if not all((link.source_kp_id, link.target_kp_uid, link.relation, link.insight, link.evidence)):
+            raise AdapterStop("blocked", "cross-source link requires KP, target, relation, insight and evidence")
+        links.append(link)
+    return tuple(links), True, str(payload.get("job_id") or "").strip()
 
 
 def parse_relation_rows(text: str) -> list[KnowledgeRelation]:
     block = section_after(text, "### 關係草案") or section_after(text, "## 原子知識點與關係")
     relations: list[KnowledgeRelation] = []
     for line in block.splitlines():
-        if not line.startswith("|") or "---" in line or "來源知識點" in line:
+        if not line.startswith("|") or is_markdown_table_divider(line) or "來源知識點" in line:
             continue
         cells = [clean_table_cell(cell) for cell in split_markdown_table_cells(line)]
         if cells and cells[0].startswith("KP-") and len(cells) != 5:
@@ -1045,8 +1350,6 @@ def png_reverse_review_evidence_issue(
         contract_markers.append(contract.get("required_style_basis", ""))
     if provided_original:
         required_groups += (("原圖", "使用者提供"), ("footer", "註腳"))
-    else:
-        contract_markers.append(contract.get("required_footer_signature", ""))
     missing.extend(marker for marker in contract_markers if marker and marker not in value)
     try:
         spec_receipt = infographic_spec_read_receipt_text()
@@ -1084,7 +1387,7 @@ def infographic_reverse_review_contract() -> tuple[dict[str, str], str | None]:
             "normative_owner",
             "required_review_axes",
             "required_style_basis",
-            "required_footer_signature",
+            "footer_provenance_rule",
             "blocking_failures",
         )
         if not contract.get(key)
@@ -1200,11 +1503,8 @@ def repeatable_infographic_visible_text(line: str) -> bool:
     text = str(line).strip()
     if re.fullmatch(r"\d+\s*/\s*\d+", text):
         return True
-    if not (text.startswith("來源:") and "資訊圖:" in text):
-        return False
-    contract, contract_error = infographic_reverse_review_contract()
-    required_signature = contract.get("required_footer_signature", "") if not contract_error else ""
-    return bool(required_signature and required_signature in text) or "(嘆)" in text
+    normalized = text.replace("：", ":")
+    return normalized.startswith("來源:") and "資訊圖:" in normalized
 
 
 def profiles_have_distinct_coverage(left_profile: dict[str, object], right_profile: dict[str, object]) -> bool:
@@ -1487,33 +1787,41 @@ def prepare_source_markdown(text: str, source_id: str) -> str:
         lambda match: f"![[assets/{source_id.lower()}/{match.group(1)}]]",
         text,
     )
-    text = remove_adam_application_rows(text)
     text = remove_source_internal_lines(text)
     prepared = remove_for_adam_section(text)
     return prepared.replace(canonical_placeholder, canonical_section) if canonical_section else prepared
 
 
 def extract_application_markdown(text: str) -> str:
-    heading = "\n## For 使用者:個人化消化\n"
-    start = text.find(heading)
-    if start == -1:
+    bounds = personal_layer_bounds(text)
+    if bounds is None:
         return ""
-    next_heading = text.find("\n## ", start + len(heading))
-    block = text[start:] if next_heading == -1 else text[start:next_heading]
+    start, end = bounds
+    block = text[start:end]
     block = remove_internal_action_sections(block.strip())
     block = normalize_mainline_terms(block)
-    return block.replace("## For 使用者:個人化消化", "## 個人應用摘要", 1).strip()
+    return block.replace(block.splitlines()[0], "## 個人應用摘要", 1).strip()
 
 
 def remove_for_adam_section(text: str) -> str:
-    heading = "\n## For 使用者:個人化消化\n"
-    start = text.find(heading)
-    if start == -1:
+    bounds = personal_layer_bounds(text)
+    if bounds is None:
         return text
-    next_heading = text.find("\n## ", start + len(heading))
-    if next_heading == -1:
-        return text[:start].rstrip() + "\n"
-    return text[:start].rstrip() + "\n\n" + text[next_heading:].lstrip()
+    start, end = bounds
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    if not after:
+        return before + "\n" if before else ""
+    return before + "\n\n" + after if before else after
+
+
+def personal_layer_bounds(text: str) -> tuple[int, int] | None:
+    match = personal_layer_heading_match(text)
+    if match is None:
+        return None
+    next_heading = next_level_two_heading_offset(text, after=match.end())
+    end = len(text) if next_heading is None else next_heading
+    return match.start(), end
 
 
 def remove_internal_action_sections(text: str) -> str:
@@ -1658,6 +1966,10 @@ def normalize_application_reader_residue(text: str) -> str:
 
 def application_metadata(data: SliceData) -> dict[str, object]:
     app = data.application_markdown
+    semantic_match = re.search(r"^<!-- application_semantics_json: (.+) -->$", app, re.M)
+    semantic = json.loads(semantic_match[1]) if semantic_match else {}
+    if not isinstance(semantic, dict):
+        raise AdapterStop("blocked", "invalid application semantics projection")
     adoption_section = markdown_subsection(app, "採納判斷") or markdown_subsection(app, "採納草案")
     personal_section = markdown_subsection(app, "既有知識扣連")
     taste_section = markdown_subsection(app, "品味扣連")
@@ -1734,6 +2046,15 @@ def application_metadata(data: SliceData) -> dict[str, object]:
     related_json = related_match[1] if related_match else "[]"
     json.loads(related_json)  # Reject malformed structured relationship data.
     return {
+        "personal_relevance": semantic.get("personal_relevance", "未知"),
+        "personal_relevance_reason": semantic.get("personal_relevance_reason", "未提供可核對的個人脈絡判斷。"),
+        "action_status": "需脈絡" if compounding_status == "needs_context" or not personalization_links else
+                         "不適用" if ai_adoption_status == "拒絕" else "可應用",
+        "idea_candidate_status": semantic.get("idea_candidate_status", "needs_review"),
+        "reusable_concepts_json": json.dumps([
+            {"name": point.reusable_concept_name, "reason": point.reusable_concept_reason,
+             "kp_id": point.kp_id, "evidence": point.evidence}
+            for point in data.knowledge_points if point.reusable_concept_status == "reusable"], ensure_ascii=False),
         "related_sources_json": related_json,
         "ai_adoption_status": ai_adoption_status,
         "ai_adoption_reason": ai_adoption_reason,
@@ -1751,6 +2072,9 @@ def application_metadata(data: SliceData) -> dict[str, object]:
         "compounding_next_action": compounding_next_action,
         "_compounding_section": compounding_section,
         "_compounding_reader_summary": compounding_reader_summary,
+        "_verified_cross_source_links": (
+            len(getattr(data, "cross_source_links", ())) if getattr(data, "prior_knowledge_applies", False) else None
+        ),
     }
 
 
@@ -1761,8 +2085,8 @@ def split_knowledge_use(value: str) -> list[str]:
 
 def slice_enum_violations(data: SliceData) -> list[dict[str, str]]:
     violations: list[dict[str, str]] = []
-    if data.asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE}:
-        violations.append(enum_violation("asset_mode", data.asset_mode, {ASSET_MODE_FORMAL, ASSET_MODE_CASE}))
+    if data.asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}:
+        violations.append(enum_violation("asset_mode", data.asset_mode, {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}))
     if data.source_input_kind not in VALID_SOURCE_INPUT_KINDS:
         violations.append(enum_violation("source_input_kind", data.source_input_kind, VALID_SOURCE_INPUT_KINDS))
     if data.source_retention_mode not in VALID_SOURCE_RETENTION_MODES:
@@ -1969,10 +2293,25 @@ def build_plan(root: Path, vault: Path, source_slice: Path, data: SliceData) -> 
     kp_registry = read_knowledge_point_registry(vault)
     duplicate_of_by_kp = duplicate_candidates(kp_registry, data)
     active_kp_ids = {kp.kp_id for kp in data.knowledge_points}
+    registered_relations = read_relation_registry(vault)
     active_relations = [
         relation for relation in data.relations
         if relation.source_kp_id in active_kp_ids and relation.target_kp_id in active_kp_ids
+        and registered_relations.get(relation_id(data.source_id, relation), {}).get("status", "linked") == "linked"
     ]
+    active_cross_links = [
+        link for link in data.cross_source_links
+        if link.source_kp_id in active_kp_ids
+        and registered_relations.get(cross_source_link_id(data.source_id, link), {}).get("status", "linked") == "linked"
+    ]
+    cross_link_issues = [
+        f"{link.source_kp_id} -> {link.target_kp_uid}"
+        for link in active_cross_links
+        if kp_registry.get(link.target_kp_uid, {}).get("status") != "linked"
+        or kp_registry[link.target_kp_uid].get("source_id") == data.source_id
+    ]
+    data = replace(data, relations=active_relations, cross_source_links=tuple(active_cross_links),
+                   source_markdown=project_active_relation_markdown(data.source_markdown, active_relations))
     relations_by_source = relations_grouped_by_source(active_relations)
     application_note = sharded_application_note(vault, data)
     base_files = [
@@ -2026,6 +2365,8 @@ def build_plan(root: Path, vault: Path, source_slice: Path, data: SliceData) -> 
         "knowledge_point_bodies": kp_bodies,
         "knowledge_point_duplicate_of": duplicate_of_by_kp,
         "relations": active_relations,
+        "cross_source_links": active_cross_links,
+        "cross_link_issues": cross_link_issues,
         "base_files": base_files,
         "updated_existing": source_note.exists(),
     }
@@ -2135,6 +2476,8 @@ def preflight_report(plan: dict[str, object]) -> dict[str, object]:
         })
     elif data.source_retention_mode == "full_body_required":
         issues.extend(full_body_requirement_issues(plan, data))
+    elif data.source_retention_mode == TRANSCRIPT_ARCHIVE_MODE:
+        issues.extend(transcript_archive_issues(plan, data))
     elif data.source_retention_mode == "original_image_required":
         if data.source_input_kind != "user_provided_image":
             issues.append({
@@ -2205,7 +2548,7 @@ def preflight_report(plan: dict[str, object]) -> dict[str, object]:
                     "invalid_assets": invalid_assets,
                     "message": "every infographic asset must be a real opaque PNG file, not only a .png filename or transparent PNG",
                 })
-    else:
+    elif data.asset_mode == ASSET_MODE_CASE:
         case_srcs = plan.get("case_asset_srcs", [])
         case_dests = plan.get("case_asset_dests", [])
         if not data.case_evidence_manifest_path or not case_srcs or len(case_srcs) != len(case_dests):
@@ -2316,6 +2659,13 @@ def preflight_report(plan: dict[str, object]) -> dict[str, object]:
             "message": "application note adoption, personalization, or taste-link draft still contains AI placeholders",
         })
 
+    if plan.get("cross_link_issues"):
+        issues.append({
+            "status": "blocked",
+            "code": "cross_link_target_unavailable",
+            "message": "cross-source link target is not a linked knowledge point of an older source: "
+                       + "; ".join(str(item) for item in plan["cross_link_issues"]),
+        })
     compounding_issues = compounding_metadata_issues(metadata)
     if metadata["taste_link_status"] == "linked" and not metadata["taste_links"]:
         issues.append({
@@ -2421,6 +2771,86 @@ def content_value_coverage_rows(text: str) -> list[dict[str, str]]:
             "handling": cells[3],
         })
     return rows
+
+
+def sha256_file_text(path: Path) -> str:
+    """SHA-256 of a package text archive the way the accepted bundle records it (LF, no final LF)."""
+    return hashlib.sha256(path.read_text(encoding="utf-8-sig").rstrip("\n").encode("utf-8")).hexdigest()
+
+
+def transcript_archive_issues(plan: dict[str, object], data: SliceData, *, written_notes: list[Path] | None = None) -> list[dict[str, str]]:
+    """Write/readback gate of the YouTube transcript archive mode.
+
+    The transcript is kept only in the package archive.  Every check here reads
+    that archive (not the slice's own claims): both hashes must match the
+    accepted bundle, no Vault note may carry a cue timing line, and the
+    representative anchors must be reproducible from the archive.
+    """
+    source_slice = plan["source_slice"]
+    assert isinstance(source_slice, Path)
+    package = source_slice.parent
+    issues: list[dict[str, str]] = []
+
+    def blocked(code: str, message: str) -> None:
+        issues.append({"status": "blocked", "code": code, "message": message})
+
+    if data.source_input_kind != "url":
+        blocked("transcript_archive_mode_forbidden", "transcript_archive_required is reserved for accepted YouTube caption URL sources")
+        return issues
+    try:
+        bundle = json.loads((package / "input_bundle.json").read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        blocked("transcript_archive_bundle_missing", "transcript archive requires the accepted input_bundle.json beside the slice")
+        return issues
+    if not isinstance(bundle, dict) or bundle.get("source_retention_mode") != TRANSCRIPT_ARCHIVE_MODE:
+        blocked("transcript_archive_bundle_mode_mismatch", "accepted input bundle does not declare transcript_archive_required")
+        return issues
+    canonical_path = package / "canonical_source.md"
+    caption_name = str(bundle.get("youtube_caption_path") or "")
+    vtt_path = package / caption_name
+    if not canonical_path.is_file():
+        blocked("transcript_archive_canonical_missing", "package canonical_source.md is missing")
+    elif sha256_file_text(canonical_path) != bundle.get("canonical_body_sha256"):
+        blocked("transcript_archive_canonical_hash_mismatch", "package canonical_source.md differs from the accepted canonical_body_sha256")
+    if not caption_name:
+        blocked("transcript_archive_vtt_path_missing", "accepted input bundle does not name its original caption VTT (youtube_caption_path)")
+    elif not vtt_path.is_file():
+        blocked("transcript_archive_vtt_missing", "package original caption VTT is missing")
+    elif hashlib.sha256(vtt_path.read_bytes()).hexdigest() != bundle.get("youtube_caption_sha256"):
+        blocked("transcript_archive_vtt_hash_mismatch", "package original caption VTT differs from the accepted youtube_caption_sha256")
+    if data.canonical_body_sha256 != bundle.get("canonical_body_sha256"):
+        blocked("transcript_archive_slice_hash_mismatch", "slice canonical body hash differs from the accepted bundle")
+    if data.canonical_body_markdown:
+        blocked("transcript_archive_body_present", "the slice must not carry a ## 正文保存區 transcript body in this mode")
+    if any(issue["status"] == "blocked" for issue in issues):
+        return issues
+    declared = transcript_archive_declaration(source_slice.read_text(encoding="utf-8-sig"))
+    expected_declaration = {
+        "保存模式": TRANSCRIPT_ARCHIVE_MODE,
+        "正文 SHA-256": str(bundle.get("canonical_body_sha256")),
+        "原始字幕 VTT SHA-256": str(bundle.get("youtube_caption_sha256")),
+    }
+    if any(declared.get(key) != value for key, value in expected_declaration.items()):
+        blocked("transcript_archive_declaration_mismatch", "slice ## 字幕存檔 table differs from the accepted bundle hashes or mode")
+    canonical = canonical_path.read_text(encoding="utf-8-sig").rstrip("\n")
+    if not is_youtube_caption_transcript(canonical):
+        blocked("transcript_archive_not_caption_transcript", "package canonical_source.md is not a YouTube caption transcript")
+    else:
+        expected_anchors = [chunk["text"] for chunk in caption_reading_chunks(canonical)[:3]]
+        if not expected_anchors or list(data.canonical_body_representative_anchors) != expected_anchors:
+            blocked("transcript_archive_anchor_mismatch", "representative anchors cannot be reproduced from the package archive")
+    bodies: list[tuple[str, str]] = [
+        ("source note", str(plan.get("source_body") or "")),
+        ("application note", str(plan.get("application_body") or "")),
+        *((f"knowledge point note {index}", str(body)) for index, body in enumerate(plan.get("knowledge_point_bodies") or [], start=1)),
+    ]
+    for note in written_notes or []:
+        if note.is_file():
+            bodies.append((note.name, note.read_text(encoding="utf-8-sig")))
+    for label, body in bodies:
+        if has_cue_timing_line(body):
+            blocked("transcript_archive_cue_timing_line_in_vault", f"{label} contains a caption cue timing line; the transcript must stay in the package archive")
+    return issues
 
 
 def full_body_requirement_issues(plan: dict[str, object], data: SliceData) -> list[dict[str, str]]:
@@ -2688,9 +3118,16 @@ def user_image_provenance_issues(plan: dict[str, object], data: SliceData) -> li
     if review_packet.get("image_analysis_status") != "complete" or review_packet.get("image_analysis_checker_status") != "passed":
         issues.append({"status": "needs_review", "code": "image_analysis_not_checked", "message": "image-review must record complete analysis and a passed second checker"})
     anchor_ids = {str(anchor.get("id") or "") for anchor in analysis.get("anchors", []) if isinstance(anchor, dict)}
-    missing_kp_anchors = [kp.kp_id for kp in data.knowledge_points if not any(anchor_id in kp.evidence for anchor_id in anchor_ids)]
-    if missing_kp_anchors:
-        issues.append({"status": "needs_review", "code": "image_knowledge_point_anchor_missing", "message": "image knowledge points must cite visual IMG-* anchors: " + ", ".join(missing_kp_anchors)})
+    if not issues:
+        try:
+            validate_source_anchored_knowledge(
+                data.knowledge_points,
+                data.relations,
+                data.canonical_body_markdown,
+                verified_image_anchor_ids=anchor_ids,
+            )
+        except AdapterStop as exc:
+            issues.append({"status": exc.status, "code": "image_source_anchor_invalid", "message": exc.message})
     return issues
 
 
@@ -2795,6 +3232,11 @@ def compounding_metadata_issues(metadata: dict[str, object]) -> list[str]:
             issues.append("has_insight requires compounding_insight_links")
         if not next_action or next_action == "暫無":
             issues.append("has_insight requires compounding_next_action")
+        cross_source_count = metadata.get("_verified_cross_source_links")
+        if isinstance(cross_source_count, int):
+            cross_source_issue = has_insight_cross_source_issue(status, cross_source_count)
+            if cross_source_issue:
+                issues.append(cross_source_issue)
     elif status == "no_compounding_insight":
         if any(compounding_category_decision(section, label) != "不成立" for label in VALID_COMPOUNDING_TYPES):
             issues.append("no_compounding_insight requires every category judgment to be 不成立")
@@ -2899,6 +3341,72 @@ def relation_id(source_id: str, relation: KnowledgeRelation) -> str:
         normalized_semantic_text(relation.relation),
     ])
     return "rel:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cross_source_relation_id(source_kp_uid: str, target_kp_uid: str, relation: str) -> str:
+    """Deterministic identity of one validated cross-source relation (replays write the same row)."""
+    raw = "|".join([source_kp_uid, target_kp_uid, relation])
+    return "rel:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def cross_source_relation_row(*, source_id: str, source_identity: str, source_note_path: str, source_kp_uid: str, source_kp_id: str,
+                              target_kp_uid: str, target_kp_id: str, relation: str, evidence: str, confidence: str,
+                              target_source_id: str, insight: str, job_id: str, origin: str = "") -> dict[str, str]:
+    """Sole assembly of one cross-source relation row (new-source intake and the P4 backfill); ``origin`` is only written when given."""
+    row = {
+        "relation_id": cross_source_relation_id(source_kp_uid, target_kp_uid, relation),
+        "source_id": source_id,
+        "source_identity": source_identity,
+        "source_note_path": source_note_path,
+        "source_kp_uid": source_kp_uid,
+        "target_kp_uid": target_kp_uid,
+        "source_kp_id": source_kp_id,
+        "target_kp_id": target_kp_id,
+        "relation": relation,
+        "evidence": evidence,
+        "confidence": confidence,
+        "status": "linked",
+        "scope": "cross_source",
+        "target_source_id": target_source_id,
+        "insight": insight,
+        "job_id": job_id,
+        "updated": str(date.today()),
+    }
+    if origin:
+        row["origin"] = origin
+    return row
+
+
+def upsert_cross_source_row(existing: dict[str, dict], row: dict) -> str:
+    """Put ``row`` into ``existing`` (by relation_id); returns "written", "unchanged" or "withdrawn" (left as it is).
+
+    A withdrawn or superseded row is a review decision that a replay cannot reinstate; unchanged content keeps the
+    stored row, date included, so a replay writes nothing new."""
+    stored = existing.get(row["relation_id"])
+    if stored is not None:
+        if stored.get("status", "linked") != "linked":
+            return "withdrawn"
+        if all(stored.get(key) == value for key, value in row.items() if key != "updated"):
+            return "unchanged"
+    existing[row["relation_id"]] = row
+    return "written"
+
+
+def registry_rows_text(rows: list[dict]) -> str:
+    """Sole text form of a registry JSONL file: one sorted-key JSON object per line, each ending in a line feed."""
+    return "".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows)
+
+
+def cross_source_link_id(source_id: str, link: CrossSourceLink) -> str:
+    return cross_source_relation_id(knowledge_point_uid(source_id, link.source_kp_id), link.target_kp_uid, link.relation)
+
+
+def has_insight_cross_source_issue(status: str, verified_cross_source_links: int) -> str:
+    """Sole owner of the rule that an established insight needs a verified cross-source relation (new plans only)."""
+    if status == "has_insight" and verified_cross_source_links < 1:
+        return ("has_insight_without_cross_source: has_insight needs at least one verified cross-source relation from this plan; "
+                "use needs_context when no older knowledge point is genuinely linked")
+    return ""
 
 
 def duplicate_candidates(
@@ -3014,10 +3522,15 @@ def resolve_duplicate_review(
         return result
 
     with vault_write_lock(vault):
+        # The note goes first, through the one knowledge-point note writer (a completed v2 source's note is registered as a completed-source
+        # revision and read back in the same transaction); a refusal or failure there leaves the note and the registry as they were.
+        rewritten = rewrite_duplicate_note(root, vault, vault / row.get("kp_note_path", ""), updated, kp_uid)
         registry[kp_uid] = updated
         write_knowledge_point_registry_rows(vault, registry)
-        update_duplicate_note(vault / row.get("kp_note_path", ""), updated)
     result["write_blocked"] = False
+    result["note_written"] = bool(rewritten["written"])
+    result["completion_revisions"] = rewritten["revisions"]
+    result["decision_receipt"] = rewritten["decision_receipt"]
     result["verification"] = verify_duplicate_resolution(vault, kp_uid, decision, resolved_target)
     verification = result["verification"]
     assert isinstance(verification, dict)
@@ -3057,10 +3570,77 @@ def write_knowledge_point_registry_rows(
     )
 
 
-def update_duplicate_note(path: Path, row: dict[str, str]) -> None:
+DUPLICATE_REVIEW_RECEIPT_SCHEMA = "duplicate_review_decision_v1"
+DUPLICATE_REVIEW_RECEIPT_DIR = Path("outputs") / "duplicate_review"
+DUPLICATE_REVIEW_REASON = "重複複查決定：寫入 duplicate_review_* 欄位與 ## Duplicate Review 小節（不改知識內容）"
+DUPLICATE_REVIEW_SUMMARY = ("重複複查只改該知識點筆記 frontmatter 的 duplicate_of、review_status 與 duplicate_review_* 欄位，並增改 ## Duplicate Review 小節，"
+                            "不改知識內容；證據是同次寫入前保存、之後不再改寫的複查決定收據。")
+
+
+def completion_revisions_module():
+    """The one writer of knowledge-point notes (imported when needed: it imports this module in turn)."""
+    try:
+        from tools import completion_revisions as module
+    except ModuleNotFoundError:
+        import completion_revisions as module  # type: ignore
+    return module
+
+
+def write_duplicate_review_receipt(base: Path, row: dict[str, str], note_path: Path) -> Path:
+    """The immutable decision receipt a completed source's revision cites as its evidence: decision, target, reason and reviewer."""
+    module = completion_revisions_module()
+    moment = datetime.now(timezone.utc)
+    receipt = {
+        "schema_version": DUPLICATE_REVIEW_RECEIPT_SCHEMA,
+        "kp_uid": row.get("kp_uid", ""),
+        "decision": row.get("duplicate_review_decision", ""),
+        "duplicate_of": row.get("duplicate_of", ""),
+        "reason": row.get("duplicate_review_reason", ""),
+        "reviewed_by": row.get("duplicate_reviewed_by", ""),
+        "reviewed_at": moment.isoformat(timespec="seconds"),
+        "kp_note_path": note_path.relative_to(base).as_posix(),
+    }
+    receipt["payload_sha256"] = module.digest(receipt)
+    folder = base / DUPLICATE_REVIEW_RECEIPT_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    safe_uid = re.sub(r"[^A-Za-z0-9._-]+", "_", str(row.get("kp_uid", "")))
+    path = folder / f"{moment.strftime('%Y%m%dT%H%M%S%fZ')}-{safe_uid}.json"
+    with path.open("xb") as stream:  # exclusive: a receipt is never rewritten
+        stream.write((json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return path
+
+
+def rewrite_duplicate_note(root: Path, vault: Path, note_path: Path, row: dict[str, str], kp_uid: str) -> dict[str, object]:
+    """Write the reviewed note through the one note writer.  The note of a completed v2 source needs an accepted revision: the decision
+    receipt is written first and is that revision's evidence; any refusal or failure leaves the note as it was."""
+    module = completion_revisions_module()
+    base = Path(root).resolve()
+    if vault.resolve() != managed_vault_path(base):
+        raise AdapterStop("needs_review", "selected vault is not this managed workspace's configured vault")
+    new_bytes = rendered_duplicate_note(note_path, row)
+    try:
+        receipt = None
+        if any(owner["completed"] for owner in module.classify_kp_notes(base, [note_path])):
+            receipt = write_duplicate_review_receipt(base, row, note_path)
+        done = module.rewrite_kp_notes(
+            base, {note_path: new_bytes}, reason=DUPLICATE_REVIEW_REASON, evidence=receipt, summary=DUPLICATE_REVIEW_SUMMARY,
+            authorization=f"使用者執行重複複查 --write（複查人 {row.get('duplicate_reviewed_by', '')}，決定 {row.get('duplicate_review_decision', '')}，{kp_uid}）；"
+                          "本修訂由 resolve_duplicate_review 在同一交易內登記，不另行產生授權。",
+            note_supports={note_path: f"複查決定收據記錄 {kp_uid} 的決定、目標、理由與複查人；筆記只改 duplicate 相關欄位與 ## Duplicate Review 小節。"})
+    except module.CompletedNoteError as exc:
+        raise AdapterStop("needs_review", f"{exc} The note and the registry were not changed.") from exc
+    return {**done, "decision_receipt": receipt.relative_to(base).as_posix() if receipt else ""}
+
+
+def rendered_duplicate_note(path: Path, row: dict[str, str]) -> bytes:
+    """The note with its duplicate-review fields and section set; every other byte (line endings, BOM) stays."""
     if not path.exists():
         raise AdapterStop("needs_review", f"knowledge-point note missing: {vault_relative(path)}")
-    text = path.read_text(encoding="utf-8-sig")
+    raw = path.read_bytes()
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    body = raw[3:] if bom else raw
+    crlf = b"\r\n" in body
+    text = body.decode("utf-8").replace("\r\n", "\n")
     text = upsert_frontmatter_scalars(
         text,
         {
@@ -3080,7 +3660,9 @@ def update_duplicate_note(path: Path, row: dict[str, str]) -> None:
         + f"- Reviewed: {row.get('duplicate_reviewed_at', '')} by {row.get('duplicate_reviewed_by', '')}\n"
     )
     text = replace_or_append_h2_section(text, "Duplicate Review", section)
-    path.write_text(text, encoding="utf-8")
+    if crlf:
+        text = text.replace("\n", "\r\n")
+    return (b"\xef\xbb\xbf" if bom else b"") + text.encode("utf-8")
 
 
 def upsert_frontmatter_scalars(text: str, updates: dict[str, str]) -> str:
@@ -3108,6 +3690,14 @@ def upsert_frontmatter_scalars(text: str, updates: dict[str, str]) -> str:
         if key not in existing_keys:
             new_lines.append(f"{key}: {yaml_scalar(value)}")
     return "---\n" + "\n".join(new_lines) + body
+
+
+def preserve_existing_created(note: Path, rendered: str) -> str:
+    """Keep an existing note's creation date while its generated content is revised."""
+    if not note.is_file():
+        return rendered
+    created = frontmatter_fields(note).get("created")
+    return upsert_frontmatter_scalars(rendered, {"created": created}) if isinstance(created, str) and created else rendered
 
 
 def replace_or_append_h2_section(text: str, title: str, section: str) -> str:
@@ -3151,6 +3741,23 @@ def relations_grouped_by_source(relations: list[KnowledgeRelation]) -> dict[str,
     for relation in relations:
         grouped.setdefault(relation.source_kp_id, []).append(relation)
     return grouped
+
+
+def project_active_relation_markdown(text: str, relations: list[KnowledgeRelation]) -> str:
+    """Filter only generated relation rows; retained original prose is immutable."""
+    canonical_span = canonical_source_section_span(text)
+    offset = canonical_span[1] if canonical_span else 0
+    suffix = text[offset:]
+    match = re.search(r"(?ms)^### 關係草案\n.*?(?=^## |^### |\Z)", suffix)
+    if not match: return text
+    allowed = {(r.source_kp_id, r.target_kp_id, normalized_semantic_text(r.relation)) for r in relations}
+    lines = []
+    for line in match.group().splitlines(keepends=True):
+        cells = [clean_table_cell(cell) for cell in split_markdown_table_cells(line)] if line.startswith("|") else []
+        if len(cells) == 5 and cells[0].startswith("KP-") and cells[1].startswith("KP-"):
+            if (cells[0], cells[1], normalized_semantic_text(cells[2])) not in allowed: continue
+        lines.append(line)
+    return text[:offset] + suffix[:match.start()] + ''.join(lines) + suffix[match.end():]
 
 
 def read_source_registry(vault: Path) -> dict[str, dict[str, str]]:
@@ -3226,15 +3833,19 @@ def read_relation_registry(vault: Path) -> dict[str, dict[str, str]]:
     return entries
 
 
-def resolved_kp_relations(vault: Path, fields: dict, body: str) -> tuple[dict, str]:
-    """Use the relation registry for a saved KP's reader projection."""
+def resolved_kp_relations(vault: Path, fields: dict, body: str, labels: dict[str, str] | None = None) -> tuple[dict, str]:
+    """Use the relation registry for a saved KP's reader projection.
+
+    ``labels`` maps a relation word to the text shown for it; a relation without an entry (a legacy free string)
+    keeps its own text.  The note refresh passes none, so the notes written into the vault do not change.
+    """
     rows = [row for row in read_relation_registry(vault).values()
             if row.get('source_kp_uid') == fields.get('kp_uid')]
     if not rows:
         return fields, body
     active = [row for row in rows if row.get('status', 'linked') == 'linked']
     fields = {**fields, 'related_points': sorted({row['target_kp_id'] for row in active})}
-    lines = [f"- {row['target_kp_id']}：{row['relation']}；證據：{row['evidence']}" for row in active]
+    lines = [f"- {row['target_kp_id']}：{(labels or {}).get(row['relation'], row['relation'])}；證據：{row['evidence']}" for row in active]
     if not active:
         lines = ['- 暫無已核對的直接關係；待覆核記錄保留於 registry，不作已成立的來源主張。']
     replacement = '## Registered Relations\n\n'+'\n'.join(lines)+'\n\n'
@@ -3261,15 +3872,23 @@ def apply_reviewed_note_revision(vault: Path, target: Path, candidate: bytes, *,
     after = extract_canonical_body_markdown(candidate.decode('utf-8-sig').replace('\r\n','\n'))
     if before != after:
         raise ValueError('reviewed note cannot change original body')
+    current_fields = frontmatter_fields(target)
+    note_mode = current_fields.get('source_retention_mode')
+    if current_fields.get('type') == 'application':
+        # An application note takes its retention mode from its source's registry row.
+        note_mode = next((row.get('source_retention_mode') for row in read_source_registry(vault).values()
+                          if row.get('source_id') == current_fields.get('source_id')), None)
+    if note_mode == TRANSCRIPT_ARCHIVE_MODE and has_cue_timing_line(candidate.decode('utf-8-sig')):
+        raise ValueError('reviewed note would put a caption cue timing line into the Vault; the transcript stays in the package archive')
     target.write_bytes(candidate)
     if target.read_bytes() != candidate:
         raise ValueError('reviewed note write readback failed')
 
 
-def refresh_registered_relation_notes(vault: Path, source_id: str, *, kp_ids: set[str] | None = None) -> list[Path]:
+def refresh_registered_relation_notes(root: Path, vault: Path, source_id: str, *, kp_ids: set[str] | None = None) -> list[Path]:
     """Update only adapter-owned relation fields/sections, retaining evidence text."""
     assert_management_idle_for_vault(vault)
-    touched = []
+    changes: dict[Path, bytes] = {}
     for path in sorted((vault/'knowledge-points/by-source'/source_id).glob('*.md')):
         text = path.read_text(encoding='utf-8-sig')
         fields = frontmatter_fields(path)
@@ -3282,9 +3901,18 @@ def refresh_registered_relation_notes(vault: Path, source_id: str, *, kp_ids: se
         header = re.sub(r'(?m)^related_points:[^\n]*\n(?:  -[^\n]*\n)*', lambda _:lines, header)
         candidate = '---'+header+'---'+new_body
         if candidate != text:
-            path.write_text(candidate,encoding='utf-8',newline='\n')
-            touched.append(path)
-    return touched
+            changes[path] = candidate.encode('utf-8')
+    if changes:
+        # Through the one note writer: a note of a completed v2 source has no evidence here, so the writer refuses it.
+        module = completion_revisions_module()
+        try:
+            base = Path(root).resolve()
+            if vault.resolve() != managed_vault_path(base):
+                raise AdapterStop('needs_review', "selected vault is not this managed workspace's configured vault")
+            module.rewrite_kp_notes(base, changes, reason='registered relation fields and section refreshed from the relation registry')
+        except module.CompletedNoteError as exc:
+            raise AdapterStop('needs_review', f'{exc} No note was changed.') from exc
+    return list(changes)
 
 
 def read_jsonl_rows(path: Path) -> list[tuple[int, dict[str, str]]]:
@@ -3355,6 +3983,16 @@ def validate_registered_source_note(
             or fields.get("source_retention_mode") != "full_body_required"
         ):
             return f"needs_review: registered canonical body mismatch for {vault_relative(path)}; preserve the changed note and reconcile against the accepted source before retrying"
+    if registered and registered.get("source_retention_mode") == TRANSCRIPT_ARCHIVE_MODE:
+        expected_hash = registered.get("canonical_body_sha256", "")
+        fields = frontmatter_fields(path)
+        if (
+            not expected_hash
+            or fields.get("canonical_body_sha256") != expected_hash
+            or fields.get("source_retention_mode") != TRANSCRIPT_ARCHIVE_MODE
+            or has_cue_timing_line(text)
+        ):
+            return f"needs_review: registered transcript archive declaration mismatch for {vault_relative(path)}; preserve the changed note and reconcile against the package archive before retrying"
     return None
 
 
@@ -3454,6 +4092,7 @@ def render_source_note(
         "source_input_kind": data.source_input_kind,
         "source_identity": identity,
         "asset_mode": data.asset_mode,
+        "infographic_status": data.infographic_status,
         "source_retention_mode": data.source_retention_mode,
         "title": data.title,
         "source_type": data.source_type,
@@ -3489,6 +4128,8 @@ def render_source_note(
         "created": str(date.today()),
         "updated": str(date.today()),
     }
+    if data.retrieval_aliases:
+        frontmatter["retrieval_aliases"] = data.retrieval_aliases
     if data.source_input_kind == "url":
         frontmatter["source_url"] = data.source_url
         frontmatter["source_url_hash"] = source_url_hash(data.source_url)
@@ -3500,7 +4141,7 @@ def render_source_note(
         frontmatter["source_image_width"] = data.source_image_width
         frontmatter["source_image_height"] = data.source_image_height
         frontmatter["source_original_image"] = source_image_rel or ""
-    if data.source_retention_mode == "full_body_required":
+    if data.source_retention_mode in CANONICAL_HASH_RETENTION_MODES:
         frontmatter["canonical_body_sha256"] = data.canonical_body_sha256
     if data.asset_mode == ASSET_MODE_CASE:
         frontmatter["case_evidence_manifest"] = case_asset_rels[0] if case_asset_rels else ""
@@ -3532,6 +4173,8 @@ def render_source_note(
             if data.asset_mode == ASSET_MODE_FORMAL and asset_rels
             else "".join(f"- Case evidence asset: `{asset}`\n" for asset in case_asset_rels)
             if data.asset_mode == ASSET_MODE_CASE and case_asset_rels
+            else ""
+            if data.asset_mode == ASSET_MODE_KNOWLEDGE
             else "- Asset: not_available\n"
         )
         + "- Knowledge points:\n"
@@ -3558,13 +4201,17 @@ def render_kp_note(
         "semantic_key": knowledge_point_semantic_key(kp.text),
         "semantic_text": normalized_semantic_text(kp.text),
         "knowledge_point": kp.text,
+        "knowledge_title": kp.title,
+        "reusable_concept_status": kp.reusable_concept_status,
+        "reusable_concept_name": kp.reusable_concept_name,
+        "reusable_concept_reason": kp.reusable_concept_reason,
         "definition": kp.text,
         "knowledge_type": kp.kind,
         "source_note": source_record,
         "source_anchor": kp.evidence,
         "confidence": kp.confidence,
-        "applicable_scenes": ["AI", "產品", "學習"],
-        "usable_for": ["prompt", "checklist", "產品功能"],
+        "applicable_scenes": [],
+        "usable_for": [],
         "related_points": related_records,
         "duplicate_of": duplicate_of,
         "review_status": "duplicate_candidate" if duplicate_of else "自動建議",
@@ -3607,12 +4254,13 @@ def render_application_note(
     source_rel = vault_relative(source_note)
     application_rel = vault_relative(application_note)
     knowledge_points_rel = f"knowledge-points/by-source/{data.source_id}"
-    ingest_status = "完整" if asset_rel else "需檢查"
-    issue_reason = "無" if asset_rel else "缺少資訊圖"
+    ingest_status = "完整" if data.asset_mode == ASSET_MODE_KNOWLEDGE else "完整" if asset_rel else "需檢查"
+    issue_reason = "無" if data.asset_mode == ASSET_MODE_KNOWLEDGE else "無" if asset_rel else "缺少資訊圖"
     next_action = overview_next_action(
         metadata["ai_adoption_status"],
         metadata["taste_link_status"],
-        bool(asset_rel),
+        data.asset_mode == ASSET_MODE_KNOWLEDGE or bool(asset_rel),
+        has_infographic=bool(asset_rel),
     )
     ai_confidence = ai_review_confidence(data, metadata)
     overview_fields = {
@@ -3646,9 +4294,9 @@ def render_application_note(
         "application_entry": application_rel,
         "knowledge_points_entry": knowledge_points_rel,
         **overview_fields,
-        "personal_relevance": "高",
+        "personal_relevance": metadata["personal_relevance"],
         "taste_network_status": taste_network_status,
-        "action_status": "可應用",
+        "action_status": metadata["action_status"],
         "adoption_status": metadata["ai_adoption_status"],
         "adoption_reason": metadata["ai_adoption_reason"],
         "manual_correction_status": DEFAULT_MANUAL_CORRECTION_STATUS,
@@ -3657,13 +4305,14 @@ def render_application_note(
         "ai_review_confidence": ai_confidence,
         "taste_network_reason": data.taste_network_reason,
         "human_verification_items": DEFAULT_HUMAN_VERIFICATION_ITEMS,
-        "life_scenes": ["工作", "學習"],
+        "life_scenes": [],
         "application_status": "active",
         "created": str(date.today()),
         "updated": str(date.today()),
     }
     body = data.application_markdown or "## 個人應用摘要\n\n暫無個人應用摘要。"
     body = re.sub(r"^<!-- related_sources_json: .+ -->\n?", "", body, flags=re.M)
+    body = re.sub(r"^<!-- application_semantics_json: .+ -->\n?", "", body, flags=re.M)
     return (
         render_frontmatter(frontmatter)
         + f"# {data.title} — 個人應用\n\n"
@@ -4155,7 +4804,7 @@ def is_generated_concept_note(path: Path) -> bool:
     fields = frontmatter_fields(path)
     if fields.get("type") != "concept":
         return False
-    if fields.get("concept_status") != "graph_node":
+    if fields.get("concept_status") not in {"graph_node", "superseded"}:
         return False
     if fields.get("graph_scope") != "concept_links_only":
         return False
@@ -4174,11 +4823,11 @@ def render_concept_note(entry: dict[str, object], updated: str | None = None) ->
         "type": "concept",
         "concept": concept,
         "idea_type": "concept",
-        "graph_group": concept_graph_group(concept, definitions),
-        "concept_status": "graph_node",
+        "graph_group": "concept",
+        "concept_status": entry.get("concept_status", "graph_node"),
         "graph_layer": "概念層",
-        "graph_role": concept_graph_role(concept, definitions),
-        "graph_question": concept_graph_question(concept, definitions),
+        "graph_role": "概念",
+        "graph_question": "這個概念在其他來源或情境中是否仍然成立？",
         "graph_scope": "concept_links_only",
         "source_records": source_records,
         "application_records": application_records,
@@ -4190,8 +4839,10 @@ def render_concept_note(entry: dict[str, object], updated: str | None = None) ->
     body += f"# {concept}\n\n"
     body += "> 這是給 Obsidian 關聯圖使用的語義節點；圖譜只連中文概念，來源、應用與知識點保留為可檢視記錄。\n\n"
     body += "## 圖譜用途\n\n"
-    body += f"- 角色:{concept_graph_role(concept, definitions)}\n"
-    body += f"- 可追問:{concept_graph_question(concept, definitions)}\n\n"
+    body += "- 角色:概念\n"
+    body += "- 可追問:這個概念在其他來源或情境中是否仍然成立？\n\n"
+    if entry.get("concept_status") == "superseded":
+        body += "> 此舊生成節點已由有來源證據的內容修訂撤回；保留原路徑，不再作為有效概念取材。\n\n"
     body += "## 定義來源\n\n"
     for definition in definitions:
         body += f"- {definition}\n"
@@ -4209,6 +4860,7 @@ def render_concept_note(entry: dict[str, object], updated: str | None = None) ->
         body += "\n## 相關概念\n\n"
         for link in related_concepts:
             body += f"- {link}\n"
+    body += str(entry.get("registry_sections") or "")
     return body
 
 
@@ -4260,96 +4912,672 @@ def knowledge_point_source_id(fields: dict[str, object]) -> str:
     return str(fields.get("kp_uid") or "").split(":", 1)[0].strip()
 
 
-def write_concept_notes(vault: Path, *, source_ids: set[str] | None = None) -> list[Path]:
+def concept_is_active(fields: dict) -> bool:
+    """Legacy/manual notes stay readable; explicit withdrawals are never ideas."""
+    return fields.get("concept_status") not in {"superseded", "withdrawn"}
+
+
+def reusable_concept_decision(fields: dict) -> str:
+    """One shared owner for compiler projection and later missing-note rebuild."""
+    if fields.get("reusable_concept_status") != "reusable":
+        return ""
+    name = str(fields.get("reusable_concept_name") or "").strip()
+    return name if name and fields.get("reusable_concept_reason") else ""
+
+
+def reusable_concept_note_path(vault: Path, concept: str) -> Path:
+    """Sole owner of the analysed-concept note path (reusable schema)."""
+    path = vault / "concepts" / f"{safe_note_stem(concept)}.md"
+    if not path.resolve().is_relative_to(vault.resolve()):
+        raise AdapterStop("blocked", "resolved concept target escapes the selected Vault")
+    return path
+
+
+def projected_concept_note_path(vault: Path, fields: dict, fallback_text: str = "") -> Path | None:
+    """Where this written knowledge-point note expects its concept note, or None.
+
+    New schema (carries `reusable_concept_status`): only an analysed reusable
+    concept has a note, named by the analysed name, never guessed from the title.
+    Legacy schema (field absent): keep the historical title-derived projection.
+    """
+    if fields.get("reusable_concept_status"):
+        concept = reusable_concept_decision(fields)
+        return reusable_concept_note_path(vault, concept) if concept else None
+    text = str(fields.get("knowledge_point") or fields.get("definition") or fallback_text)
+    return concept_note_path(vault, text) if text else None
+
+
+def planned_concept_note_path(vault: Path, kp: "KnowledgePoint", note: Path) -> Path | None:
+    """Concept note for one planned KP: the written note's frontmatter, else what the writer will write."""
+    fields = frontmatter_fields(note) if note.is_file() else {
+        "reusable_concept_status": kp.reusable_concept_status,
+        "reusable_concept_name": kp.reusable_concept_name,
+        "reusable_concept_reason": kp.reusable_concept_reason,
+        "knowledge_point": kp.text,
+    }
+    return projected_concept_note_path(vault, fields, kp.text)
+
+
+# Registry-derived concept-page blocks (semantic-index spec section 2: the sole definition).
+# (relation_type, section heading, this concept is the newer side, this concept is the older side, both sides in one concept)
+CROSS_SOURCE_SECTIONS = (
+    ("supports", "支持", "此概念支持 {c}", "此概念被 {c} 支持", "同一概念內，新來源支持舊來源"),
+    ("contradicts", "反例", "此概念反駁 {c}", "此概念被 {c} 反駁", "同一概念內，新來源反駁舊來源"),
+    ("limits", "限制", "此概念限制 {c}", "此概念受 {c} 限制", "同一概念內，新來源限制舊來源"),
+    ("extends", "延伸", "此概念延伸 {c}", "此概念被 {c} 延伸", "同一概念內，新來源延伸舊來源"),
+    ("tradeoff", "形成取捨", "此概念與 {c} 形成取捨", "此概念與 {c} 形成取捨", "同一概念內，新舊來源形成取捨"),
+    ("applies_to", "可應用於", "此概念可應用於 {c}", "{c} 可應用於此概念", "同一概念內，新來源可應用於舊來源"),
+)
+COUNTERPART_CLAIM_CHARS = 40
+# Every heading the registry-derived tail of a concept note can carry (render_registry_sections), in no particular order.
+REGISTRY_BLOCK_HEADINGS = ("目前理解（AI 解讀）", *(heading for _, heading, *_ in CROSS_SOURCE_SECTIONS), "來源數")
+
+
+def counterpart_claim_label(claim: str, limit: int = COUNTERPART_CLAIM_CHARS) -> str:
+    """The claim as a counterpart label: whole when it fits, else cut at a word boundary with "…" (never inside an English word)."""
+    if len(claim) <= limit:
+        return claim
+    cut = claim[:limit]
+    if claim[limit - 1].isascii() and claim[limit - 1].isalnum() and claim[limit].isascii() and claim[limit].isalnum():
+        trimmed = re.sub(r"[A-Za-z0-9]+$", "", cut)  # the cut falls inside an English word or number: leave that word out
+        cut = trimmed if trimmed.strip() else cut  # a single word longer than the limit keeps the hard cut
+    return cut.rstrip(" ,，、;；:：-") + "…"
+
+
+def plain_projection_text(value: object) -> str:
+    """One line of plain text for a concept page: no line breaks, no wikilink brackets."""
+    return re.sub(r"\s+", " ", str(value or "").replace("[[", "").replace("]]", "")).strip()
+
+
+def concept_projection_facts_from_rows(kp_rows: dict[str, dict[str, str]],
+                                       relation_rows: dict[str, dict[str, str]]) -> dict[str, object] | None:
+    """The registry rows concept pages project, or None when there is nothing to show.
+
+    Only linked cross-source relations whose two knowledge points are both linked
+    count; ``cross_all`` keeps every cross-source row, whatever its status, so the
+    concepts of a withdrawn relation are reprojected too.
+    """
+    relation_rows = list(relation_rows.values())
+    cross_all = [row for row in relation_rows if row.get("scope") == "cross_source"]
+    relations = {relation for relation, *_ in CROSS_SOURCE_SECTIONS}
+
+    def linked(uid: str) -> bool:
+        return uid in kp_rows and kp_rows[uid].get("status", "linked") == "linked"
+
+    links = sorted(
+        (row for row in cross_all
+         if row.get("status", "linked") == "linked" and row.get("relation") in relations
+         and linked(str(row.get("source_kp_uid"))) and linked(str(row.get("target_kp_uid")))),
+        key=lambda row: str(row.get("relation_id")))
+    deltas = {uid: row for uid, row in kp_rows.items()
+              if linked(uid) and str(row.get("concept_name") or "").strip() and str(row.get("understanding_delta") or "").strip()}
+    if not links and not deltas and not cross_all:
+        return None
+    return {"kp": kp_rows, "links": links, "deltas": deltas, "cross_all": cross_all}
+
+
+def concept_projection_facts(vault: Path) -> dict[str, object] | None:
+    """Read the live registries for the ordinary concept-page projection."""
+    return concept_projection_facts_from_rows(read_knowledge_point_registry(vault), read_relation_registry(vault))
+
+
+def cross_source_affected_uids(facts: dict[str, object] | None, source_ids: set[str]) -> set[str]:
+    """Knowledge points at both ends of every cross-source relation that touches the named sources."""
+    uids: set[str] = set()
+    for row in (facts or {}).get("cross_all", []):
+        if row.get("source_id") in source_ids or row.get("target_source_id") in source_ids:
+            uids.update((str(row.get("source_kp_uid")), str(row.get("target_kp_uid"))))
+    return uids
+
+
+def cross_source_affected_paths(facts: dict[str, object] | None, source_ids: set[str],
+                                kp_uid_to_concept: dict[str, Path]) -> set[Path]:
+    """Concept notes of both ends of every cross-source relation that touches the named sources."""
+    return {kp_uid_to_concept[uid] for uid in cross_source_affected_uids(facts, source_ids) if uid in kp_uid_to_concept}
+
+
+def concept_counterpart_text(uid: str, kp_rows: dict[str, dict[str, str]], uid_concept: dict[str, tuple[str, str]]) -> str:
+    """The other end of a relation: a concept wikilink, or the knowledge point's own words when it has no concept page."""
+    if uid in uid_concept:
+        stem, name = uid_concept[uid]
+        return f"[[{stem}]]" if stem == name else f"[[{stem}|{name}]]"
+    claim = plain_projection_text(kp_rows.get(uid, {}).get("knowledge_point"))
+    return f"「{counterpart_claim_label(claim)}」"
+
+
+def render_registry_sections(facts: dict[str, object] | None, entry: dict[str, object],
+                             uid_concept: dict[str, tuple[str, str]]) -> str:
+    """Blocks for one concept note, from the registry only; "" when the concept has no data (its bytes stay as before)."""
+    own = set(entry.get("kp_uids") or ())
+    if not facts or not own:
+        return ""
+    kp_rows = facts["kp"]
+    source_of = lambda uid: str(kp_rows.get(uid, {}).get("source_id") or "")
+    deltas = sorted((str(facts["deltas"][uid].get("updated") or ""), source_of(uid), uid) for uid in own if uid in facts["deltas"])
+    lines: dict[str, set[str]] = {relation: set() for relation, *_ in CROSS_SOURCE_SECTIONS}
+    wording = {relation: rest for relation, _, *rest in CROSS_SOURCE_SECTIONS}
+    for link in facts["links"]:
+        source_uid, target_uid = str(link["source_kp_uid"]), str(link["target_kp_uid"])
+        source_in, target_in = source_uid in own, target_uid in own
+        if not (source_in or target_in):
+            continue
+        newer_source = source_of(source_uid) or str(link.get("source_id") or "")
+        older_source = str(link.get("target_source_id") or "") or source_of(target_uid)
+        insight = plain_projection_text(link.get("insight"))
+        newer_side, older_side, within = wording[str(link["relation"])]
+        if source_in and target_in:
+            line = f"- {within}：{insight}（新來源 `{newer_source}`；舊來源 `{older_source}`）"
+        elif source_in:
+            counterpart = concept_counterpart_text(target_uid, kp_rows, uid_concept)
+            line = f"- {newer_side.format(c=counterpart)}：{insight}（此概念方來源 `{newer_source}`；對方來源 `{older_source}`）"
+        else:
+            counterpart = concept_counterpart_text(source_uid, kp_rows, uid_concept)
+            line = f"- {older_side.format(c=counterpart)}：{insight}（此概念方來源 `{older_source}`；對方來源 `{newer_source}`）"
+        lines[str(link["relation"])].add(line)
+    if not deltas and not any(lines.values()):
+        return ""
+    text = ""
+    if deltas:
+        def delta_line(uid: str, lead: str = "") -> str:
+            row = facts["deltas"][uid]
+            job = f"；工作 `{row['job_id']}`" if row.get("job_id") else ""
+            return f"- {lead}{plain_projection_text(row['understanding_delta'])}（來源 `{source_of(uid)}`{job}）\n"
+        text += "\n## 目前理解（AI 解讀）\n\n> 以下是 AI 依各來源的分析寫成的解讀，不是原文引述；每條附來源編號與工作編號。\n\n"
+        text += delta_line(deltas[-1][2], "最新：")
+        if len(deltas) > 1:
+            text += "\n歷次修正（舊至新）：\n\n" + "".join(delta_line(uid) for _, _, uid in deltas[:-1])
+    for relation, heading, *_ in CROSS_SOURCE_SECTIONS:
+        if lines[relation]:
+            text += f"\n## {heading}\n\n" + "".join(line + "\n" for line in sorted(lines[relation]))
+    return text + f"\n## 來源數\n\n- 連到此概念的不同來源：{len(entry['source_records'])}\n"
+
+
+def concept_page_index(vault: Path, entries: dict[Path, dict], kp_uid_to_concept: dict[str, Path],
+                       *, revised_uids: set[str] | None = None
+                       ) -> tuple[dict[str, tuple[str, str]], dict[Path, dict]]:
+    """(kp_uid -> (note stem, concept name), generated pages the new-format entries do not cover).
+
+    The kp_uid-to-page map is the idea retrieval's own (``concept_notes_with_kp_uids``: frontmatter
+    ``knowledge_point_records`` through ``prior_kps_for_note``), so a page the candidate search offers is a page the
+    projection can name.  The analysed concept of a new-format point wins; every other point takes the first page by
+    path, legacy and handwritten pages included (a wikilink target only).  The second value holds the active generated
+    pages outside ``entries`` (older format: their own frontmatter and body are kept) as minimal entries.
+    """
+    try:
+        from tools.obsidian_idea_retrieval import concept_name_of, concept_notes_with_kp_uids
+    except ImportError:
+        from obsidian_idea_retrieval import concept_name_of, concept_notes_with_kp_uids  # type: ignore
+    uid_concept: dict[str, tuple[str, str]] = {}
+    legacy: dict[Path, dict] = {}
+    for note, uids in concept_notes_with_kp_uids(vault):
+        if revised_uids is not None:
+            # Live membership is not evidence of the candidate's membership.
+            # Remove old assignments before adding the surviving/new ones below.
+            uids = set(uids) - revised_uids
+            if note.path in entries:
+                if not concept_is_active(entries[note.path]):
+                    continue
+                uids &= set(entries[note.path].get("kp_uids") or ())
+        name = str(entries[note.path]["concept"]) if note.path in entries else concept_name_of(note)
+        for uid in uids:
+            uid_concept.setdefault(uid, (note.path.stem, name))
+        if note.path not in entries and is_generated_concept_note(note.path):
+            legacy[note.path] = {"concept": name, "source_records": set(note.source_records), "kp_uids": set(uids)}
+    uid_concept.update({
+        uid: (path.stem, str(entries[path]["concept"]))
+        for uid, path in kp_uid_to_concept.items()
+        if path in entries and (revised_uids is None or concept_is_active(entries[path]))
+    })
+    return uid_concept, legacy
+
+
+def attach_registry_sections(vault: Path, entries: dict[Path, dict], kp_uid_to_concept: dict[str, Path],
+                             facts: dict[str, object] | None = None,
+                             *, revised_uids: set[str] | None = None) -> None:
+    facts = concept_projection_facts(vault) if facts is None else facts
+    if facts is None:
+        return
+    uid_concept, _ = concept_page_index(vault, entries, kp_uid_to_concept, revised_uids=revised_uids)
+    for entry in entries.values():
+        entry["registry_sections"] = render_registry_sections(facts, entry, uid_concept)
+
+
+def build_reusable_concept_entries(vault: Path, candidate_fields: dict[Path, dict] | None = None,
+                                   facts: dict[str, object] | None = None):
+    entries, kp_uid_to_concept = {}, {}
+    for kp_file in sorted((vault / "knowledge-points" / "by-source").glob("*/*.md")):
+        fields = (candidate_fields or {}).get(kp_file, frontmatter_fields(kp_file))
+        concept = reusable_concept_decision(fields)
+        if fields.get("type") != "knowledge_point" or not concept:
+            continue
+        path = reusable_concept_note_path(vault, concept)
+        entry = entries.setdefault(path, {"concept": concept, "source_records": set(),
+            "application_records": set(), "knowledge_point_records": set(),
+            "related_concepts": set(), "definitions": set(), "source_ids": set(), "kp_uids": set()})
+        if entry["concept"] != concept:
+            raise AdapterStop("blocked", "different analysed concepts resolve to the same note name")
+        entry["knowledge_point_records"].add(kp_file.stem)
+        if fields.get("kp_uid"): entry["kp_uids"].add(str(fields["kp_uid"]))
+        entry["definitions"].add(str(fields.get("knowledge_point") or fields.get("definition") or ""))
+        source_note = str(fields.get("source_note") or "")
+        source_id = knowledge_point_source_id(fields)
+        if source_note: entry["source_records"].add(plain_record_id(source_note))
+        app_link = application_link_for_source(vault, source_id)
+        if app_link: entry["application_records"].add(app_link)
+        if source_id: entry["source_ids"].add(source_id)
+        if fields.get("kp_uid"): kp_uid_to_concept[str(fields["kp_uid"])] = path
+    for path, entry in entries.items():
+        if not path.exists() or not is_generated_concept_note(path): continue
+        existing = frontmatter_fields(path)
+        entry["related_concepts"].update(fields_list(existing, "related_concepts"))
+        for record in set(fields_list(existing, "knowledge_point_records")) - entry["knowledge_point_records"]:
+            matches = list((vault / "knowledge-points" / "by-source").glob(f"*/{record}.md"))
+            if not matches:
+                # Incomplete legacy provenance cannot authorize subtraction.
+                for key in ("source_records", "application_records", "knowledge_point_records"):
+                    entry[key].update(fields_list(existing, key))
+                entry["definitions"].update(existing_definition_lines(path))
+                continue
+            for point in matches:
+                legacy = (candidate_fields or {}).get(point, frontmatter_fields(point))
+                if legacy.get("reusable_concept_status"):
+                    continue
+                entry["knowledge_point_records"].add(record)
+                if legacy.get("kp_uid"): entry["kp_uids"].add(str(legacy["kp_uid"]))
+                entry["definitions"].add(str(legacy.get("knowledge_point") or legacy.get("definition") or ""))
+                source_note = str(legacy.get("source_note") or "")
+                if source_note: entry["source_records"].add(plain_record_id(source_note))
+                app = application_link_for_source(vault, knowledge_point_source_id(legacy))
+                if app: entry["application_records"].add(app)
+    revised_uids = ({str(fields["kp_uid"]) for fields in candidate_fields.values() if fields.get("kp_uid")}
+                    if candidate_fields is not None else None)
+    attach_registry_sections(vault, entries, kp_uid_to_concept, facts, revised_uids=revised_uids)
+    return entries, kp_uid_to_concept
+
+
+def registry_block_start(text: str) -> int | None:
+    """Offset of the registry-derived tail of a concept note, or None when it has none.
+
+    The tail is the run of registry headings that ends the note and closes with ``## 來源數``, each section written in
+    the registry-line shape.  A legacy page's own sections of the same name (plain wikilink lists) never qualify."""
+    heads = list(re.finditer(r"^## (.+?)[ \t]*\r?$", text, re.M))
+    if not heads or heads[-1].group(1) != "來源數":
+        return None
+    start = None
+    for index in range(len(heads) - 1, -1, -1):
+        name = heads[index].group(1)
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(text)
+        body = text[heads[index].end():end]
+        lines = [line.strip() for line in body.splitlines() if line.strip()]
+        if name == "來源數":
+            qualifies = len(lines) == 1 and re.fullmatch(r"- 連到此概念的不同來源：\d+", lines[0]) is not None
+        elif name == "目前理解（AI 解讀）":
+            qualifies = any("不是原文引述" in line for line in lines)
+        else:
+            qualifies = name in REGISTRY_BLOCK_HEADINGS and bool(lines) and all(
+                line.startswith("- ") and re.search(r"（(?:此概念方來源|新來源) `", line) for line in lines)
+        if not qualifies:
+            break
+        start = heads[index].start()
+    return start
+
+
+def splice_registry_sections(text: str, sections: str) -> str:
+    """A legacy-format concept note with its registry tail replaced by ``sections``; every other byte stays.
+
+    ``sections`` is ``render_registry_sections`` output ("" removes the tail).  The tail takes the note's own line ending,
+    and a note that already carries exactly this tail comes back unchanged."""
+    eol = "\r\n" if "\r\n" in text else "\n"
+    start = registry_block_start(text)
+    head = text if start is None else text[:start]
+    if start is not None and head.endswith(eol):
+        head = head[:-len(eol)]  # the blank line the tail's own leading newline made
+    return head + sections.replace("\n", eol)
+
+
+def scoped_concept_revision(vault: Path, source_id: str, old_ids: set[str], concepts: dict[Path, bytes],
+                            facts: dict[str, object] | None = None,
+                            candidate_kp_concepts: dict[str, tuple[Path, str]] | None = None):
+    """Same-path withdrawal; no deletion, relocation, handwritten or global prune."""
+    facts = concept_projection_facts(vault) if facts is None else facts
+    original_points = {p.stem: frontmatter_fields(p) for p in
+        (vault / "knowledge-points" / "by-source" / source_id).glob("*.md")}
+    old_definitions = {str(f.get("knowledge_point") or f.get("definition") or "") for f in original_points.values()}
+    old_sources = {plain_record_id(str(f.get("source_note") or "")) for f in original_points.values()}
+    old_apps = {application_link_for_source(vault, source_id)} - {""}
+    affected = {p for p in (vault / "concepts").glob("*.md") if is_generated_concept_note(p)
+                and set(fields_list(frontmatter_fields(p), "knowledge_point_records")).intersection(old_ids)}
+    staged_entries: list[tuple[Path, dict, bool]] = []
+    for path in sorted(affected | set(concepts)):
+        if path.exists() and not is_generated_concept_note(path): continue
+        existing = frontmatter_fields(path) if path.exists() else {}
+        incoming = frontmatter_fields_from_text(concepts[path].decode("utf-8")) if path in concepts else {}
+        # Retain all other-source contributions, even if their old KP did not
+        # yet carry the new analysis contract. Exact source records/IDs bound
+        # the subtraction; title resemblance is never ownership evidence.
+        retained_ids = set(fields_list(existing, "knowledge_point_records")) - old_ids
+        retained_sources = set(fields_list(existing, "source_records")) - old_sources
+        retained_apps = set(fields_list(existing, "application_records")) - old_apps
+        retained_defs = set()
+        for record in retained_ids:
+            for kp in (vault / "knowledge-points" / "by-source").glob(f"*/{record}.md"):
+                f = frontmatter_fields(kp)
+                retained_defs.add(str(f.get("knowledge_point") or f.get("definition") or ""))
+        if retained_sources and not retained_defs:
+            # Old shared metadata without readable KP proof is preserved.
+            retained_defs = set(existing_definition_lines(path)) - old_definitions
+        entry = {"concept": str(incoming.get("concept") or existing.get("concept") or path.stem),
+                 "source_records": retained_sources | set(fields_list(incoming, "source_records")),
+                 "application_records": retained_apps | set(fields_list(incoming, "application_records")),
+                 "knowledge_point_records": retained_ids | set(fields_list(incoming, "knowledge_point_records")),
+                 "definitions": retained_defs | (set(existing_definition_lines_from_text(concepts[path].decode("utf-8"))) if path in concepts else set()),
+                 "related_concepts": set(fields_list(existing, "related_concepts"))}
+        if not entry["knowledge_point_records"] and not entry["source_records"]:
+            entry.update(concept_status="superseded", related_concepts=set())
+        records = set(entry["knowledge_point_records"])
+        entry["kp_uids"] = {
+            uid for uid, row in (facts or {}).get("kp", {}).items()
+            if str(row.get("kp_id") or "") in records or Path(str(row.get("kp_note_path") or "")).stem in records
+        }
+        staged_entries.append((path, entry, bool(retained_sources)))
+    withdrawn_names = {path.stem for path, entry, _ in staged_entries
+                       if entry.get("concept_status") == "superseded"}
+    for _, entry, _ in staged_entries:
+        if entry.get("concept_status") != "superseded":
+            entry["related_concepts"] = {link for link in entry["related_concepts"]
+                                         if plain_record_id(str(link)) not in withdrawn_names}
+    entry_map = {path: entry for path, entry, _ in staged_entries}
+    kp_uid_to_concept = {uid: path for path, entry, _ in staged_entries for uid in entry["kp_uids"]}
+    revised_uids = {knowledge_point_uid(source_id, kp_id) for kp_id in old_ids}
+    uid_concept, legacy = concept_page_index(vault, entry_map, kp_uid_to_concept, revised_uids=revised_uids)
+    for uid, (path, concept) in (candidate_kp_concepts or {}).items():
+        if path not in entry_map and path.is_file() and not is_generated_concept_note(path):
+            uid_concept[uid] = (path.stem, concept)
+    changes = []
+    for path, entry, shared in staged_entries:
+        entry["registry_sections"] = render_registry_sections(facts, entry, uid_concept)
+        concepts[path] = render_concept_note(entry).encode("utf-8")
+        changes.append({"path": path, "action": "withdraw_source_contribution" if shared else
+                        ("superseded_same_path" if entry.get("concept_status") == "superseded" else "replace_source_concept"),
+                        "shared": shared})
+    # Older-format counterparts have no new-format entry and are outside the
+    # source-member rebuild above. Only their registry tail belongs to this
+    # revision; preserve their original encoding, line endings and body.
+    touched_uids = cross_source_affected_uids(facts, {source_id})
+    for path, entry in sorted(legacy.items()):
+        if not entry["kp_uids"].intersection(touched_uids):
+            continue
+        original = path.read_bytes().decode("utf-8")
+        spliced = splice_registry_sections(original, render_registry_sections(facts, entry, uid_concept))
+        if spliced != original:
+            concepts[path] = spliced.encode("utf-8")
+    return changes
+
+
+def existing_definition_lines_from_text(text: str) -> list[str]:
+    match = re.search(r"## 定義來源\s*\n(.*?)(?:\n## |\Z)", text, re.S)
+    return [line[2:] for line in match.group(1).splitlines() if line.startswith("- ")] if match else []
+
+
+def existing_definition_lines(path: Path) -> list[str]:
+    return existing_definition_lines_from_text(path.read_text(encoding="utf-8-sig"))
+
+
+def write_concept_notes(vault: Path, *, source_ids: set[str] | None = None,
+                        candidate_fields: dict[Path, dict] | None = None,
+                        render_only: bool = False,
+                        legacy_touched: list[Path] | None = None,
+                        facts: dict[str, object] | None = None) -> list[Path] | dict[Path, bytes]:
     """Project concept nodes, optionally touching only named source contributions.
 
     The ordinary graph command can rebuild the whole derived concept layer.  A
     formal intake instead asks for the just-written source only, keeping its
     source-local write bounded while making its graph view useful immediately.
+
+    Generated pages of the older format (outside the new-format entries) keep every byte but their registry tail,
+    which is spliced on; their paths go to ``legacy_touched`` and the return value stays the new-format pages.
+    Handwritten pages are never written, and ``render_only`` (a reviewed revision) leaves the older pages alone.
     """
     assert_management_idle_for_vault(vault)
     selected_source_ids = {source_id.strip() for source_id in (source_ids or set()) if source_id.strip()}
     concept_dir = vault / "concepts"
-    concept_dir.mkdir(parents=True, exist_ok=True)
-    entries: dict[Path, dict[str, object]] = {}
-    kp_uid_to_concept: dict[str, Path] = {}
-
-    for kp_file in sorted((vault / "knowledge-points" / "by-source").glob("*/*.md")):
-        fields = frontmatter_fields(kp_file)
-        if fields.get("type") != "knowledge_point":
-            continue
-        knowledge_point = str(fields.get("knowledge_point") or fields.get("definition") or kp_file.stem)
-        concept = concept_title_from_knowledge_point(knowledge_point)
-        path = concept_note_path(vault, knowledge_point)
-        source_note = str(fields.get("source_note") or "")
-        source_id = knowledge_point_source_id(fields)
-        app_link = application_link_for_source(vault, source_id)
-        entry = entries.setdefault(
-            path,
-            {
-                "concept": concept,
-                "source_records": set(),
-                "application_records": set(),
-                "knowledge_point_records": set(),
-                "related_concepts": set(),
-                "definitions": set(),
-                "source_ids": set(),
-            },
-        )
-        entry["knowledge_point_records"].add(kp_file.stem)
-        entry["definitions"].add(knowledge_point)
-        if source_note:
-            entry["source_records"].add(plain_record_id(source_note))
-        if app_link:
-            entry["application_records"].add(app_link)
-        if source_id:
-            entry["source_ids"].add(source_id)
-        kp_uid = str(fields.get("kp_uid") or "")
-        if kp_uid:
-            kp_uid_to_concept[kp_uid] = path
+    if not render_only:
+        concept_dir.mkdir(parents=True, exist_ok=True)
+    facts = concept_projection_facts(vault) if facts is None else facts
+    entries, kp_uid_to_concept = build_reusable_concept_entries(vault, candidate_fields, facts)
+    uid_concept, legacy = ({}, {}) if render_only else concept_page_index(vault, entries, kp_uid_to_concept)  # read before any write
 
     affected_paths = {p for p,e in entries.items() if set(e['source_ids']).intersection(selected_source_ids)}
-    selected_paths = set(affected_paths)
-    for relation in read_relation_registry(vault).values():
-        source_path = kp_uid_to_concept.get(str(relation.get("source_kp_uid", "")))
-        target_path = kp_uid_to_concept.get(str(relation.get("target_kp_uid", "")))
-        if selected_source_ids and (source_path in selected_paths or target_path in selected_paths):
-            affected_paths.update(p for p in (source_path, target_path) if p)
-        if relation.get("status", "linked") != "linked":
-            continue
-        source_path = kp_uid_to_concept.get(str(relation.get("source_kp_uid", "")))
-        target_path = kp_uid_to_concept.get(str(relation.get("target_kp_uid", "")))
-        if not source_path or not target_path or source_path == target_path:
-            continue
-        source_entry = entries.get(source_path)
-        target_entry = entries.get(target_path)
-        if source_entry and target_entry:
-            source_entry["related_concepts"].add(f"[[{target_path.stem}]]")
-            target_entry["related_concepts"].add(f"[[{source_path.stem}]]")
-
-    if not selected_source_ids:
-        expected_paths = set(entries)
-        for path in sorted(concept_dir.glob("*.md")):
-            if path not in expected_paths and is_generated_concept_note(path):
-                path.unlink()
+    legacy_paths = set(legacy)
+    if selected_source_ids:
+        # The other end of a cross-source relation is an older concept: it must show the new relation too.
+        affected_paths |= cross_source_affected_paths(facts, selected_source_ids, kp_uid_to_concept) & set(entries)
+        touched_uids = cross_source_affected_uids(facts, selected_source_ids) | {
+            uid for uid, row in (facts or {}).get("kp", {}).items() if row.get("source_id") in selected_source_ids}
+        legacy_paths = {path for path, entry in legacy.items() if entry["kp_uids"] & touched_uids}
+    # Source-local KP relations are evidence records, not reviewed idea bridges.
+    # Obsolete derived names remain intact for an explicitly scoped review;
+    # neither source intake nor graph rebuild authorises deletion/relocation.
 
     today = str(date.today())
     touched: list[Path] = []
+    rendered: dict[Path, bytes] = {}
     for path, entry in entries.items():
         entry_source_ids = set(entry["source_ids"])
         if selected_source_ids and path not in affected_paths:
             continue
         if path.exists() and not is_generated_concept_note(path):
             continue  # Handwritten ideas are not adapter-owned projections.
+        if path.exists() and not concept_is_active(frontmatter_fields(path)):
+            continue  # Explicit withdrawal requires a reviewed revision to undo.
         existing_text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
         existing_updated = ""
         if path.exists():
             existing_updated = str(frontmatter_fields(path).get("updated") or "")
         stable_render = render_concept_note(entry, existing_updated or today)
+        if render_only:
+            rendered[path] = (stable_render if existing_text == stable_render else render_concept_note(entry, today)).encode("utf-8")
+            continue
         if existing_text != stable_render:
             path.write_text(render_concept_note(entry, today), encoding="utf-8")
         touched.append(path)
-    return sorted(touched)
+    for path in sorted(legacy_paths):
+        original = path.read_bytes().decode("utf-8")
+        spliced = splice_registry_sections(original, render_registry_sections(facts, legacy[path], uid_concept))
+        if spliced != original:
+            path.write_bytes(spliced.encode("utf-8"))
+        if legacy_touched is not None:
+            legacy_touched.append(path)
+    return rendered if render_only else sorted(touched)
+
+
+INFOGRAPHIC_SOURCE_OVERLAY_FIELDS = frozenset({
+    "asset_mode", "infographic_status", "png_generation_method",
+    "png_semantic_validation_status", "png_semantic_validation_evidence",
+    "png_reverse_review_status", "png_reverse_review_evidence",
+    "infographic_importance_coverage", "infographic_count_decision",
+    "coverage_unit_infographic_mapped", "infographic_page_count",
+    "infographic_multi_volume_status", "source_assets", "infographics", "updated",
+})
+INFOGRAPHIC_APPLICATION_OVERLAY_FIELDS = frozenset({
+    "ingest_status", "next_action", "issue_reason", "png_entry", "入庫",
+    "下一步", "問題", "PNG", "updated",
+})
+INFOGRAPHIC_SOURCE_OVERLAY_SECTIONS = (
+    "## 覆蓋審計", "## 資訊圖",
+)
+
+
+def _frontmatter_entry(key: str, value: str | list[str]) -> str:
+    if isinstance(value, list):
+        if not value:
+            return f"{key}: []"
+        return "\n".join([f"{key}:", *(f"  - {yaml_scalar(item)}" for item in value)])
+    return f"{key}: {yaml_scalar(value)}"
+
+
+def _replace_frontmatter_fields(base: str, rendered: str, fields: frozenset[str]) -> str:
+    """Copy only named generated frontmatter fields without normalizing the rest."""
+    if not (base.startswith("---\n") and rendered.startswith("---\n")):
+        raise ValueError("infographic overlay requires YAML frontmatter")
+    base_end = base.find("\n---", 4)
+    rendered_end = rendered.find("\n---", 4)
+    if base_end == -1 or rendered_end == -1:
+        raise ValueError("infographic overlay has incomplete YAML frontmatter")
+    base_fields = frontmatter_fields_from_text(base)
+    rendered_fields = frontmatter_fields_from_text(rendered)
+    result = base
+    for key in fields:
+        if key not in base_fields or key not in rendered_fields:
+            raise ValueError("infographic overlay field is missing: " + key)
+        # Scalar fields occupy one line; list fields include their indented rows.
+        pattern = re.compile(rf"(?m)^{re.escape(key)}:.*(?:\n  - .*)*")
+        matches = list(pattern.finditer(result, 4, result.find("\n---", 4)))
+        if len(matches) != 1:
+            raise ValueError("infographic overlay field is ambiguous: " + key)
+        value = rendered_fields[key]
+        result = result[:matches[0].start()] + _frontmatter_entry(key, value) + result[matches[0].end():]
+    return result
+
+
+def _markdown_section(text: str, heading: str) -> str:
+    match = re.search(rf"(?m)^{re.escape(heading)}\n", text)
+    if not match:
+        raise ValueError("infographic overlay section is missing: " + heading)
+    next_heading = re.search(r"(?m)^##\s+", text[match.end():])
+    end = match.end() + next_heading.start() if next_heading else len(text)
+    return text[match.start():end]
+
+
+def _replace_markdown_sections(base: str, rendered: str, headings: tuple[str, ...]) -> str:
+    result = base
+    for heading in headings:
+        before = _markdown_section(result, heading)
+        after = _markdown_section(rendered, heading)
+        if result.count(before) != 1:
+            raise ValueError("infographic overlay section is ambiguous: " + heading)
+        result = result.replace(before, after, 1)
+    return result
+
+
+def render_infographic_overlay(
+    *,
+    source_before: bytes,
+    source_rendered: str,
+    application_before: bytes,
+    application_rendered: str,
+) -> tuple[bytes, bytes]:
+    """Build a narrowly-scoped visual overlay over accepted notes.
+
+    A completed source can keep accepted annotations in its notes.  Formal
+    infographic projection may alter only explicit generated visual fields and
+    generated source sections; all other note bytes stay from the accepted
+    current note.  Missing/ambiguous generated structure fails closed.
+    """
+    def normalized(raw: bytes) -> tuple[str, str, bytes]:
+        bom = b"\xef\xbb\xbf" if raw.startswith(b"\xef\xbb\xbf") else b""
+        text = raw.decode("utf-8-sig")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        if "\r" in text.replace("\r\n", ""):
+            raise ValueError("infographic overlay refuses mixed or bare carriage-return newlines")
+        return text.replace("\r\n", "\n"), newline, bom
+
+    source_text, source_newline, source_bom = normalized(source_before)
+    application_text, application_newline, application_bom = normalized(application_before)
+    source_rendered = source_rendered.replace("\r\n", "\n")
+    application_rendered = application_rendered.replace("\r\n", "\n")
+    source = _replace_markdown_sections(
+        _replace_frontmatter_fields(source_text, source_rendered, INFOGRAPHIC_SOURCE_OVERLAY_FIELDS),
+        source_rendered,
+        INFOGRAPHIC_SOURCE_OVERLAY_SECTIONS,
+    )
+    application = _replace_frontmatter_fields(
+        application_text, application_rendered, INFOGRAPHIC_APPLICATION_OVERLAY_FIELDS,
+    )
+    if extract_canonical_body_markdown(source) != extract_canonical_body_markdown(source_text):
+        raise ValueError("infographic overlay changed retained source body")
+    return (
+        source_bom + source.replace("\n", source_newline).encode("utf-8"),
+        application_bom + application.replace("\n", application_newline).encode("utf-8"),
+    )
+
+
+def apply_reviewed_content_projection(root: Path, vault: Path, items: list[dict], *, source_id: str) -> None:
+    """The unique writer's same-path CAS for a reviewed content revision.
+
+    All files are checked before the first write. A transaction may resume only
+    from its exact before/after bytes. Input/assets and handwritten concepts
+    are outside this bounded projection writer.
+    """
+    assert_management_idle_for_vault(vault)
+    with vault_write_lock(vault):
+        writes = []
+        for item in items:
+            target, candidate = root / item["path"], root / item["candidate_path"]
+            if not target.resolve().is_relative_to(vault.resolve()):
+                raise ValueError("content projection target escapes Vault")
+            if not candidate.resolve().is_relative_to(root.resolve()) or not candidate.is_file():
+                raise ValueError("content projection candidate escapes workspace")
+            for component in (target, *target.parents):
+                if component == vault: break
+                if component.is_symlink() or (hasattr(component, "is_junction") and component.is_junction()):
+                    raise ValueError("content projection target contains a link")
+            after = candidate.read_bytes()
+            before = target.read_bytes() if target.exists() else b""
+            before_sha = hashlib.sha256(before).hexdigest()
+            absent_asset = item.get("projection_kind") == "infographic_asset" and item.get("before_sha256") == ""
+            before_matches = (absent_asset and not target.exists()) or before_sha in {item["before_sha256"], item["after_sha256"]}
+            if hashlib.sha256(after).hexdigest() != item["after_sha256"] or not before_matches:
+                raise ValueError("content projection changed since review")
+            relative = target.relative_to(vault).as_posix()
+            if target.suffix == ".md":
+                if not relative.startswith(("sources/", "applications/", f"knowledge-points/by-source/{source_id}/", "concepts/")):
+                    raise ValueError("unrelated note is outside content revision")
+                if relative.startswith("concepts/") and target.exists() and not is_generated_concept_note(target):
+                    raise ValueError("handwritten concept is not amendable")
+                if relative.startswith("sources/"):
+                    # Generated Markdown permits CRLF/LF readback; raw CAS and
+                    # retained prose (including BOM presence) stay protected.
+                    before_body = extract_canonical_body_markdown(before.decode("utf-8").replace("\r\n", "\n"))
+                    after_body = extract_canonical_body_markdown(after.decode("utf-8").replace("\r\n", "\n"))
+                    if before.startswith(b"\xef\xbb\xbf") != after.startswith(b"\xef\xbb\xbf") or before_body != after_body:
+                        raise ValueError("content revision cannot change retained original body")
+            elif item.get("projection_kind") == "infographic_asset":
+                expected_prefix = f"assets/{source_id.lower()}/"
+                if not relative.startswith(expected_prefix) or target.suffix.lower() != ".png":
+                    raise ValueError("infographic asset target is outside the source asset directory")
+                if item.get("before_sha256") == "":
+                    if target.exists() and before_sha != item["after_sha256"]:
+                        raise ValueError("infographic asset unexpectedly exists")
+                elif not target.exists():
+                    raise ValueError("infographic asset expected an existing CAS target")
+            elif relative == ".obsidian/graph.json":
+                prior_config = json.loads(before)
+                after_config = json.loads(after)
+                expected = dict(prior_config)
+                if expected.get("search") == "path:concepts":
+                    expected["search"] = "path:concepts -[concept_status:superseded]"
+                if after_config != expected:
+                    raise ValueError("content revision changed personal graph preferences")
+            elif relative not in {"_registry/sources.jsonl", "_registry/knowledge_points.jsonl", "_registry/relations.jsonl"}:
+                raise ValueError("unsupported content projection target")
+            else:
+                old_rows = [json.loads(line) for line in before.decode("utf-8-sig").splitlines() if line.strip()]
+                new_rows = [json.loads(line) for line in after.decode("utf-8-sig").splitlines() if line.strip()]
+                if [row for row in old_rows if row.get("source_id") != source_id] != [row for row in new_rows if row.get("source_id") != source_id]:
+                    raise ValueError("content revision changed unrelated registry rows")
+            if before != after:
+                writes.append((target, after))
+        for target, after in writes:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name("." + target.name + ".content-revision.tmp")
+            if temporary.exists():
+                if temporary.read_bytes() != after: raise ValueError("unowned projection temporary file")
+            else:
+                with temporary.open("xb") as stream: stream.write(after)
+            os.replace(temporary, target)
+            if target.read_bytes() != after:
+                raise ValueError("content projection readback failed")
 
 
 def write_graph_settings(vault: Path) -> None:
@@ -4372,7 +5600,8 @@ def project_concept_graph_for_sources(vault: Path, source_ids: set[str]) -> dict
         if fields.get("type") == "knowledge_point" and knowledge_point_source_id(fields) in selected_source_ids:
             source_kp_files.append(kp_file)
 
-    concept_paths = write_concept_notes(vault, source_ids=set(selected_source_ids)) if source_kp_files else []
+    legacy_paths: list[Path] = []
+    concept_paths = write_concept_notes(vault, source_ids=set(selected_source_ids), legacy_touched=legacy_paths) if source_kp_files else []
     graph_file = vault / ".obsidian" / "graph.json"
     graph_config_valid = False
     if graph_file.exists():
@@ -4382,12 +5611,12 @@ def project_concept_graph_for_sources(vault: Path, source_ids: set[str]) -> dict
         except json.JSONDecodeError:
             graph_config_valid = False
     graph_status = graph_settings_status(vault)
-    valid_groups = {"hub", "tension", "taste_signal", "application_scene"}
+    valid_groups = {"concept", "hub", "tension", "taste_signal", "application_scene"}
     concept_fields = [frontmatter_fields(path) for path in concept_paths if path.exists()]
     verification = {
         "source_has_knowledge_points": bool(source_kp_files),
-        "affected_concept_notes_exist": len(concept_fields) == len(concept_paths) and bool(concept_paths),
-        "affected_concept_notes_have_visual_groups": bool(concept_fields) and all(
+        "affected_concept_notes_exist": len(concept_fields) == len(concept_paths) and all(path.exists() for path in legacy_paths),
+        "affected_concept_notes_have_visual_groups": all(
             str(fields.get("graph_group") or "") in valid_groups and fields.get("idea_type") == "concept"
             for fields in concept_fields
         ),
@@ -4397,7 +5626,7 @@ def project_concept_graph_for_sources(vault: Path, source_ids: set[str]) -> dict
     return {
         "status": "ready" if verification["passed"] else "needs_review",
         "source_ids": selected_source_ids,
-        "concept_notes": [path.relative_to(vault).as_posix() for path in concept_paths],
+        "concept_notes": [path.relative_to(vault).as_posix() for path in sorted([*concept_paths, *legacy_paths])],
         "graph_settings": {
             "action": graph_action,
             "default_preset_active": bool(graph_status.get("ready")),
@@ -4407,19 +5636,52 @@ def project_concept_graph_for_sources(vault: Path, source_ids: set[str]) -> dict
     }
 
 
-def remove_machine_wikilinks_from_record_layer(vault: Path) -> list[Path]:
+def remove_machine_wikilinks_from_record_layer(root: Path, vault: Path) -> list[Path]:
     touched: list[Path] = []
-    for folder in ("sources", "applications", "knowledge-points"):
-        root = vault / folder
-        if not root.exists():
+    for folder in ("sources", "applications"):
+        folder_root = vault / folder
+        if not folder_root.exists():
             continue
-        for path in sorted(root.rglob("*.md")):
+        for path in sorted(folder_root.rglob("*.md")):
             text = path.read_text(encoding="utf-8-sig")
             cleaned = MACHINE_ID_WIKILINK_RE.sub(lambda match: match.group(1), text)
             if cleaned != text:
                 path.write_text(cleaned, encoding="utf-8")
                 touched.append(path)
-    return touched
+    return touched + remove_machine_wikilinks_from_record_notes(root, vault)
+
+
+def remove_machine_wikilinks_from_record_notes(root: Path, vault: Path) -> list[Path]:
+    """The same cleanup for the knowledge-point notes, through the one note writer.  A note of a completed v2 source (or of a source whose
+    completion cannot be resolved) is left alone: its receipt keeps its bytes."""
+    notes_root = vault / "knowledge-points"
+    if not notes_root.exists():
+        return []
+    module = completion_revisions_module()
+    base = Path(root).resolve()
+    if vault.resolve() != managed_vault_path(base):
+        return []
+    by_source: dict[str, dict[Path, bytes]] = {}
+    for path in sorted(notes_root.rglob("*.md")):
+        if len(path.relative_to(vault).parts) != 4:
+            continue
+        raw = path.read_bytes()
+        bom = raw.startswith(b"\xef\xbb\xbf")
+        text = (raw[3:] if bom else raw).decode("utf-8")
+        cleaned = MACHINE_ID_WIKILINK_RE.sub(lambda match: match.group(1), text)
+        if cleaned != text:
+            by_source.setdefault(path.parent.name, {})[path] = (b"\xef\xbb\xbf" if bom else b"") + cleaned.encode("utf-8")
+    changes: dict[Path, bytes] = {}
+    for group in by_source.values():
+        try:
+            if any(owner["completed"] for owner in module.classify_kp_notes(base, list(group))):
+                continue
+        except module.CompletedNoteError:
+            continue
+        changes.update(group)
+    if changes:
+        module.rewrite_kp_notes(base, changes, reason="machine ID wikilinks removed from the record layer")
+    return list(changes)
 
 
 def backfill_application_confirmation_layer(vault: Path) -> list[Path]:
@@ -4651,20 +5913,26 @@ def taste_link_label(status: object) -> str:
     return labels.get(value, value or "未判斷")
 
 
-def overview_next_action(adoption_status: str, taste_link_status: str, complete: bool) -> str:
+def overview_next_action(
+    adoption_status: str,
+    taste_link_status: str,
+    complete: bool,
+    *,
+    has_infographic: bool = True,
+) -> str:
     if not complete:
         return "先處理入庫缺口"
     if taste_link_status == "linked":
-        return "看 PNG，再讀應用筆記"
+        return "看 PNG，再讀應用筆記" if has_infographic else "再讀應用筆記"
     if taste_link_status == "taste_needs_context":
-        return "看 PNG，再補品味脈絡"
+        return "看 PNG，再補品味脈絡" if has_infographic else "補品味脈絡"
     if adoption_status in {"深讀", "試行", "收藏"}:
-        return "看 PNG，再讀原文或知識點"
+        return "看 PNG，再讀原文或知識點" if has_infographic else "再讀原文或知識點"
     if adoption_status in {"暫存", "再訪"}:
-        return "看 PNG，暫不深讀"
+        return "看 PNG，暫不深讀" if has_infographic else "暫不深讀"
     if adoption_status == "拒絕":
         return "無需處理"
-    return "看 PNG，再決定是否打開"
+    return "看 PNG，再決定是否打開" if has_infographic else "再決定是否打開"
 
 
 def find_vault_note_by_stem(root: Path, stem: str) -> Path | None:
@@ -4957,7 +6225,9 @@ def write_plan(plan: dict[str, object], *, source_local: bool = False) -> None:
             write_base_files(vault)
             write_concept_notes(vault)
             backfill_application_confirmation_layer(vault)
-            remove_machine_wikilinks_from_record_layer(vault)
+            root = plan["root"]
+            assert isinstance(root, Path)
+            remove_machine_wikilinks_from_record_layer(root, vault)
             write_graph_settings(vault)
 
 
@@ -4985,7 +6255,7 @@ def vault_write_lock(vault: Path):
             pass
 
 
-def write_source_registry(plan: dict[str, object]) -> None:
+def write_source_registry(plan: dict[str, object], *, render_only: bool = False) -> bytes | None:
     vault = plan["vault"]
     data = plan["data"]
     source_note = plan["source_note"]
@@ -4997,7 +6267,8 @@ def write_source_registry(plan: dict[str, object]) -> None:
     assert isinstance(registry_file, Path)
     assert isinstance(identity, str)
 
-    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    if not render_only:
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
     existing = read_source_registry(vault)
     row = {
         "source_identity": identity,
@@ -5018,17 +6289,19 @@ def write_source_registry(plan: dict[str, object]) -> None:
         row["source_image_mime"] = data.source_image_mime
         row["source_image_width"] = str(data.source_image_width)
         row["source_image_height"] = str(data.source_image_height)
-    if data.source_retention_mode == "full_body_required":
+    if data.source_retention_mode in CANONICAL_HASH_RETENTION_MODES:
         row["canonical_body_sha256"] = data.canonical_body_sha256
     existing[identity] = row
     rows = [existing[key] for key in sorted(existing)]
+    if render_only:
+        return ("\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n").encode("utf-8")
     registry_file.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n",
         encoding="utf-8",
     )
 
 
-def write_knowledge_point_registry(plan: dict[str, object]) -> None:
+def write_knowledge_point_registry(plan: dict[str, object], *, render_only: bool = False) -> bytes | None:
     vault = plan["vault"]
     data = plan["data"]
     kp_notes = plan["knowledge_point_notes"]
@@ -5039,7 +6312,8 @@ def write_knowledge_point_registry(plan: dict[str, object]) -> None:
     assert isinstance(identity, str)
     assert isinstance(duplicate_of, dict)
     registry_file = knowledge_point_registry_file(vault)
-    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    if not render_only:
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
     existing = read_knowledge_point_registry(vault)
     for kp, note_path in zip(data.knowledge_points, kp_notes):
         assert isinstance(note_path, Path)
@@ -5066,6 +6340,12 @@ def write_knowledge_point_registry(plan: dict[str, object]) -> None:
             "status": row_status,
             "updated": str(date.today()),
         }
+        if kp.understanding_delta:
+            existing[uid].update(
+                concept_name=kp.reusable_concept_name,
+                understanding_delta=kp.understanding_delta,
+                job_id=data.prior_job_id,
+            )
         for key in (
             "duplicate_review_decision",
             "duplicate_review_reason",
@@ -5075,13 +6355,15 @@ def write_knowledge_point_registry(plan: dict[str, object]) -> None:
             if previous.get(key):
                 existing[uid][key] = previous[key]
     rows = [existing[key] for key in sorted(existing)]
+    if render_only:
+        return ("\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n").encode("utf-8")
     registry_file.write_text(
         "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + "\n",
         encoding="utf-8",
     )
 
 
-def write_relation_registry(plan: dict[str, object]) -> None:
+def write_relation_registry(plan: dict[str, object], *, render_only: bool = False) -> bytes | None:
     vault = plan["vault"]
     data = plan["data"]
     source_note = plan["source_note"]
@@ -5093,8 +6375,16 @@ def write_relation_registry(plan: dict[str, object]) -> None:
     assert isinstance(identity, str)
     assert isinstance(relations, list)
     registry_file = relation_registry_file(vault)
-    registry_file.parent.mkdir(parents=True, exist_ok=True)
+    if not render_only:
+        registry_file.parent.mkdir(parents=True, exist_ok=True)
     existing = read_relation_registry(vault)
+    cross_links = plan.get("cross_source_links") or []
+    if plan.get("content_revision"):
+        active = {relation_id(data.source_id, relation) for relation in relations}
+        active |= {cross_source_link_id(data.source_id, link) for link in cross_links}
+        for rid, row in existing.items():
+            if row.get("source_id") == data.source_id and rid not in active and row.get("status", "linked") == "linked":
+                row.update(status="superseded", revision_reason="source-grounded content revision")
     for relation in relations:
         assert isinstance(relation, KnowledgeRelation)
         rid = relation_id(data.source_id, relation)
@@ -5116,11 +6406,22 @@ def write_relation_registry(plan: dict[str, object]) -> None:
             "status": "linked",
             "updated": str(date.today()),
         }
+    kp_registry = read_knowledge_point_registry(vault) if cross_links else {}
+    for link in cross_links:
+        assert isinstance(link, CrossSourceLink)
+        target = kp_registry.get(link.target_kp_uid, {})
+        if target.get("status") != "linked" or target.get("source_id") == data.source_id:
+            raise AdapterStop("needs_review", f"cross-source link target is not a linked older knowledge point: {link.target_kp_uid}")
+        source_uid = knowledge_point_uid(data.source_id, link.source_kp_id)
+        upsert_cross_source_row(existing, cross_source_relation_row(
+            source_id=data.source_id, source_identity=identity, source_note_path=vault_relative(source_note), source_kp_uid=source_uid,
+            source_kp_id=link.source_kp_id, target_kp_uid=link.target_kp_uid, target_kp_id=target.get("kp_id", ""), relation=link.relation,
+            evidence=link.evidence, confidence=link.confidence, target_source_id=target.get("source_id", ""), insight=link.insight,
+            job_id=data.prior_job_id))
     rows = [existing[key] for key in sorted(existing)]
-    registry_file.write_text(
-        "\n".join(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in rows) + ("\n" if rows else ""),
-        encoding="utf-8",
-    )
+    if render_only:
+        return registry_rows_text(rows).encode("utf-8")
+    registry_file.write_text(registry_rows_text(rows), encoding="utf-8")
 
 
 def write_base_files(vault: Path) -> None:
@@ -5583,15 +6884,43 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
         [application_note] if application_note.exists() else [],
     )
     expected_kp_uids = [knowledge_point_uid(data.source_id, kp.kp_id) for kp in data.knowledge_points]
-    expected_concept_notes = [concept_note_path(vault, kp.text) for kp in data.knowledge_points]
+    # One entry per KP; None means the writer's analysis expects no concept note.
+    expected_concept_pairs = [
+        (kp_path, planned_concept_note_path(vault, kp, kp_path))
+        for kp, kp_path in zip(data.knowledge_points, plan["knowledge_point_notes"])
+    ]
+    expected_concept_notes = [concept for _, concept in expected_concept_pairs if concept is not None]
     expected_relation_ids = [
         relation_id(data.source_id, relation)
         for relation in relations
         if isinstance(relation, KnowledgeRelation)
     ]
+    note_canonical_span = canonical_source_section_span(text)
+    actual_source_relations = parse_relation_rows(text[note_canonical_span[1]:] if note_canonical_span else text)
+    expected_outgoing = relations_grouped_by_source(relations)
+    kp_relation_projection_matches = True
+    for kp, note in zip(data.knowledge_points, kp_notes):
+        if not note.is_file():
+            kp_relation_projection_matches = False
+            continue
+        note_text = note.read_text(encoding="utf-8-sig")
+        actual_points = frontmatter_fields_from_text(note_text).get("related_points") or []
+        if actual_points == "[]": actual_points = []
+        outgoing = expected_outgoing.get(kp.kp_id, [])
+        expected_points = [r.target_kp_id for r in outgoing]
+        expected_lines = "\n".join(
+            f"- {r.relation}: `{r.target_kp_id}` ({r.confidence}; {r.evidence})" for r in outgoing
+        ) or "- 暫無已登記關係。"
+        if actual_points != expected_points or section_after(note_text, "## Registered Relations").strip() != expected_lines:
+            kp_relation_projection_matches = False
     canonical_body = extract_canonical_body_markdown(text)
     canonical_body_hash = canonical_body_fingerprint(canonical_body) if canonical_body else ""
     full_body_required = data.source_retention_mode == "full_body_required"
+    transcript_archive = data.source_retention_mode == TRANSCRIPT_ARCHIVE_MODE
+    archive_issues = (
+        transcript_archive_issues(plan, data, written_notes=[source_note, application_note, *kp_notes])
+        if transcript_archive else []
+    )
     full_body_anchors_present = all(
         canonical_body_contains_anchor(canonical_body, anchor)
         for anchor in data.canonical_body_representative_anchors
@@ -5613,8 +6942,17 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             )
         ),
         "full_body_registry_hash_matches": (
-            not full_body_required
+            not (full_body_required or transcript_archive)
             or registry_row.get("canonical_body_sha256") == data.canonical_body_sha256
+        ),
+        "transcript_archive_readback": (
+            not transcript_archive
+            or (
+                not archive_issues
+                and "## 字幕存檔" in text
+                and not canonical_body
+                and registry_row.get("source_retention_mode") == TRANSCRIPT_ARCHIVE_MODE
+            )
         ),
         "registry_file_exists": registry_file.exists(),
         "registry_has_source_identity": identity in registry,
@@ -5638,6 +6976,17 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
         "relation_registry_has_expected_relations": all(
             relation_id_value in relation_registry for relation_id_value in expected_relation_ids
         ),
+        "relation_registry_expected_relations_are_linked": all(
+            relation_registry.get(rid, {}).get("status", "linked") == "linked" for rid in expected_relation_ids
+        ),
+        "cross_source_relations_registered_and_linked": all(
+            relation_registry.get(cross_source_link_id(data.source_id, link), {}).get("status") == "linked"
+            for link in data.cross_source_links
+        ),
+        "source_relation_projection_matches_registry": {
+            relation_id(data.source_id, r) for r in actual_source_relations
+        } == set(expected_relation_ids),
+        "knowledge_point_relation_projection_matches_registry": kp_relation_projection_matches,
         "source_note_uses_canonical_sharded_path": source_note == sharded_source_note(vault, data),
         "application_note_uses_canonical_sharded_path": application_note == sharded_application_note(vault, data),
         "knowledge_points_use_by_source_path": all(
@@ -5645,14 +6994,27 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
         ),
         "asset_mode_present": f"asset_mode: {yaml_scalar(data.asset_mode)}" in text,
         "asset_embed_present": (
-            "![[assets/" in text
-            and (bool(asset_dests) if data.asset_mode == ASSET_MODE_FORMAL else bool(case_image_dests))
+            data.asset_mode == ASSET_MODE_KNOWLEDGE
+            or (
+                "![[assets/" in text
+                and (bool(asset_dests) if data.asset_mode == ASSET_MODE_FORMAL else bool(case_image_dests))
+            )
         ),
         "knowledge_records_present": all(path.stem in text for path in kp_notes),
         "coverage_audit_readback": (
             data.asset_mode == ASSET_MODE_CASE
             and "case_evidence" in text
             and "## 覆蓋審計" in text
+        ) or (
+            data.asset_mode == ASSET_MODE_KNOWLEDGE
+            and "## 覆蓋審計" in text
+            and f"infographic_status: {yaml_scalar(data.infographic_status)}" in text
+            and f"coverage_audit_status: {yaml_scalar(data.coverage_audit_status)}" in text
+            and data.coverage_audit_status in {"complete", "text_only_pending_infographic"}
+            and data.coverage_unit_total > 0
+            and data.coverage_unit_infographic_mapped == 0
+            and data.infographic_page_count == 0
+            and data.infographic_multi_volume_status in {"not_requested", "not_generated"}
         ) or (
             not coverage_audit_applicable
             or (
@@ -5672,7 +7034,7 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             for path in (asset_dests if data.asset_mode == ASSET_MODE_FORMAL else case_asset_dests)
         ),
         "case_evidence_manifest_readback": (
-            data.asset_mode == ASSET_MODE_FORMAL
+            data.asset_mode in {ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE}
             or (
                 bool(case_asset_dests)
                 and isinstance(case_asset_dests[0], Path)
@@ -5682,7 +7044,7 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             )
         ),
         "case_evidence_screenshot_readback": (
-            data.asset_mode == ASSET_MODE_FORMAL
+            data.asset_mode in {ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE}
             or all(
                 isinstance(path, Path) and path.exists() and f"![[{vault_relative(path)}]]" in text
                 for path in case_image_dests
@@ -5725,8 +7087,8 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
         "concept_notes_exist": source_local or all(path.exists() for path in expected_concept_notes),
         "concept_notes_reference_knowledge_points": source_local or all(
             kp_path.stem in concept_path.read_text(encoding="utf-8-sig")
-            for kp_path, concept_path in zip(kp_notes, expected_concept_notes)
-            if concept_path.exists()
+            for kp_path, concept_path in expected_concept_pairs
+            if concept_path is not None and concept_path.exists()
         ),
         "concept_notes_are_graph_clean": source_local or all(
             not re.search(r"\[\[(?:KP-|KS-|APP-)", concept_path.read_text(encoding="utf-8-sig"))
@@ -5738,17 +7100,18 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             for marker in NOTION_MAINLINE_RESIDUE
         ),
         "infographic_embed_count_matches": source_note_without_canonical_section(text).count("![[assets/") == (
-            (len(asset_dests) + (1 if data.source_input_kind == "user_provided_image" else 0))
-            if data.asset_mode == ASSET_MODE_FORMAL
-            else len(case_image_dests)
+            (len(asset_dests) if data.asset_mode == ASSET_MODE_FORMAL else len(case_image_dests))
+            + (1 if data.source_input_kind == "user_provided_image" else 0)
         ),
-        "infographic_block_validation_complete": data.asset_mode == ASSET_MODE_CASE or (
+        "infographic_block_validation_complete": data.asset_mode in {ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE} or (
             len(extract_infographic_blocks(text)) <= 1
             or not infographic_block_quality_issues_from_blocks(extract_infographic_blocks(text))
         ),
-        "infographic_duplicate_content_clear": data.asset_mode == ASSET_MODE_CASE or not infographic_duplicate_issues_from_blocks(extract_infographic_blocks(text)),
+        "infographic_duplicate_content_clear": data.asset_mode in {ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE} or not infographic_duplicate_issues_from_blocks(extract_infographic_blocks(text)),
         "learning_check_complete": not learning_check_gaps(text),
-        "source_note_has_no_adam_application_section": "For 使用者" not in source_note_without_canonical_section(text) and "## 使用者 應用層" not in source_note_without_canonical_section(text),
+        "source_note_has_no_adam_application_section": not has_personal_layer(
+            source_note_without_canonical_section(text)
+        ),
         "source_note_has_no_personal_properties": not any(
             marker in source_note_without_canonical_section(text)
             for marker in (
@@ -5778,6 +7141,8 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             text.find("## 資訊圖") != -1
             and text.find("## 學習檢查") > text.find("## 資訊圖")
             if data.asset_mode == ASSET_MODE_FORMAL
+            else text.find("## 學習檢查") != -1
+            if data.asset_mode == ASSET_MODE_KNOWLEDGE
             else text.find("## 案例證據") != -1 and text.find("## 學習檢查") > text.find("## 案例證據")
         ),
     }
@@ -5824,6 +7189,11 @@ def verify_plan(plan: dict[str, object], *, source_local: bool = False) -> dict[
             "readback_sha256": canonical_body_hash if full_body_required else "",
             "representative_anchors": list(data.canonical_body_representative_anchors) if full_body_required else [],
             "representative_anchors_present": full_body_anchors_present if full_body_required else True,
+        },
+        "transcript_archive_evidence": {
+            "mode": data.source_retention_mode,
+            "verified": transcript_archive and not archive_issues,
+            "issues": [issue["code"] for issue in archive_issues],
         },
         "enum_violations": enum_violations,
         "adoption_field_gaps": adoption_field_gaps,
@@ -5893,7 +7263,9 @@ def vault_health_report(root: Path, vault: Path) -> dict[str, object]:
     for kp_file in kp_files:
         fields = frontmatter_fields(kp_file)
         knowledge_point = str(fields.get("knowledge_point") or fields.get("definition") or kp_file.stem)
-        concept_path = concept_note_path(vault, knowledge_point)
+        concept_path = projected_concept_note_path(vault, fields, knowledge_point)
+        if concept_path is None:
+            continue
         expected_concept_files.append(concept_path)
         if not concept_path.exists():
             concept_content_issues.append(
@@ -6112,7 +7484,7 @@ def source_note_content_issues(vault: Path, rows: list[dict[str, str]]) -> list[
             expected["source_content_sha256"] = row.get("source_content_sha256", "")
         elif explicit_input_kind == "user_provided_image":
             expected["source_image_sha256"] = row.get("source_image_sha256", "")
-        if retention_mode == "full_body_required":
+        if retention_mode in CANONICAL_HASH_RETENTION_MODES:
             expected["canonical_body_sha256"] = row.get("canonical_body_sha256", "")
         for field, value in expected.items():
             if f"{field}: {yaml_scalar(value)}" not in text:
@@ -6123,9 +7495,14 @@ def source_note_content_issues(vault: Path, rows: list[dict[str, str]]) -> list[
                 issues.append({"path": vault_relative(path), "issue": "full_body_missing"})
             elif canonical_body_fingerprint(canonical_body) != row.get("canonical_body_sha256", ""):
                 issues.append({"path": vault_relative(path), "issue": "full_body_hash_mismatch"})
+        if retention_mode == TRANSCRIPT_ARCHIVE_MODE:
+            if canonical_body_markdown_present(text):
+                issues.append({"path": vault_relative(path), "issue": "transcript_body_in_vault"})
+            if has_cue_timing_line(text):
+                issues.append({"path": vault_relative(path), "issue": "transcript_cue_timing_line_in_vault"})
         if any(marker in source_note_without_canonical_section(text) for marker in SOURCE_INTERNAL_RESIDUE):
             issues.append({"path": vault_relative(path), "issue": "source_internal_residue"})
-        if "For 使用者" in text or "## 使用者 應用層" in text:
+        if has_personal_layer(text):
             issues.append({"path": vault_relative(path), "issue": "adam_application_residue"})
     return issues
 
@@ -6467,6 +7844,10 @@ def frontmatter_fields_from_text(text: str) -> dict[str, str | list[str]]:
         key, raw_value = line.split(":", 1)
         key = key.strip()
         value = raw_value.strip()
+        if value == "[]":  # render_frontmatter writes an empty list this way
+            fields[key] = []
+            index += 1
+            continue
         if value:
             fields[key] = unquote_yaml_scalar(value)
             index += 1
@@ -6487,6 +7868,11 @@ def frontmatter_scalar(text: str, key: str) -> str:
 
 def frontmatter_list_items(text: str, key: str) -> list[str]:
     value = frontmatter_fields_from_text(text).get(key)
+    return value if isinstance(value, list) else []
+
+
+def fields_list(fields: dict, key: str) -> list[str]:
+    value = fields.get(key)
     return value if isinstance(value, list) else []
 
 
@@ -6634,6 +8020,10 @@ def print_human(result: dict[str, object]) -> None:
         print(f"decision: {result['decision']}")
         print(f"duplicate of: {result['duplicate_of']}")
         print(f"kp note path: {result['kp_note_path']}")
+        if result.get("decision_receipt"):
+            print(f"decision receipt: {result['decision_receipt']}")
+        for revision in result.get("completion_revisions", []):
+            print(f"completion revision: {revision['source_id']} {revision['record']}")
         if "verification" in result:
             print(f"verification: {result['verification']}")
         return

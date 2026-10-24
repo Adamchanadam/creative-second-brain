@@ -36,7 +36,7 @@
       "writes": [
         "explicit workspace job and vault"
       ],
-      "purpose": "保存完整文字，保留原文、來源與你的理解分層。",
+      "purpose": "保存完整文字，保留原文、來源與知識分析；資訊圖可在正式入庫後按明示要求補做。",
       "home_title": "保存完整文字",
       "host_prompt": "$brain-text\n[貼上原文]",
       "menu_order": 3,
@@ -48,12 +48,24 @@
       "writes": [
         "explicit workspace job and vault"
       ],
-      "purpose": "把一張原圖作為知識來源，保留原圖並標示看不清的內容。",
+      "purpose": "把一張原圖作為知識來源，保留原圖並標示看不清的內容；不是畫圖或補圖。",
       "home_title": "保存一張原圖",
       "host_prompt": "$brain-image [附上一張圖片]",
       "menu_order": 4,
       "menu_group": "收集",
       "menu_label": "原圖"
+    },
+    "infographic": {
+      "entry": "<workspace>/tools/brain.py rail add-infographic --source-id <知識頁ID>",
+      "writes": [
+        "only a formal infographic revision for the named completed source"
+      ],
+      "purpose": "為已入庫知識製作可選資訊圖；文字內容已完整入庫，不會因未製圖而受阻。原圖來源與新製資訊圖分開。",
+      "home_title": "為已入庫知識製作資訊圖",
+      "host_prompt": "$brain-infographic <知識頁ID>",
+      "menu_order": 15,
+      "menu_group": "使用",
+      "menu_label": "製作資訊圖"
     },
     "ask": {
       "alias_for": "think",
@@ -155,7 +167,7 @@
       "writes": [
         "only the identified unfinished job after current instruction"
       ],
-      "purpose": "找回同一身份的中斷工作，保留已合格成果。",
+      "purpose": "找回同一身份的中斷工作，保留已合格成果；可接續已入庫來源的明示補圖。",
       "home_title": "接續中斷工作",
       "host_prompt": "$brain-resume [來源或工作編號]",
       "menu_order": 9,
@@ -163,13 +175,13 @@
       "menu_label": "接續工作"
     },
     "fix": {
-      "entry": "<workspace>/tools/brain.py rail inspect --job-id <id>",
+      "entry": "<workspace>/tools/brain.py rail inspect --job-id <JOB_ID>",
       "writes": [
         "only the named repair target"
       ],
-      "purpose": "修復指定知識成果、圖片或閱讀頁問題；不做全庫整理。",
+      "purpose": "修復指定知識成果、圖片或閱讀頁問題；補製資訊圖請使用 brain-infographic；不做全庫整理。",
       "home_title": "修復指定問題",
-      "host_prompt": "$brain-fix [哪裏有甚麼問題]",
+      "host_prompt": "$brain-fix [來源或問題描述]",
       "menu_order": 11,
       "menu_group": "維護",
       "menu_label": "修復問題"

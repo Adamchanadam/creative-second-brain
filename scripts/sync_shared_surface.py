@@ -32,7 +32,7 @@ def shared_payloads() -> tuple[dict[str, bytes], dict]:
     wanted = {item["skill"] for item in inv["daily_entry_contract"]["managed_entries"]}
     selected = {path: value for path, value in entries.items() if path.endswith("/SKILL.md")}
     actual = {path.split("/")[2] for path in selected}
-    if actual != wanted or len(selected) != 15:
+    if actual != wanted or len(selected) != len(wanted):
         raise mg.ManagerError("shared entry payload inventory is invalid")
     payloads.update(selected)
     return payloads, {"package_binding": mg.binding(), "hashes": {path: mg.sha_b(value) for path, value in payloads.items()}}

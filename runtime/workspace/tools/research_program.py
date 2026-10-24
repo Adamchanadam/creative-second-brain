@@ -34,6 +34,7 @@ try:
         COMPLETION_SCHEMA_VERSION,
         CompilerWorkerV2Error,
         completed_receipt_readback,
+        latest_v2_job_for_source,
         read_json as read_compiler_json,
         sha256_bytes,
     )
@@ -43,6 +44,7 @@ except ModuleNotFoundError:
         COMPLETION_SCHEMA_VERSION,
         CompilerWorkerV2Error,
         completed_receipt_readback,
+        latest_v2_job_for_source,
         read_json as read_compiler_json,
         sha256_bytes,
     )
@@ -58,6 +60,11 @@ except ModuleNotFoundError:
     from workspace_paths import WorkspacePathError, vault_path  # type: ignore
 
 try:
+    from tools.knowledge_direction import DirectionError, compute_direction
+except ModuleNotFoundError:
+    from knowledge_direction import DirectionError, compute_direction  # type: ignore
+
+try:
     from tools.research_schedule_contract import host_timezone_status, scheduler_status
 except ModuleNotFoundError:
     from research_schedule_contract import host_timezone_status, scheduler_status  # type: ignore
@@ -67,7 +74,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "research_program_v1"
 CASE_STATES = {"reserved", "committing"}
 ACTION_LIMITS = {"search": "searches", "deep_read": "deep_reads", "supplement": "deep_reads"}
-SUPPORTED_ASSET_MODES = {"case_evidence", "formal_infographic"}
+SUPPORTED_ASSET_MODES = {"case_evidence", "formal_infographic", "knowledge_only"}
 SUPPORTED_SOURCE_PROFILES = {"article", "paper"}
 SCHEDULED_QUOTA_LANE = "scheduled"
 DIRECT_USER_QUOTA_LANE = "direct_user"
@@ -558,15 +565,23 @@ def validate_topic_definition(config: dict[str, Any]) -> None:
         raise ProgramError("portable research supports manual_research only; background scheduling belongs to OPS")
 
 
-def require_capacity(state: dict[str, Any], config: dict[str, Any], day: str, run: dict[str, Any]) -> None:
+def capacity_block_reason(state: dict[str, Any], config: dict[str, Any], day: str, run: dict[str, Any] | None) -> str:
+    """The one place that decides whether a new case may start today (empty = allowed)."""
     reconcile_pending_for_day(state, day)
-    if direct_command_for_run(run) is not None:
-        return
+    if run is not None and direct_command_for_run(run) is not None:
+        return ""
     counts = capacity(state, config, day)
     if counts["total_accepted"] + counts["total_reserved"] >= counts["total_cap"]:
-        raise ProgramError("total case cap reached; zero external search is permitted")
+        return "total case cap reached; zero external search is permitted"
     if counts["daily_accepted"] + counts["daily_reserved"] >= counts["daily_cap"]:
-        raise ProgramError("today case capacity is reserved or completed; do not start new external research")
+        return "today case capacity is reserved or completed; do not start new external research"
+    return ""
+
+
+def require_capacity(state: dict[str, Any], config: dict[str, Any], day: str, run: dict[str, Any]) -> None:
+    reason = capacity_block_reason(state, config, day, run)
+    if reason:
+        raise ProgramError(reason)
 
 
 def case_identity(url: str) -> tuple[str, str]:
@@ -877,6 +892,28 @@ def command_grant_manual_allowance(args: argparse.Namespace) -> int:
     return output({"status": "approved", "allowance": allowance, "day": day})
 
 
+def workspace_declared_executor(root: Path) -> dict[str, str]:
+    """Read the executor this workspace itself declares in brain.json, if any.
+
+    The declaration is the top-level ``executor`` object (``model`` and an
+    optional ``reasoning_effort``).  Nothing is guessed: a missing file, a
+    missing key or a malformed value simply declares nothing.
+    """
+    try:
+        declared = json.loads((root / "brain.json").read_text(encoding="utf-8")).get("executor")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    if not isinstance(declared, dict):
+        return {}
+    result: dict[str, str] = {}
+    for key in ("model", "reasoning_effort"):
+        try:
+            result[key] = safe_id(declared.get(key), key)
+        except ProgramError:
+            continue
+    return result
+
+
 def command_begin(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     directory, config, state = load_topic(root, args.topic_id)
@@ -957,9 +994,11 @@ def command_begin(args: argparse.Namespace) -> int:
                 owners = ", ".join(sorted(pending_owners))
                 raise ProgramError(f"unfinished research belongs to {owners}; resume that run before external work")
         if run_id not in runs:
+            workspace_executor = {} if allowance is not None else workspace_declared_executor(root)
             declared_executor = allowance["declared_executor"] if allowance is not None else {
-                "model": args.executor_model or "unspecified",
-                "reasoning_effort": args.executor_reasoning_effort or "unspecified",
+                "model": args.executor_model or workspace_executor.get("model") or "unspecified",
+                "reasoning_effort": args.executor_reasoning_effort
+                or workspace_executor.get("reasoning_effort") or "unspecified",
             }
             runs[run_id] = {
                 "run_id": run_id,
@@ -1573,23 +1612,74 @@ def immutable_case_completion(
     return receipt
 
 
+def rail_binding(root: Path, source_identity: str) -> dict[str, Any]:
+    """Read-only: which Compiler rail job owns this case's source, and is it complete?
+
+    The rail job registry already binds a source identity to one job and one
+    package.  This only reads that binding; the receipt it points at still has
+    to pass the same immutable readback before a case is accepted.
+    """
+    if not source_identity:
+        return {"state": "none"}
+    try:
+        job = latest_v2_job_for_source(root, source_identity)
+    except (CompilerWorkerV2Error, OSError, ValueError):
+        return {"state": "ambiguous"}
+    if not job:
+        return {"state": "none"}
+    result: dict[str, Any] = {"state": "found", "job_id": str(job.get("job_id") or ""), "job_status": str(job.get("status") or "")}
+    package_dir = str(job.get("package_dir") or "").strip()
+    result["package_dir"] = package_dir
+    if package_dir:
+        receipt = (root / package_dir / "completion_receipt.json").resolve()
+        if root in receipt.parents and receipt.is_file():
+            result["completion_receipt"] = receipt.relative_to(root).as_posix()
+    return result
+
+
+def resolve_completion_receipt(root: Path, state: dict[str, Any], case_id: str) -> str:
+    """Find the receipt for a case when the caller did not pass one, or refuse."""
+    case = active_cases(state).get(case_id)
+    if case:
+        binding = rail_binding(root, str(case.get("source_identity") or ""))
+        if binding.get("completion_receipt"):
+            return str(binding["completion_receipt"])
+    else:
+        prior = next((row for row in accepted_cases(state) if row.get("case_id") == case_id), None)
+        if prior and str(prior.get("completion_receipt") or "").strip():
+            return str(prior["completion_receipt"])
+    raise ProgramError("--completion-receipt is required: no completed rail job is bound to this case")
+
+
+def rail_observation(receipt: dict[str, Any]) -> dict[str, Any] | None:
+    """Copy the receipt's own job id and timing facts; observation only, never a gate or timer."""
+    execution = receipt.get("execution") if isinstance(receipt.get("execution"), dict) else {}
+    observed = {
+        "job_id": receipt.get("job_id"),
+        "wall_seconds": execution.get("wall_seconds"),
+        "target_status": execution.get("target_status"),
+    }
+    observed = {key: value for key, value in observed.items() if value not in (None, "")}
+    return observed or None
+
+
 def command_complete_case(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     directory, config, state = load_topic(root, args.topic_id)
     day, checked_at, _ = event_times(args, str(config["timezone"]))
-    receipt_path = (root / args.completion_receipt).resolve()
+    receipt_path = (root / (args.completion_receipt or resolve_completion_receipt(root, state, args.case_id))).resolve()
     if root not in receipt_path.parents or not receipt_path.is_file():
         raise ProgramError("completion receipt must be an existing file inside this workspace")
     with program_lock(directory):
         _, config, state = load_topic(root, args.topic_id)
-        require_run(state, args.run_id, config, day)
+        run = require_run(state, args.run_id, config, day)
         active = active_cases(state)
         case = active.get(args.case_id)
         receipt_hash = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
         if not case:
             prior = next((row for row in accepted_cases(state) if row.get("case_id") == args.case_id), None)
             if prior and prior.get("completion_receipt_sha256") == receipt_hash:
-                if method_verification_state(prior) != "verified":
+                if method_verification_state(prior) == "needs_revalidation":
                     raise ProgramError("case method verification is not current; preserve it and complete source-bound revalidation")
                 immutable_case_completion(
                     root, receipt_path,
@@ -1615,22 +1705,27 @@ def command_complete_case(args: argparse.Namespace) -> int:
             raise ProgramError("today cap is full before qualified completion; preserve reservation and inspect")
         case.update({"status": "committing", "commit_checked_at": checked_at})
         state["active_cases"][args.case_id] = case
-        selection_contract = topic_selection_contract(config)
-        method_state = "verified" if (
-            asset_mode == "case_evidence"
-            and selection_contract is not None
-            and selection_contract.get("learning_alignment_required") is True
-        ) else "not_assessed"
         accepted = {**case, "status": "qualified", "accepted_day": day, "accepted_at": checked_at,
                     "completion_receipt": receipt_path.relative_to(root).as_posix(), "completion_receipt_sha256": receipt_hash,
-                    "source_id": receipt.get("source_id"), "source_identity": receipt.get("source_identity"),
-                    "method_verification": {
-                        "state": method_state,
-                        "recorded_at": checked_at,
-                        "selection_contract_version": selection_contract.get("version") if selection_contract else None,
-                    }}
+                    "source_id": receipt.get("source_id"), "source_identity": receipt.get("source_identity")}
+        observation = rail_observation(receipt)
+        if observation is not None:
+            accepted["rail_observation"] = observation
+        selection_contract = topic_selection_contract(config)
         if selection_contract is not None:
             accepted["selection_contract"] = selection_contract
+        method_state = "verified" if (
+            topic_evidence_contract(config).get("asset_mode") == "case_evidence"
+            and isinstance(selection_contract, dict)
+            and selection_contract.get("learning_alignment_required") is True
+        ) else "not_assessed"
+        accepted["method_verification"] = {
+            "state": method_state,
+            "recorded_at": checked_at,
+            "completion_receipt_sha256": receipt_hash,
+            "selection_contract_version": str(selection_contract.get("version") or "topic_specific")
+            if isinstance(selection_contract, dict) else "topic_specific",
+        }
         accepted_cases(state).append(accepted)
         del state["active_cases"][args.case_id]
         write_json(directory / "state.json", state)
@@ -1812,13 +1907,18 @@ def command_status(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     _, config, state = load_topic(root, args.topic_id)
     day, _, _ = event_times(args, str(config["timezone"]))
+    return output(status_payload(config, state, day))
+
+
+def status_payload(config: dict[str, Any], state: dict[str, Any], day: str) -> dict[str, Any]:
+    """The topic status view, shared by ``status`` and ``next``; reads only."""
     reconcile_pending_for_day(state, day)
     counts = capacity(state, config, day)
     run_id = state.get("day_runs", {}).get(day)
     run = state.get("runs", {}).get(run_id) if run_id else None
     direct_command = direct_command_for_run(run) if isinstance(run, dict) else None
     automatic_zero_external_search = counts["total_accepted"] >= counts["total_cap"]
-    return output({"status": "paused" if not config.get("enabled") else "ready", "topic": config, "capacity": counts, "method_verification": method_verification_summary(state), "accepted_cases": accepted_cases(state), "withdrawn_cases": withdrawn_cases(state), "active_cases": active_cases(state), "active_work_unit_run_id": run_id, "active_work_unit": run, "zero_external_search": automatic_zero_external_search and direct_command is None, "automatic_zero_external_search": automatic_zero_external_search})
+    return ({"status": "paused" if not config.get("enabled") else "ready", "topic": config, "capacity": counts, "accepted_cases": accepted_cases(state), "withdrawn_cases": withdrawn_cases(state), "method_verification": method_verification_summary(state), "active_cases": active_cases(state), "active_work_unit_run_id": run_id, "active_work_unit": run, "zero_external_search": automatic_zero_external_search and direct_command is None, "automatic_zero_external_search": automatic_zero_external_search})
 
 
 def command_reconcile_quota_lanes(args: argparse.Namespace) -> int:
@@ -1915,7 +2015,259 @@ def command_record_application(args: argparse.Namespace) -> int:
     })
 
 
-def main() -> int:
+CLI_PREFIX = ["python", "-B", "tools/brain.py"]
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9_./:=@%+,\-]+|<[^<>'\s]+>")
+
+
+def command_view(argv: list[str]) -> dict[str, Any]:
+    """One copyable command line; an exact argv only when quoting would be ambiguous."""
+    if any("'" in word for word in argv):
+        return {"argv": argv}
+    return {"command": " ".join(word if _PLAIN_WORD.fullmatch(word) else "'" + word + "'" for word in argv)}
+
+
+def research_argv(name: str, topic_id: str, *rest: str) -> list[str]:
+    return [*CLI_PREFIX, "research-program", name, "--topic-id", topic_id, *rest]
+
+
+def next_step(action: str, argv: list[str], why: str, *, needs_decision: dict[str, str] | None = None,
+              allowed_values: dict[str, list[str]] | None = None, alternatives: list[dict[str, Any]] | None = None,
+              **facts: Any) -> dict[str, Any]:
+    step: dict[str, Any] = {"action": action, **command_view(argv), "why": why}
+    if needs_decision:
+        step["needs_decision"] = needs_decision
+    if allowed_values:
+        step["allowed_values"] = allowed_values
+    step.update(facts)
+    if alternatives:
+        step["or"] = alternatives
+    return step
+
+
+def rail_case_steps(root: Path, config: dict[str, Any], topic_id: str, run_id: str, case: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Steps for one reserved case, from what the rail job registry already records."""
+    case_id = str(case.get("case_id") or "")
+    url = str(case.get("primary_url") or "")
+    binding = rail_binding(root, str(case.get("source_identity") or ""))
+    reject = next_step(
+        "reject-case", research_argv("reject-case", topic_id, "--run-id", run_id, "--case-id", case_id, "--reason", "<reason>"),
+        "Use instead if the source cannot qualify; the reservation is released with the reason on record.",
+        needs_decision={"<reason>": "the real reason, stated by the agent"},
+    )
+    notes: list[str] = []
+    if binding["state"] == "ambiguous":
+        notes.append(f"case {case_id}: more than one rail job owns this source; inspect before completing, then pass --completion-receipt explicitly")
+        return [], notes
+    if binding["state"] == "found" and binding.get("completion_receipt"):
+        step = next_step(
+            "complete-case", research_argv("complete-case", topic_id, "--run-id", run_id, "--case-id", case_id),
+            f"Rail job {binding['job_id']} has a completion receipt; complete-case resolves it itself and re-reads it in full.",
+            alternatives=[reject], rail_job_id=binding["job_id"], completion_receipt=binding["completion_receipt"],
+        )
+        return [step], notes
+    if binding["state"] == "found" and binding.get("package_dir"):
+        job_id = binding["job_id"]
+        return [
+            next_step("rail-inspect", [*CLI_PREFIX, "rail", "inspect", "--job-id", job_id],
+                      "The rail job exists but is not complete; its work order is the authority on what to submit next.", rail_job_id=job_id),
+            next_step("rail-submit-plan", [*CLI_PREFIX, "rail", "submit-plan", "--job-id", job_id, "--response-file", "<plan.json>"],
+                      "Submit the semantic plan the work order asks for; the receipt appears once it completes, then run next again.",
+                      needs_decision={"<plan.json>": "the plan file the agent writes from the work order"}, alternatives=[reject], rail_job_id=job_id),
+        ], notes
+    contract = topic_evidence_contract(config)
+    asset_mode = str(contract.get("asset_mode"))
+    argv = [*CLI_PREFIX, "rail", "start", "--url", url]
+    decide: dict[str, str] = {}
+    if asset_mode == "case_evidence":
+        argv += ["--case-evidence-file", "<case-evidence.json>"]
+        decide["<case-evidence.json>"] = "the case-evidence manifest the agent prepares for this source"
+    else:
+        argv += ["--asset-mode", asset_mode]
+    profiles = contract.get("source_profiles")
+    if isinstance(profiles, list) and len(profiles) == 1:
+        argv += ["--profile", str(profiles[0])]
+    elif isinstance(profiles, list) and len(profiles) > 1:
+        argv += ["--profile", "<profile>"]
+        decide["<profile>"] = "one of " + ", ".join(str(item) for item in profiles)
+    why = ("No rail job owns this source yet; start one, then continue with its work order."
+           if binding["state"] == "none" else "The rail job has no package yet; starting again resumes its capture.")
+    return [next_step("rail-start", argv, why, needs_decision=decide or None, alternatives=[reject])], notes
+
+
+def next_steps(root: Path, config: dict[str, Any], state: dict[str, Any], day: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Derive the next commands from state alone; every known value is filled in."""
+    topic_id = str(config["topic_id"])
+    steps: list[dict[str, Any]] = []
+    notes: list[str] = []
+    if not config.get("enabled"):
+        return steps, ["topic is paused; begin-run is refused until it is enabled"]
+    run_id = state["day_runs"].get(day)
+    run = state["runs"].get(run_id) if run_id else None
+    if not isinstance(run, dict):
+        owners = sorted({
+            str(row.get("run_id")) for row in [*active_cases(state).values(), *discovery_slots(state).values()]
+            if row.get("status") in CASE_STATES or row.get("status") == "reserved"
+        })
+        if owners:
+            notes.append(f"unfinished work belongs to run {owners[0]}; resume it instead of starting another")
+            steps.append(next_step("begin-run", research_argv("begin-run", topic_id, "--run-id", owners[0]),
+                                   "Moves the unfinished run onto today so its reserved work can be settled."))
+            return steps, notes
+        reason = capacity_block_reason(state, config, day, None)
+        if reason:
+            return steps, [*notes, reason]
+        steps.append(next_step(
+            "begin-run", research_argv("begin-run", topic_id),
+            "Starts today's work unit; its run id is printed as run.run_id and filled in by the next `next`.",
+        ))
+        return steps, notes
+    run_id = str(run_id)
+    for action in run.get("actions", []):
+        if isinstance(action, dict) and action.get("status") == "reserved":
+            steps.append(next_step(
+                "complete-action",
+                research_argv("complete-action", topic_id, "--run-id", run_id, "--action-id", str(action.get("action_id")), "--actual-results", "<n>"),
+                "A reserved action must be settled before the run can move on.", needs_decision={"<n>": "the real number of results the action returned"},
+            ))
+    for slot in discovery_slots(state).values():
+        if slot.get("run_id") == run_id and slot.get("status") == "reserved":
+            did = str(slot.get("discovery_id"))
+            steps.append(next_step(
+                "bind-discovery",
+                research_argv("bind-discovery", topic_id, "--run-id", run_id, "--discovery-id", did, "--case-id", "<case-id>",
+                              "--primary-url", "<primary-url>", "--classification", "<classification>"),
+                "Bind the reserved discovery slot to the real source that was found.",
+                needs_decision={"<case-id>": "a new case id", "<primary-url>": "the real primary source URL", "<classification>": "the case's classification, from the evidence"},
+                alternatives=[next_step("reject-discovery", research_argv("reject-discovery", topic_id, "--run-id", run_id, "--discovery-id", did, "--reason", "<reason>"),
+                                        "Use instead if nothing qualified.", needs_decision={"<reason>": "the real reason"})],
+            ))
+    for case in active_cases(state).values():
+        if case.get("run_id") == run_id and case.get("status") in CASE_STATES:
+            case_steps, case_notes = rail_case_steps(root, config, topic_id, run_id, case)
+            steps.extend(case_steps)
+            notes.extend(case_notes)
+    if steps or notes:
+        return steps, notes
+    reason = capacity_block_reason(state, config, day, run)
+    if reason:
+        notes.append(reason)
+        return steps, notes
+    steps.append(next_step(
+        "reserve-case",
+        research_argv("reserve-case", topic_id, "--run-id", run_id, "--case-id", "<case-id>", "--primary-url", "<primary-url>", "--classification", "<classification>"),
+        "Reserve one case slot for a real source before any rail work.",
+        needs_decision={"<case-id>": "a new case id", "<primary-url>": "the real primary source URL", "<classification>": "the case's classification, from the evidence"},
+        alternatives=[next_step("reserve-discovery", research_argv("reserve-discovery", topic_id, "--run-id", run_id, "--discovery-id", "<discovery-id>"),
+                                "Use instead to hold the slot while still searching.", needs_decision={"<discovery-id>": "a new discovery id"})],
+    ))
+    return steps, notes
+
+
+QUOTA_FLAGS = ("--budget-searches", "--budget-candidate-summaries-target", "--budget-deep-reads")  # hidden from --help, but init-topic needs them positive
+
+INIT_FIELDS = {
+    "--title": "topic name, as confirmed by the user",
+    "--profile-version": "a version label for this topic definition",
+    "--purpose": "research purpose, as confirmed by the user",
+    "--scope": "JSON object, non-empty",
+    "--focus": "JSON list of non-empty strings",
+    "--evidence-contract": "JSON object: asset_mode (one of {modes}), source_input_kinds (list from [\"url\"]), source_profiles (list from {profiles})",
+    "--selection-contract": "optional JSON object; only for topics that must judge original-site interaction (requires asset_mode case_evidence)",
+    "--output-contract": "JSON object, non-empty",
+    "--classifications": "JSON object, non-empty; primary_key names the classification key",
+    "--mode": "execution mode",
+    "--budget-searches": "positive integer: external searches allowed per research day",
+    "--budget-candidate-summaries-target": "positive integer: candidate summaries per research day",
+    "--budget-deep-reads": "positive integer: deep reads per research day",
+    "--timezone": "IANA timezone name",
+    "--daily-case-cap": "positive integer: cases per day",
+    "--total-case-cap": "positive integer: cases in total",
+}
+
+
+def init_skeleton(topic_id: str) -> dict[str, Any]:
+    """Every init-topic field, introspected from the parser; no value is invented."""
+    init = build_parser()._subparsers._group_actions[0].choices["init-topic"]  # type: ignore[union-attr]
+    required: list[dict[str, Any]] = []
+    optional: list[dict[str, Any]] = []
+    hidden: list[str] = []
+    argv = [*CLI_PREFIX, "research-program", "init-topic", "--topic-id", topic_id]
+    for action in init._actions:
+        flag = action.option_strings[0] if action.option_strings else ""
+        if not flag or flag in {"-h", "--topic-id"}:
+            continue
+        if action.help == argparse.SUPPRESS and flag not in QUOTA_FLAGS:
+            hidden.append(flag)
+            continue
+        entry: dict[str, Any] = {
+            "flag": flag,
+            "format": INIT_FIELDS.get(flag, "").format(
+                modes=", ".join(sorted(SUPPORTED_ASSET_MODES)), profiles=", ".join(sorted(SUPPORTED_SOURCE_PROFILES))),
+        }
+        if action.choices:
+            entry["allowed_values"] = list(action.choices)
+        if action.required or flag in QUOTA_FLAGS:
+            entry["needs_user_decision"] = True
+            required.append(entry)
+            argv += [flag, "<" + flag[2:] + ">"]
+        else:
+            if action.default is not None:
+                entry["default"] = action.default
+            entry["needs_user_decision"] = "only if the topic needs it" if flag == "--selection-contract" else False
+            optional.append(entry)
+    return {
+        "status": "topic_not_initialized",
+        "topic_id": topic_id,
+        "note": "No topic exists yet. Collect the required values from the user, then run init_topic. Nothing here is filled in for you, and nothing was written.",
+        "init_topic": {**command_view(argv), "required_fields": required, "optional_fields": optional, "hidden_flags": hidden},
+    }
+
+
+DIRECTION_SUGGESTION_LIMIT = 3
+
+
+def direction_suggestions(root: Path) -> dict[str, Any]:
+    """Read-only ideas from the shared knowledge-direction signals."""
+    try:
+        signals = compute_direction(vault_path(root), top_n=DIRECTION_SUGGESTION_LIMIT)["signals"]
+    except (DirectionError, WorkspacePathError, ValueError) as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+    keep = ("concept_name", "concept_path", "text")
+    return {
+        "status": "ok",
+        "note": "Suggestions only: nothing here creates a topic or changes research state.",
+        **{signal: [{key: item[key] for key in keep} for item in signals[signal]]
+           for signal in ("tension_hotspot", "evidence_building")},
+    }
+
+
+def command_next(args: argparse.Namespace) -> int:
+    """Read-only: print the status summary and the exact next command(s). Writes nothing."""
+    root = args.root.resolve()
+    topic_id = safe_id(args.topic_id, "topic_id")
+    if not (topic_dir(root, topic_id) / "topic.json").is_file():
+        return output({**init_skeleton(topic_id), "direction_suggestions": direction_suggestions(root)})
+    _, config, state = load_topic(root, topic_id)
+    day, _, _ = event_times(args, str(config["timezone"]))
+    view = status_payload(config, state, day)
+    steps, notes = next_steps(root, config, state, day)
+    return output({
+        "topic": {key: config.get(key) for key in ("topic_id", "title", "mode", "enabled", "timezone", "profile_version", "classifications")}
+        | {"asset_mode": topic_evidence_contract(config).get("asset_mode")},
+        "status": {key: view[key] for key in (
+            "status", "capacity", "method_verification", "active_work_unit_run_id",
+            "zero_external_search", "automatic_zero_external_search",
+        )},
+        "counts": {"accepted_cases": len(view["accepted_cases"]), "withdrawn_cases": len(view["withdrawn_cases"]), "active_cases": len(view["active_cases"])},
+        "day": day,
+        "notes": notes,
+        "next_steps": steps,
+        "direction_suggestions": direction_suggestions(root),
+        "usage": "Run the first next_step (fill each needs_decision value from real evidence), then run next again. This command writes nothing.",
+    })
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1938,15 +2290,20 @@ def main() -> int:
     reject_case = sub.add_parser("reject-case"); reject_case.add_argument("--topic-id", required=True); reject_case.add_argument("--run-id", required=True); reject_case.add_argument("--case-id", required=True); reject_case.add_argument("--reason", required=True); reject_case.add_argument("--at"); reject_case.add_argument("--isolated-test-clock", action="store_true"); reject_case.set_defaults(func=command_reject_case)
     reserve_action = sub.add_parser("reserve-action"); reserve_action.add_argument("--topic-id", required=True); reserve_action.add_argument("--run-id", required=True); reserve_action.add_argument("--case-id"); reserve_action.add_argument("--discovery-id"); reserve_action.add_argument("--candidate-url"); reserve_action.add_argument("--action", choices=sorted(ACTION_LIMITS), required=True); reserve_action.add_argument("--action-id"); reserve_action.add_argument("--at"); reserve_action.add_argument("--isolated-test-clock", action="store_true"); reserve_action.add_argument("--test-automation-path", default="", help=argparse.SUPPRESS); reserve_action.add_argument("--test-host-timezone-id", default="", help=argparse.SUPPRESS); reserve_action.set_defaults(func=command_reserve_action)
     complete_action = sub.add_parser("complete-action"); complete_action.add_argument("--topic-id", required=True); complete_action.add_argument("--run-id", required=True); complete_action.add_argument("--action-id", required=True); complete_action.add_argument("--actual-results", type=int, required=True); complete_action.add_argument("--at"); complete_action.add_argument("--isolated-test-clock", action="store_true"); complete_action.set_defaults(func=command_complete_action)
-    complete_case = sub.add_parser("complete-case"); complete_case.add_argument("--topic-id", required=True); complete_case.add_argument("--run-id", required=True); complete_case.add_argument("--case-id", required=True); complete_case.add_argument("--completion-receipt", required=True); complete_case.add_argument("--at"); complete_case.add_argument("--isolated-test-clock", action="store_true"); complete_case.set_defaults(func=command_complete_case)
+    complete_case = sub.add_parser("complete-case"); complete_case.add_argument("--topic-id", required=True); complete_case.add_argument("--run-id", required=True); complete_case.add_argument("--case-id", required=True); complete_case.add_argument("--completion-receipt", help="optional: resolved from the case's bound rail job when omitted"); complete_case.add_argument("--at"); complete_case.add_argument("--isolated-test-clock", action="store_true"); complete_case.set_defaults(func=command_complete_case)
     withdraw_case = sub.add_parser("withdraw-case"); withdraw_case.add_argument("--topic-id", required=True); withdraw_case.add_argument("--case-id", required=True); withdraw_case.add_argument("--reason", required=True); withdraw_case.add_argument("--at"); withdraw_case.add_argument("--isolated-test-clock", action="store_true"); withdraw_case.set_defaults(func=command_withdraw_case)
     mark_revalidation = sub.add_parser("mark-case-needs-revalidation"); mark_revalidation.add_argument("--topic-id", required=True); mark_revalidation.add_argument("--case-id", required=True); mark_revalidation.add_argument("--reason", required=True); mark_revalidation.add_argument("--at"); mark_revalidation.add_argument("--isolated-test-clock", action="store_true"); mark_revalidation.set_defaults(func=command_mark_case_needs_revalidation)
     complete_revalidation = sub.add_parser("complete-case-revalidation"); complete_revalidation.add_argument("--topic-id", required=True); complete_revalidation.add_argument("--case-id", required=True); complete_revalidation.add_argument("--completion-receipt", required=True); complete_revalidation.add_argument("--at"); complete_revalidation.add_argument("--isolated-test-clock", action="store_true"); complete_revalidation.set_defaults(func=command_complete_case_revalidation)
     record_application = sub.add_parser("record-application"); record_application.add_argument("--topic-id", required=True); record_application.add_argument("--source-id", required=True); record_application.add_argument("--trial-manifest", required=True); record_application.set_defaults(func=command_record_application)
     status = sub.add_parser("status"); status.add_argument("--topic-id", required=True); status.add_argument("--at"); status.add_argument("--isolated-test-clock", action="store_true"); status.set_defaults(func=command_status)
-    args = parser.parse_args()
+    nxt = sub.add_parser("next", help="read-only: status summary plus the exact next command(s), or an init-topic skeleton for a topic that does not exist yet"); nxt.add_argument("--topic-id", required=True); nxt.add_argument("--at"); nxt.add_argument("--isolated-test-clock", action="store_true"); nxt.set_defaults(func=command_next)
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     try:
-        if args.command not in {"preflight", "status"}:
+        if args.command not in {"preflight", "status", "next"}:
             assert_management_idle(args.root.resolve())
         return args.func(args)
     except (ProgramError, ValueError, OSError) as exc:

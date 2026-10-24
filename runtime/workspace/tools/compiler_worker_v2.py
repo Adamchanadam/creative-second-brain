@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import html
 import json
 import os
+import posixpath
 import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 import urllib.request
+from urllib.parse import unquote
 import uuid
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
@@ -30,6 +34,7 @@ try:
     from tools.case_evidence_contract import (
         ASSET_MODE_CASE,
         ASSET_MODE_FORMAL,
+        ASSET_MODE_KNOWLEDGE,
         MANIFEST_VERSION as CASE_MANIFEST_VERSION,
         MANIFEST_VERSION_V2 as CASE_MANIFEST_VERSION_V2,
         CaseEvidenceError,
@@ -44,6 +49,7 @@ except ModuleNotFoundError:
     from case_evidence_contract import (  # type: ignore
         ASSET_MODE_CASE,
         ASSET_MODE_FORMAL,
+        ASSET_MODE_KNOWLEDGE,
         MANIFEST_VERSION as CASE_MANIFEST_VERSION,
         MANIFEST_VERSION_V2 as CASE_MANIFEST_VERSION_V2,
         CaseEvidenceError,
@@ -55,27 +61,32 @@ except ModuleNotFoundError:
     )
 
 try:
-    from tools.ingest_plan_contract import VALID_ADOPTION_STATUSES
+    from tools.ingest_plan_contract import RELATION_TYPES, VALID_ADOPTION_STATUSES, source_block_catalog
 except ModuleNotFoundError:
-    from ingest_plan_contract import VALID_ADOPTION_STATUSES  # type: ignore
+    from ingest_plan_contract import RELATION_TYPES, VALID_ADOPTION_STATUSES, source_block_catalog  # type: ignore
 
 
 try:
-    from tools.obsidian_vault_adapter import project_concept_graph_for_sources
+    from tools.obsidian_vault_adapter import canonical_body_contains_anchor, project_concept_graph_for_sources
 except ModuleNotFoundError:
-    from obsidian_vault_adapter import project_concept_graph_for_sources  # type: ignore
+    from obsidian_vault_adapter import canonical_body_contains_anchor, project_concept_graph_for_sources  # type: ignore
 
 try:
     from tools.workspace_paths import WorkspacePathError, vault_path, vault_relative_posix
 except ModuleNotFoundError:
     from workspace_paths import WorkspacePathError, vault_path, vault_relative_posix  # type: ignore
 
+try:
+    from tools.reader_surface_guard import PERSONAL_LAYER_HEADING, matches_submitter_identity
+except ModuleNotFoundError:
+    from reader_surface_guard import PERSONAL_LAYER_HEADING, matches_submitter_identity  # type: ignore
+
 
 def infographic_reverse_review_evidence_line() -> str:
     contract = INFOGRAPHIC_REVERSE_REVIEW_CONTRACT
     return (
         f"已按 {contract['normative_owner']} 的 INFOGRAPHIC_REVERSE_REVIEW_CONTRACT 完成"
-        f"來源意思、可見文字逐項／逐句、關係與 footer / `{contract['required_footer_signature']}` 反審；"
+        "來源意思、可見文字逐項／逐句、關係與 footer 的來源／日期反審；"
         f"反例和失敗條件包括 {contract['blocking_failures']}，均未命中。"
         f" 規格全文讀回 receipt: {infographic_spec_read_receipt_text()}。"
     )
@@ -88,6 +99,7 @@ try:
         compile_infographic_page,
         validate_content_map,
         validate_multi_page_orientation,
+        materialize_infographic_page_bindings,
         validate_primary_work_metadata,
         validate_reader_metadata,
         validate_visual_structure,
@@ -142,10 +154,15 @@ try:
     from tools.youtube_transcript_capture import (
         ATTESTATION as YOUTUBE_SUBMITTED_URL_ATTESTATION,
         CAPTURE_POLICY as YOUTUBE_CAPTURE_POLICY,
+        SELECTION_POLICY as YOUTUBE_SELECTION_POLICY,
         YoutubeCaptionsUnavailable,
         YoutubeTranscriptError,
         YoutubeTranscriptCapture,
+        TRANSCRIPT_ARCHIVE_MODE,
         capture_youtube_transcript,
+        caption_reading_chunks,
+        is_youtube_caption_transcript,
+        selected_caption_track,
         vtt_to_canonical_body,
     )
     from tools.url_ingest_qc_router import execution_policy, EXECUTION_CONTRACT_VERSION
@@ -156,6 +173,7 @@ except ModuleNotFoundError:
         compile_infographic_page,
         validate_content_map,
         validate_multi_page_orientation,
+        materialize_infographic_page_bindings,
         validate_primary_work_metadata,
         validate_reader_metadata,
         validate_visual_structure,
@@ -210,10 +228,15 @@ except ModuleNotFoundError:
     from youtube_transcript_capture import (  # type: ignore
         ATTESTATION as YOUTUBE_SUBMITTED_URL_ATTESTATION,
         CAPTURE_POLICY as YOUTUBE_CAPTURE_POLICY,
+        SELECTION_POLICY as YOUTUBE_SELECTION_POLICY,
         YoutubeCaptionsUnavailable,
         YoutubeTranscriptError,
         YoutubeTranscriptCapture,
+        TRANSCRIPT_ARCHIVE_MODE,
         capture_youtube_transcript,
+        caption_reading_chunks,
+        is_youtube_caption_transcript,
+        selected_caption_track,
         vtt_to_canonical_body,
     )
     from url_ingest_qc_router import execution_policy, EXECUTION_CONTRACT_VERSION  # type: ignore
@@ -346,6 +369,10 @@ ARTICLE_CHROME_LINES = {
 
 class CompilerWorkerV2Error(ValueError):
     """The v2 compiler package is stale, incomplete, or unsafe to project."""
+
+    def __init__(self, message: str, *, diagnostic: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
 
 
 def sha256_text(value: str) -> str:
@@ -1015,8 +1042,6 @@ def validate_image_attempt_ledger(kp: dict[str, Any], package: Path) -> list[str
                     prompt_path, _, _ = locked_infographic_context(package, infographic)
                     errors.extend(blocking_repair_receipt_errors(
                         second, first, prompt_path.read_text(encoding="utf-8").rstrip("\n")))
-        if isinstance(latest, dict):
-            errors.extend(footer_variance_binding_errors(latest.get("semantic_readback"), kp, page_id, latest.get("action_identity")))
         if not isinstance(latest, dict) or latest.get("status") != "accepted":
             errors.append(f"infographic {page_id} has no accepted final attempt")
             continue
@@ -1424,10 +1449,13 @@ def visual_recovery_context(
     recovery: dict[str, Any],
 ) -> dict[str, str]:
     """Prove a pre-writer visual failure before creating a fresh revision."""
+
     original_job = validate_job_package_binding(root, original_kp_path, original_kp)
     writer_fields = [key for key in original_job if key == "commit_stage" or key.startswith("commit_")]
     if original_job.get("status") in {"committing", "completed"} or writer_fields:
-        raise CompilerWorkerV2Error("visual recovery is limited to a package with no writer checkpoint")
+        raise CompilerWorkerV2Error(
+            "visual recovery is limited to a package with no writer checkpoint"
+        )
     failed_page_id = str(recovery.get("failed_page_id") or "")
     if not failed_page_id:
         raise CompilerWorkerV2Error("visual recovery requires its exhausted page")
@@ -1435,32 +1463,62 @@ def visual_recovery_context(
     source = original_kp.get("source") if isinstance(original_kp.get("source"), dict) else {}
     if not ledger_path.is_file():
         raise CompilerWorkerV2Error("visual recovery requires an image attempt ledger")
-    ledger = load_image_attempt_ledger(original_package, str(source.get("source_identity") or ""))
+    ledger = load_image_attempt_ledger(
+        original_package,
+        str(source.get("source_identity") or ""),
+    )
     record = ledger["pages"].get(failed_page_id)
     original_page = infographic_page(original_kp, failed_page_id)
-    _, asset_path, locked_prompt_sha256 = locked_infographic_context(original_package, original_page)
+    _, asset_path, locked_prompt_sha256 = locked_infographic_context(
+        original_package, original_page
+    )
     attempts = record.get("attempts") if isinstance(record, dict) else None
     expected_attempts = int(IMAGEGEN_GENERATION_POLICY["max_candidates_per_asset"])
-    if (not isinstance(record, dict) or record.get("page_id") != failed_page_id
-            or record.get("locked_prompt_sha256") != locked_prompt_sha256
-            or record.get("asset_path") != asset_path.relative_to(original_package).as_posix()
-            or not isinstance(attempts, list) or len(attempts) != expected_attempts
-            or any(not isinstance(item, dict) for item in attempts)):
-        raise CompilerWorkerV2Error("visual recovery requires exactly the locked page's exhausted attempt history")
+    if (
+        not isinstance(record, dict)
+        or record.get("page_id") != failed_page_id
+        or record.get("locked_prompt_sha256") != locked_prompt_sha256
+        or record.get("asset_path") != asset_path.relative_to(original_package).as_posix()
+        or not isinstance(attempts, list)
+        or len(attempts) != expected_attempts
+        or any(not isinstance(item, dict) for item in attempts)
+    ):
+        raise CompilerWorkerV2Error(
+            "visual recovery requires exactly the locked page's exhausted attempt history"
+        )
     first, second = attempts
-    if (first.get("attempt_number") != 1 or first.get("attempt_kind") != "initial_generation"
-            or second.get("attempt_number") != 2 or second.get("attempt_kind") != "user_authorized_visual_repair"):
-        raise CompilerWorkerV2Error("visual recovery requires an initial generation followed by the one authorized visual repair")
+    if (
+        first.get("attempt_number") != 1
+        or first.get("attempt_kind") != "initial_generation"
+        or second.get("attempt_number") != 2
+        or second.get("attempt_kind") != "user_authorized_visual_repair"
+    ):
+        raise CompilerWorkerV2Error(
+            "visual recovery requires an initial generation followed by the one authorized visual repair"
+        )
     for attempt in attempts:
         semantic = attempt.get("semantic_readback")
-        if (attempt.get("status") != "blocking_failure" or attempt.get("failure_code") != "reverse_review_failed"
-                or not str(attempt.get("png_sha256") or "") or not isinstance(semantic, dict)
-                or semantic.get("formal_ingestion_allowed") is not False
-                or semantic.get("inspected_png_sha256") != attempt.get("png_sha256")
-                or semantic.get("inspected_prompt_sha256") != locked_prompt_sha256
-                or not str(semantic.get("reader_review") or "").strip()):
-            raise CompilerWorkerV2Error("visual recovery requires two hash-bound independent reverse-review failures")
-    reference = validate_visual_repair_authorization(original_package, original_kp, original_page, first, second.get("repair_authorization"))
+        if (
+            attempt.get("status") != "blocking_failure"
+            or attempt.get("failure_code") != "reverse_review_failed"
+            or not str(attempt.get("png_sha256") or "")
+            or not isinstance(semantic, dict)
+            or semantic.get("formal_ingestion_allowed") is not False
+            or semantic.get("inspected_png_sha256") != attempt.get("png_sha256")
+            or semantic.get("inspected_prompt_sha256") != locked_prompt_sha256
+            or not str(semantic.get("reader_review") or "").strip()
+        ):
+            raise CompilerWorkerV2Error(
+                "visual recovery requires two hash-bound independent reverse-review failures"
+            )
+    authorization = second.get("repair_authorization")
+    reference = validate_visual_repair_authorization(
+        original_package,
+        original_kp,
+        original_page,
+        first,
+        authorization,
+    )
     if sha256_bytes(reference.read_bytes()) != first.get("png_sha256"):
         raise CompilerWorkerV2Error("visual recovery first failure reference hash mismatch")
     if not asset_path.is_file() or sha256_bytes(asset_path.read_bytes()) != second.get("png_sha256"):
@@ -1487,6 +1545,7 @@ def mirror_revision_input_evidence(
     *,
     job_id: str,
     source: dict[str, Any],
+    target_asset_mode: str | None = None,
 ) -> bool:
     """Carry the accepted ingestion input forward for a revision package.
 
@@ -1563,6 +1622,10 @@ def mirror_revision_input_evidence(
 
     revision_bundle = json.loads(json.dumps(original_bundle, ensure_ascii=False))
     revision_bundle["job_id"] = job_id
+    if target_asset_mode is not None:
+        if target_asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}:
+            raise CompilerWorkerV2Error("revision input bundle asset_mode is invalid")
+        revision_bundle["asset_mode"] = target_asset_mode
     target_bundle_path = target / "input_bundle.json"
     if target_bundle_path.exists():
         if read_json(target_bundle_path) != revision_bundle:
@@ -1573,6 +1636,108 @@ def mirror_revision_input_evidence(
         write_json(target_bundle_path, revision_bundle)
         changed = True
     return changed
+
+
+def revision_semantic_content_sha256(kp: dict[str, Any]) -> str:
+    """Hash the accepted text semantics while excluding the delivery mode.
+
+    A text-first result may later receive an infographic.  That changes only
+    its asset mode, page projection, and an infographic-only overlay on the
+    existing coverage ledger; it must not silently replace source, analysis,
+    knowledge, non-image coverage, relations, or application decisions.
+    """
+
+    source = copy.deepcopy(kp.get("source") if isinstance(kp.get("source"), dict) else {})
+    source.pop("asset_mode", None)
+    coverage_units = kp.get("coverage_units")
+    # Compact knowledge-only parents explicitly permit a later infographic
+    # overlay.  Existing v1 (and unmarked) parents keep their historical
+    # receipt algorithm byte-for-byte so an already saved origin hash remains
+    # a valid binding.
+    if kp.get("semantic_plan_version") == "ingest_semantic_plan_compact_v1":
+        coverage_units = _semantic_coverage_units(coverage_units)
+    return canonical_payload_sha256({
+        "source": source,
+        "analysis": kp.get("analysis"),
+        "coverage_units": coverage_units,
+        "knowledge": kp.get("knowledge"),
+        "relations": kp.get("relations"),
+        "application": kp.get("application"),
+    })
+
+
+def _semantic_coverage_units(coverage_units: Any) -> Any:
+    """Remove the visual-only overlay before binding parent text semantics."""
+
+    if not isinstance(coverage_units, list):
+        return coverage_units
+    normalized = copy.deepcopy(coverage_units)
+    for unit in normalized:
+        if not isinstance(unit, dict):
+            continue
+        dispositions = unit.get("dispositions")
+        if isinstance(dispositions, list):
+            unit["dispositions"] = [item for item in dispositions if item != "infographic"]
+        unit["infographic_text"] = []
+    return normalized
+
+
+def knowledge_only_infographic_overlay_errors(
+    parent_units: Any,
+    revision_units: Any,
+) -> list[str]:
+    """Permit only a page-facing overlay on an accepted compact coverage ledger."""
+
+    if not isinstance(parent_units, list) or not isinstance(revision_units, list):
+        return ["knowledge-only infographic revision coverage ledger is invalid"]
+    if len(parent_units) != len(revision_units):
+        return ["knowledge-only infographic revision must retain every accepted coverage unit"]
+    errors: list[str] = []
+    for index, (parent, revision) in enumerate(zip(parent_units, revision_units), start=1):
+        if not isinstance(parent, dict) or not isinstance(revision, dict):
+            errors.append(f"knowledge-only infographic coverage unit {index} is invalid")
+            continue
+        unit_id = str(parent.get("id") or index)
+        parent_dispositions = parent.get("dispositions")
+        revision_dispositions = revision.get("dispositions")
+        if not isinstance(parent_dispositions, list) or not isinstance(revision_dispositions, list):
+            errors.append(f"knowledge-only infographic coverage unit {unit_id} lacks dispositions")
+            continue
+        parent_non_image = [item for item in parent_dispositions if item != "infographic"]
+        revision_non_image = [item for item in revision_dispositions if item != "infographic"]
+        parent_image_count = sum(item == "infographic" for item in parent_dispositions)
+        revision_image_count = sum(item == "infographic" for item in revision_dispositions)
+        parent_base = copy.deepcopy(parent)
+        revision_base = copy.deepcopy(revision)
+        parent_base["dispositions"] = parent_non_image
+        revision_base["dispositions"] = revision_non_image
+        parent_base["infographic_text"] = []
+        revision_base["infographic_text"] = []
+        if parent_base != revision_base:
+            errors.append(
+                f"knowledge-only infographic coverage unit {unit_id} changes accepted non-image content"
+            )
+            continue
+        if revision_non_image != parent_non_image or revision_image_count not in {
+            parent_image_count,
+            parent_image_count + 1,
+        }:
+            errors.append(
+                f"knowledge-only infographic coverage unit {unit_id} changes accepted dispositions"
+            )
+            continue
+        visual_text = revision.get("infographic_text")
+        if revision_image_count == parent_image_count + 1:
+            valid_overlay = isinstance(visual_text, list) and any(
+                str(item).strip() for item in visual_text
+            )
+        else:
+            valid_overlay = visual_text == parent.get("infographic_text")
+        if not valid_overlay:
+            errors.append(
+                f"knowledge-only infographic coverage unit {unit_id} has an invalid infographic overlay"
+            )
+    return errors
 
 
 def _incomplete_recovery_scope_errors(
@@ -1683,6 +1848,30 @@ def _prepare_incomplete_page_recovery(
             raise CompilerWorkerV2Error("accepted sibling PNG binding changed")
     if "source_anchors" in recovery:
         raise CompilerWorkerV2Error("page-scoped recovery cannot change locked source_anchors or copy")
+    preserved_page_ids = [str(page.get("page_id") or "") for page in pages if page is not failed_page]
+    prior_recovery = original_kp.get("incomplete_recovery")
+    same_recovery = (
+        isinstance(prior_recovery, dict)
+        and prior_recovery.get("failed_page_id") == failed_page_id
+        and prior_recovery.get("revision_plan_payload_sha256") == canonical_payload_sha256(plan)
+    )
+    if same_recovery and failed_page.get("status") in {"awaiting_imagegen", "receipt_verified"}:
+        # The prepared page has since been compiled or accepted; resetting it to planned would discard that work.
+        raise CompilerWorkerV2Error(
+            "page-scoped recovery refused: this recovery was already prepared and the page has advanced beyond planned"
+        )
+    if same_recovery and failed_page.get("status") == "planned":
+        # The same recovery was already prepared and not yet compiled: repeating the command is a
+        # zero-write replay. All read-only safety checks above have already passed.
+        return {
+            "status": "replayed",
+            "recovery_mode": "page_scoped",
+            "page_id": failed_page_id,
+            "knowledge_package": original_kp_path.relative_to(root).as_posix(),
+            "preserved_page_ids": preserved_page_ids,
+            "write_performed": False,
+            "next_action": "compile only the recovered page; accepted sibling PNGs and attempts remain locked",
+        }
     clear_infographic_receipt(failed_page)
     failed_page["status"] = "planned"
     original_kp["incomplete_recovery"] = {
@@ -1700,10 +1889,245 @@ def _prepare_incomplete_page_recovery(
         "recovery_mode": "page_scoped",
         "page_id": failed_page_id,
         "knowledge_package": original_kp_path.relative_to(root).as_posix(),
-        "preserved_page_ids": [str(page.get("page_id") or "") for page in pages if page is not failed_page],
+        "preserved_page_ids": preserved_page_ids,
         "write_performed": True,
         "next_action": "compile only the recovered page; accepted sibling PNGs and attempts remain locked",
     }
+
+
+def require_original_infographic_completion(
+    original_kp_path: Path, original_completion_path: Path,
+    *, root: Path | None = None,
+) -> dict[str, Any]:
+    """The immutable original completion an infographic revision supersedes."""
+    if not original_completion_path.is_file():
+        raise CompilerWorkerV2Error(
+            "infographic revision requires an immutable original completion receipt"
+        )
+    original_completion = read_json(original_completion_path)
+    receipt_is_valid = (
+        original_completion.get("schema_version") == COMPLETION_SCHEMA_VERSION
+        and original_completion.get("status") == "completed"
+        and original_completion.get("payload_sha256")
+        == canonical_payload_sha256(original_completion)
+    )
+    current_kp_sha256 = sha256_bytes(original_kp_path.read_bytes())
+    if not receipt_is_valid:
+        raise CompilerWorkerV2Error(
+            "original completion receipt does not match its Knowledge Package"
+        )
+    package = original_kp_path.parent
+    if root is not None:
+        try:
+            original_kp = read_json(original_kp_path)
+            job = validate_job_package_binding(root, original_kp_path, original_kp)
+            if job.get("status") != "completed":
+                raise ValueError("original job is not completed")
+            completed_receipt_readback(root, package, original_kp_path, original_kp)
+        except (OSError, ValueError, KeyError, CompilerWorkerV2Error) as exc:
+            raise CompilerWorkerV2Error(
+                "original completion receipt does not match its Knowledge Package"
+            ) from exc
+    accepted_changes: dict[str, Any] = {}
+    current_pointer = package / "completion_revision_current.json"
+    if current_pointer.is_file():
+        if root is None:
+            raise CompilerWorkerV2Error(
+                "original completion receipt does not match its Knowledge Package"
+            )
+        try:
+            try:
+                from tools.completion_revisions import read_current
+            except ModuleNotFoundError:
+                from completion_revisions import read_current  # type: ignore
+            accepted_changes = read_current(root, package, original_completion)
+        except (OSError, ValueError, KeyError) as exc:
+            raise CompilerWorkerV2Error(
+                "original completion receipt does not match its Knowledge Package"
+            ) from exc
+    if original_completion.get("knowledge_package_sha256") != current_kp_sha256:
+        if root is None:
+            raise CompilerWorkerV2Error(
+                "original completion receipt does not match its Knowledge Package"
+            )
+        try:
+            relative_kp_path = original_kp_path.relative_to(root).as_posix()
+            accepted = accepted_changes.get(relative_kp_path, {})
+            if (
+                accepted.get("current_path") != relative_kp_path
+                or accepted.get("sha256") != current_kp_sha256
+            ):
+                raise ValueError("current revision does not bind the Knowledge Package")
+        except (OSError, ValueError, KeyError) as exc:
+            raise CompilerWorkerV2Error(
+                "original completion receipt does not match its Knowledge Package"
+            ) from exc
+    return original_completion
+
+
+def infographic_revision_identity(
+    original_kp: dict[str, Any], plan: dict[str, Any], requested_revision_id: str | None,
+) -> tuple[str, dict[str, Any], str, bool]:
+    """Revision id, original source, mode and knowledge-only flag; raises on a mismatch."""
+    revision_id = validated_identifier(
+        str(plan.get("revision_id") or ""),
+        "revision_id",
+    )
+    if str(requested_revision_id or "") and requested_revision_id != revision_id:
+        raise CompilerWorkerV2Error(
+            "revision id does not match the infographic revision plan"
+        )
+    source = (
+        original_kp.get("source")
+        if isinstance(original_kp.get("source"), dict)
+        else {}
+    )
+    if (
+        plan.get("source_id") != source.get("source_id")
+        or plan.get("source_identity") != source.get("source_identity")
+    ):
+        raise CompilerWorkerV2Error(
+            "infographic revision plan does not match the original source"
+        )
+    revision_mode = str(plan.get("mode") or "")
+    knowledge_only_to_infographic = revision_mode == "knowledge_only_to_infographic"
+    if knowledge_only_to_infographic:
+        if source.get("asset_mode") != ASSET_MODE_KNOWLEDGE:
+            raise CompilerWorkerV2Error(
+                "knowledge-only infographic revision requires a completed knowledge_only package"
+            )
+        if plan.get("source_updates") not in (None, {}):
+            raise CompilerWorkerV2Error(
+                "knowledge-only infographic revision cannot change accepted source metadata"
+            )
+    return revision_id, source, revision_mode, knowledge_only_to_infographic
+
+
+REVISION_ALLOWED_SOURCE_UPDATES = frozenset({
+    "source_label",
+    "retrieval_aliases",
+    "original_date",
+    "primary_work_status",
+    "primary_work_title",
+    "primary_work_evidence",
+})
+
+
+def infographic_revision_content_issues(
+    original_kp: dict[str, Any], plan: dict[str, Any], knowledge_only_to_infographic: bool,
+) -> list[dict[str, str]]:
+    """Every defect in the plan's coverage, pages and source updates, each with its field path.
+
+    ``group`` keeps the checks that were one error in the original raise order,
+    so the prepare command still reports the same first message.
+    """
+    issues: list[dict[str, str]] = []
+
+    def add(group: str, path: str, message: str) -> None:
+        issues.append({"group": group, "path": path, "message": message})
+
+    coverage_units = plan.get("coverage_units")
+    infographics = plan.get("infographics")
+    if not isinstance(coverage_units, list) or not coverage_units:
+        add("coverage", "coverage_units", "infographic revision plan lacks coverage_units")
+    if not isinstance(infographics, list) or not infographics:
+        add("pages", "infographics", "infographic revision plan lacks infographics")
+    if issues:
+        return issues
+    if knowledge_only_to_infographic:
+        for message in knowledge_only_infographic_overlay_errors(
+            original_kp.get("coverage_units"), coverage_units,
+        ):
+            match = re.search(r"coverage unit (\S+)", message)
+            add("overlay", f"coverage_units[{match.group(1)}]" if match else "coverage_units", message)
+    for index, item in enumerate(infographics, start=1):
+        if not isinstance(item, dict) or item.get("status") != "planned":
+            page_id = str(item.get("page_id") or index) if isinstance(item, dict) else str(index)
+            add("status", f"infographics[{page_id}].status",
+                "infographic revision pages must begin in planned status")
+    source_updates = plan.get("source_updates") or {}
+    if not isinstance(source_updates, dict):
+        add("source_updates", "source_updates", "infographic revision source_updates is invalid")
+    elif set(source_updates) - REVISION_ALLOWED_SOURCE_UPDATES:
+        add("source_updates", "source_updates",
+            "infographic revision source_updates contains unsupported fields")
+    if isinstance(coverage_units, list) and isinstance(infographics, list):
+        for issue in materialize_infographic_page_bindings(coverage_units, infographics)[1]:
+            add("bindings", f"infographics[{issue['page_id']}].{issue['field']}", issue["message"])
+    return issues
+
+
+def build_infographic_revision_kp(
+    root: Path,
+    original_kp: dict[str, Any],
+    original_package: Path,
+    original_completion_path: Path,
+    original_completion: dict[str, Any],
+    *,
+    coverage_units: list[Any],
+    infographics: list[Any],
+    source_updates: dict[str, Any],
+    job_id: str,
+    revision_id: str,
+    revision_mode: str,
+    knowledge_only_to_infographic: bool,
+    plan_sha256: str,
+    original_semantic_content_sha256: str | None,
+) -> dict[str, Any]:
+    """The revision Knowledge Package exactly as prepare writes it; touches no file."""
+    revision_kp = json.loads(json.dumps(original_kp, ensure_ascii=False))
+    revision_kp["job_id"] = job_id
+    revision_kp["coverage_units"] = coverage_units
+    bound_pages, binding_issues = materialize_infographic_page_bindings(
+        coverage_units, infographics,
+    )
+    if binding_issues:
+        raise CompilerWorkerV2Error("; ".join(issue["message"] for issue in binding_issues))
+    revision_kp["infographics"] = bound_pages
+    revision_source = revision_kp.get("source")
+    if not isinstance(revision_source, dict):
+        raise CompilerWorkerV2Error("original Knowledge Package source is invalid")
+    revision_source.update(source_updates)
+    if knowledge_only_to_infographic:
+        revision_source["asset_mode"] = ASSET_MODE_FORMAL
+        projection = revision_kp.get("projection")
+        if not isinstance(projection, dict):
+            raise CompilerWorkerV2Error("original Knowledge Package projection is invalid")
+        projection["asset_mode"] = ASSET_MODE_FORMAL
+    original_slug = (
+        original_package.name.split("_", 1)[1]
+        if "_" in original_package.name
+        else original_package.name.casefold()
+    )
+    revision_kp["revision"] = {
+        "kind": "infographic_revision",
+        "revision_id": revision_id,
+        "source_slug": original_slug,
+        "asset_slug": bounded_slug(f"{original_slug}_{revision_id}"),
+        "origin_package": original_package.relative_to(root).as_posix(),
+        "revision_plan_sha256": plan_sha256,
+    }
+    if knowledge_only_to_infographic:
+        revision_kp["revision"].update({
+            "mode": revision_mode,
+            "original_semantic_content_sha256": original_semantic_content_sha256,
+            "original_completion_payload_sha256": original_completion.get("payload_sha256"),
+        })
+    revision_kp["revision"].update({
+        "supersedes_completion_path": original_completion_path.relative_to(root).as_posix(),
+        "supersedes_completion_payload_sha256": original_completion.get("payload_sha256"),
+    })
+    if knowledge_only_to_infographic and (
+        knowledge_only_infographic_overlay_errors(
+            original_kp.get("coverage_units"), revision_kp.get("coverage_units"),
+        )
+        or revision_semantic_content_sha256(revision_kp)
+        != original_semantic_content_sha256
+    ):
+        raise CompilerWorkerV2Error(
+            "knowledge-only infographic revision changed accepted semantic content"
+        )
+    return revision_kp
 
 
 def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
@@ -1739,9 +2163,12 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
                 "incomplete infographic recovery cannot replace a completed package"
             )
         recovery = plan.get("recovery") if isinstance(plan.get("recovery"), dict) else {}
-        failed_page_id = str(recovery.get("failed_page_id") or "")
         recovery_reason = str(recovery.get("reason") or "")
-        if recovery_reason not in {"exhausted_image_text_contract", "exhausted_visual_contract"} or not failed_page_id:
+        failed_page_id = str(recovery.get("failed_page_id") or "")
+        if recovery_reason not in {
+            "exhausted_image_text_contract",
+            "exhausted_visual_contract",
+        } or not failed_page_id:
             raise CompilerWorkerV2Error(
                 "incomplete infographic recovery requires its supported exhausted page"
             )
@@ -1752,20 +2179,34 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
         )
         if recovery_reason == "exhausted_visual_contract":
             recovery_context = visual_recovery_context(
-                root=root, original_kp_path=original_kp_path, original_kp=original_kp,
-                original_package=original_package, recovery=recovery,
+                root=root,
+                original_kp_path=original_kp_path,
+                original_kp=original_kp,
+                original_package=original_package,
+                recovery=recovery,
             )
         else:
             ledger_path = image_attempt_ledger_path(original_package)
             if not ledger_path.is_file():
-                raise CompilerWorkerV2Error("incomplete infographic recovery requires an image attempt ledger")
-            ledger = load_image_attempt_ledger(original_package, str(source_for_recovery.get("source_identity") or ""))
+                raise CompilerWorkerV2Error(
+                    "incomplete infographic recovery requires an image attempt ledger"
+                )
+            ledger = load_image_attempt_ledger(
+                original_package,
+                str(source_for_recovery.get("source_identity") or ""),
+            )
             record = ledger["pages"].get(failed_page_id)
             attempts = record.get("attempts") if isinstance(record, dict) else None
             latest = attempts[-1] if isinstance(attempts, list) and attempts else None
-            if (not isinstance(latest, dict) or len(attempts) != int(IMAGEGEN_GENERATION_POLICY["max_candidates_per_asset"])
-                    or latest.get("status") != "blocking_failure" or latest.get("failure_code") != "wrong_or_missing_locked_text"):
-                raise CompilerWorkerV2Error("incomplete infographic recovery requires an exhausted locked-text failure")
+            if (
+                not isinstance(latest, dict)
+                or len(attempts) != int(IMAGEGEN_GENERATION_POLICY["max_candidates_per_asset"])
+                or latest.get("status") != "blocking_failure"
+                or latest.get("failure_code") != "wrong_or_missing_locked_text"
+            ):
+                raise CompilerWorkerV2Error(
+                    "incomplete infographic recovery requires an exhausted locked-text failure"
+                )
             recovery_context = {
                 "failed_page_id": failed_page_id,
                 "failure_code": str(latest.get("failure_code") or ""),
@@ -1774,42 +2215,12 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
             }
         original_completion: dict[str, Any] = {}
     else:
-        if not original_completion_path.is_file():
-            raise CompilerWorkerV2Error(
-                "infographic revision requires an immutable original completion receipt"
-            )
-        original_completion = read_json(original_completion_path)
-        if (
-            original_completion.get("schema_version") != COMPLETION_SCHEMA_VERSION
-            or original_completion.get("status") != "completed"
-            or original_completion.get("payload_sha256")
-            != canonical_payload_sha256(original_completion)
-            or original_completion.get("knowledge_package_sha256")
-            != sha256_bytes(original_kp_path.read_bytes())
-        ):
-            raise CompilerWorkerV2Error(
-                "original completion receipt does not match its Knowledge Package"
-            )
-    revision_id = validated_identifier(
-        str(plan.get("revision_id") or ""),
-        "revision_id",
-    )
-    if str(args.revision_id or "") and args.revision_id != revision_id:
-        raise CompilerWorkerV2Error(
-            "revision id does not match the infographic revision plan"
+        original_completion = require_original_infographic_completion(
+            original_kp_path, original_completion_path, root=root,
         )
-    source = (
-        original_kp.get("source")
-        if isinstance(original_kp.get("source"), dict)
-        else {}
+    revision_id, source, revision_mode, knowledge_only_to_infographic = (
+        infographic_revision_identity(original_kp, plan, args.revision_id)
     )
-    if (
-        plan.get("source_id") != source.get("source_id")
-        or plan.get("source_identity") != source.get("source_identity")
-    ):
-        raise CompilerWorkerV2Error(
-            "infographic revision plan does not match the original source"
-        )
     if incomplete_recovery:
         if plan.get("source_updates") not in (None, {}):
             raise CompilerWorkerV2Error("page-scoped recovery cannot change shared source metadata")
@@ -1821,33 +2232,21 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
         )
         print(json.dumps(result, ensure_ascii=False))
         return 0
-    coverage_units = plan.get("coverage_units")
-    infographics = plan.get("infographics")
-    if not isinstance(coverage_units, list) or not coverage_units:
-        raise CompilerWorkerV2Error("infographic revision plan lacks coverage_units")
-    if not isinstance(infographics, list) or not infographics:
-        raise CompilerWorkerV2Error("infographic revision plan lacks infographics")
-    if any(
-        not isinstance(item, dict) or item.get("status") != "planned"
-        for item in infographics
-    ):
+    content_issues = infographic_revision_content_issues(
+        original_kp, plan, knowledge_only_to_infographic,
+    )
+    if content_issues:
+        group = content_issues[0]["group"]
         raise CompilerWorkerV2Error(
-            "infographic revision pages must begin in planned status"
+            "; ".join(issue["message"] for issue in content_issues if issue["group"] == group)
         )
+    coverage_units = plan["coverage_units"]
+    infographics, binding_issues = materialize_infographic_page_bindings(
+        coverage_units, plan["infographics"],
+    )
+    if binding_issues:
+        raise CompilerWorkerV2Error("; ".join(issue["message"] for issue in binding_issues))
     source_updates = plan.get("source_updates") or {}
-    if not isinstance(source_updates, dict):
-        raise CompilerWorkerV2Error("infographic revision source_updates is invalid")
-    allowed_source_updates = {
-        "source_label",
-        "original_date",
-        "primary_work_status",
-        "primary_work_title",
-        "primary_work_evidence",
-    }
-    if set(source_updates) - allowed_source_updates:
-        raise CompilerWorkerV2Error(
-            "infographic revision source_updates contains unsupported fields"
-        )
     job_id = validated_identifier(
         str(plan.get("job_id") or f"CW2-{revision_id}"),
         "job_id",
@@ -1872,21 +2271,99 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
         "revision_plan_path": plan_path.relative_to(root).as_posix(),
         "revision_plan_sha256": plan_sha256,
     }
+    if knowledge_only_to_infographic:
+        origin_receipt.update({
+            "mode": revision_mode,
+            "original_semantic_content_sha256": revision_semantic_content_sha256(original_kp),
+            "target_asset_mode": ASSET_MODE_FORMAL,
+        })
     origin_receipt["payload_sha256"] = canonical_payload_sha256(origin_receipt)
     origin_path = target / "revision_origin.json"
     revision_kp_path = target / "knowledge_package.json"
-    if target.exists():
-        if (
-            origin_path.is_file()
-            and revision_kp_path.is_file()
-            and read_json(origin_path) == origin_receipt
-        ):
+    if target.exists() and origin_path.is_file() and revision_kp_path.is_file():
+        if read_json(origin_path) == origin_receipt:
+            support_write = mirror_revision_input_evidence(
+                original_package,
+                target,
+                job_id=job_id,
+                source=source,
+                target_asset_mode=(ASSET_MODE_FORMAL if knowledge_only_to_infographic else None),
+            )
+            write_performed = support_write
+            if knowledge_only_to_infographic:
+                existing_kp = read_json(revision_kp_path)
+                existing_source = (
+                    existing_kp.get("source")
+                    if isinstance(existing_kp.get("source"), dict)
+                    else {}
+                )
+                existing_projection = (
+                    existing_kp.get("projection")
+                    if isinstance(existing_kp.get("projection"), dict)
+                    else {}
+                )
+                existing_revision = (
+                    existing_kp.get("revision")
+                    if isinstance(existing_kp.get("revision"), dict)
+                    else {}
+                )
+                bundle_path = target / "input_bundle.json"
+                bundle = read_json(bundle_path) if bundle_path.is_file() else {}
+                if (
+                    existing_kp.get("job_id") != job_id
+                    or bool(knowledge_only_infographic_overlay_errors(
+                        original_kp.get("coverage_units"),
+                        existing_kp.get("coverage_units"),
+                    ))
+                    or existing_kp.get("infographics") != infographics
+                    or existing_source.get("asset_mode") != ASSET_MODE_FORMAL
+                    or existing_projection.get("asset_mode") != ASSET_MODE_FORMAL
+                    or existing_source.get("source_id") != source.get("source_id")
+                    or existing_source.get("source_identity") != source.get("source_identity")
+                    or existing_revision.get("kind") != "infographic_revision"
+                    or existing_revision.get("revision_id") != revision_id
+                    or existing_revision.get("mode") != revision_mode
+                    or existing_revision.get("original_semantic_content_sha256")
+                    != origin_receipt["original_semantic_content_sha256"]
+                    or revision_semantic_content_sha256(existing_kp)
+                    != origin_receipt["original_semantic_content_sha256"]
+                    or bundle.get("job_id") != job_id
+                    or bundle.get("asset_mode") != ASSET_MODE_FORMAL
+                    or bundle.get("source_id") != source.get("source_id")
+                    or bundle.get("source_identity") != source.get("source_identity")
+                ):
+                    raise CompilerWorkerV2Error(
+                        "incomplete knowledge-only infographic revision differs from its accepted plan"
+                    )
+                if not job_file(root, job_id).is_file():
+                    now = iso_now()
+                    write_v2_job(root, {
+                        "schema_version": JOB_SCHEMA_VERSION,
+                        "job_id": job_id,
+                        "job_kind": "infographic_revision",
+                        "revision_id": revision_id,
+                        "source_id": source.get("source_id"),
+                        "source_input_kind": source.get("source_input_kind"),
+                        "source_identity": source.get("source_identity"),
+                        "asset_mode": ASSET_MODE_FORMAL,
+                        "status": "running",
+                        "first_accepted_at": now,
+                        "updated_at": now,
+                        "worker_runtime": "direct",
+                        "package_dir": target.relative_to(root).as_posix(),
+                        "supersedes_completion_path": original_completion_path.relative_to(root).as_posix(),
+                    })
+                    write_performed = True
+                else:
+                    validate_job_package_binding(root, revision_kp_path, existing_kp)
+            else:
+                validate_job_package_binding(root, revision_kp_path, read_json(revision_kp_path))
             print(json.dumps({
                 "status": "prepared",
                 "revision_id": revision_id,
                 "package_dir": target.relative_to(root).as_posix(),
                 "knowledge_package": revision_kp_path.relative_to(root).as_posix(),
-                "write_performed": False,
+                "write_performed": write_performed,
             }, ensure_ascii=False))
             return 0
         raise CompilerWorkerV2Error(
@@ -1895,59 +2372,30 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
     if job_file(root, job_id).exists():
         raise CompilerWorkerV2Error("infographic revision job_id already exists")
 
-    target.mkdir(parents=True)
-    for filename in (
-        "canonical_source.md",
-        "source_capture.md",
-        "source_capture_metadata.json",
-        "review_packet.json",
-        "image_analysis.json",
-    ):
-        source_path = original_package / filename
-        if source_path.is_file():
-            shutil.copy2(source_path, target / filename)
-    metadata_path = original_package / "source_capture_metadata.json"
-    if metadata_path.is_file():
-        original_image_value = str(
-            read_json(metadata_path).get("original_image_path") or ""
-        )
-        if original_image_value:
-            original_image = package_relative_path(
-                original_package,
-                original_image_value,
-                "original image",
-            )
-            image_target = target / original_image_value
-            image_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(original_image, image_target)
-
-    revision_kp = json.loads(json.dumps(original_kp, ensure_ascii=False))
-    revision_kp["job_id"] = job_id
-    revision_kp["coverage_units"] = coverage_units
-    revision_kp["infographics"] = infographics
-    revision_source = revision_kp.get("source")
-    if not isinstance(revision_source, dict):
-        raise CompilerWorkerV2Error("original Knowledge Package source is invalid")
-    revision_source.update(source_updates)
-    original_slug = (
-        original_package.name.split("_", 1)[1]
-        if "_" in original_package.name
-        else original_package.name.casefold()
+    target.mkdir(parents=True, exist_ok=True)
+    mirror_revision_input_evidence(
+        original_package,
+        target,
+        job_id=job_id,
+        source=source,
+        target_asset_mode=(ASSET_MODE_FORMAL if knowledge_only_to_infographic else None),
     )
-    revision_kp["revision"] = {
-        "kind": "infographic_revision",
-        "revision_id": revision_id,
-        "source_slug": original_slug,
-        "asset_slug": bounded_slug(f"{original_slug}_{revision_id}"),
-        "origin_package": original_package.relative_to(root).as_posix(),
-        "revision_plan_sha256": plan_sha256,
-    }
-    revision_kp["revision"].update({
-        "supersedes_completion_path": original_completion_path.relative_to(root).as_posix(),
-        "supersedes_completion_payload_sha256": original_completion.get("payload_sha256"),
-    })
-    write_json(revision_kp_path, revision_kp)
-    write_json(origin_path, origin_receipt)
+
+    revision_kp = build_infographic_revision_kp(
+        root, original_kp, original_package, original_completion_path, original_completion,
+        coverage_units=coverage_units, infographics=infographics, source_updates=source_updates,
+        job_id=job_id, revision_id=revision_id, revision_mode=revision_mode,
+        knowledge_only_to_infographic=knowledge_only_to_infographic, plan_sha256=plan_sha256,
+        original_semantic_content_sha256=origin_receipt.get("original_semantic_content_sha256"),
+    )
+    if revision_kp_path.exists() and read_json(revision_kp_path) != revision_kp:
+        raise CompilerWorkerV2Error("infographic revision Knowledge Package already differs")
+    if origin_path.exists() and read_json(origin_path) != origin_receipt:
+        raise CompilerWorkerV2Error("infographic revision origin receipt already differs")
+    if not revision_kp_path.exists():
+        write_json(revision_kp_path, revision_kp)
+    if not origin_path.exists():
+        write_json(origin_path, origin_receipt)
     now = iso_now()
     write_v2_job(root, {
         "schema_version": JOB_SCHEMA_VERSION,
@@ -1957,6 +2405,7 @@ def command_prepare_infographic_revision(args: argparse.Namespace) -> int:
         "source_id": source.get("source_id"),
         "source_input_kind": source.get("source_input_kind"),
         "source_identity": source.get("source_identity"),
+        "asset_mode": ASSET_MODE_FORMAL if knowledge_only_to_infographic else source.get("asset_mode", ASSET_MODE_FORMAL),
         "status": "running",
         "first_accepted_at": now,
         "updated_at": now,
@@ -2292,21 +2741,6 @@ def command_prepare_case_revalidation(args: argparse.Namespace) -> int:
     return 0
 
 
-_YOUTUBE_TRANSCRIPT_HEADER = "# YouTube transcript"
-_YOUTUBE_TRANSCRIPT_REQUIRED_METADATA = ("Video URL: https://www.youtube.com/watch?v=", "Video ID: ", "Caption language: ", "Caption track: ")
-
-
-def is_youtube_caption_transcript(canonical_body: str) -> bool:
-    """Recognise the accepted VTT-derived body without treating cues as article headings."""
-    lines = [line.strip() for line in canonical_body.splitlines() if line.strip()]
-    return (
-        len(lines) > len(_YOUTUBE_TRANSCRIPT_REQUIRED_METADATA)
-        and lines[0] == _YOUTUBE_TRANSCRIPT_HEADER
-        and all(lines[index + 1].startswith(prefix) for index, prefix in enumerate(_YOUTUBE_TRANSCRIPT_REQUIRED_METADATA))
-        and any(re.match(r"^\[[^\]]+\]\s+\S", line) for line in lines[1 + len(_YOUTUBE_TRANSCRIPT_REQUIRED_METADATA):])
-    )
-
-
 def comparable_unit_text(value: str) -> str:
     return re.sub(r"\s+", "", value).casefold()
 
@@ -2438,6 +2872,8 @@ def coverage_unit_dispositions(unit: dict[str, Any]) -> set[str]:
 
 
 def build_coverage_audit(kp: dict[str, Any]) -> dict[str, Any]:
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    asset_mode = source.get("asset_mode", ASSET_MODE_FORMAL)
     coverage_units = [
         unit
         for unit in kp.get("coverage_units") or []
@@ -2497,20 +2933,29 @@ def build_coverage_audit(kp: dict[str, Any]) -> dict[str, Any]:
         for unit in coverage_units
         if "omitted" in coverage_unit_dispositions(unit)
     ]
-    missing_mappings = sorted(infographic_unit_ids - mapped_ids)
+    pending_infographic_mappings = (
+        [] if asset_mode == ASSET_MODE_KNOWLEDGE
+        else sorted(infographic_unit_ids - mapped_ids)
+    )
+    missing_mappings = pending_infographic_mappings
     duplicate_mappings = sorted(
         coverage_id for coverage_id, count in mapped_counts.items() if count > 1
     )
     unknown_mappings = sorted(mapped_ids - unit_id_set)
     page_count = len(infographics)
-    if page_count > 8:
+    if asset_mode == ASSET_MODE_KNOWLEDGE:
+        # A text-first source is complete on its own. A later infographic is
+        # an explicit revision, not an unfinished obligation on this receipt.
+        status = "complete"
+    elif page_count > 8:
         status = "blocked"
     elif missing_mappings or duplicate_mappings or unknown_mappings:
         status = "needs_review"
     else:
         status = "complete"
     multi_volume_status = (
-        "single_page" if page_count <= 1
+        "not_requested" if asset_mode == ASSET_MODE_KNOWLEDGE
+        else "single_page" if page_count <= 1
         else "standard_multi_page" if page_count <= 5
         else "multi_volume_source" if page_count <= 8
         else "batch_limit_exceeded"
@@ -2520,6 +2965,7 @@ def build_coverage_audit(kp: dict[str, Any]) -> dict[str, Any]:
         "status": status,
         "total_units": len(coverage_units),
         "mapped_to_infographic": len(infographic_unit_ids & mapped_ids),
+        "pending_infographic_mappings": pending_infographic_mappings,
         "missing_infographic_mappings": missing_mappings,
         "duplicate_infographic_mappings": duplicate_mappings,
         "unknown_infographic_mappings": unknown_mappings,
@@ -2546,7 +2992,12 @@ def validate_coverage_audit(kp: dict[str, Any]) -> list[str]:
     return errors
 
 
-def validate_coverage_units(kp: dict[str, Any], canonical_body: str) -> list[str]:
+def validate_coverage_units(
+    kp: dict[str, Any],
+    canonical_body: str,
+    *,
+    source_blocks: list[dict[str, Any]] | None = None,
+) -> list[str]:
     errors: list[str] = []
     coverage_units = kp.get("coverage_units")
     if not isinstance(coverage_units, list) or not coverage_units:
@@ -2572,10 +3023,55 @@ def validate_coverage_units(kp: dict[str, Any], canonical_body: str) -> list[str
             errors.append(f"coverage unit {index} missing disposition")
         if "infographic" in dispositions:
             source_evidence = str(unit.get("source_evidence") or text).strip()
-            if not source_evidence or comparable_unit_text(source_evidence) not in comparable_unit_text(canonical_body):
+            if not source_evidence or not canonical_body_contains_anchor(canonical_body, source_evidence):
                 errors.append(f"infographic coverage unit is not grounded in canonical source: {text}")
         handled[comparable_unit_text(text)] = unit
         handled_units.append(unit)
+
+    if kp.get("semantic_plan_version") == "ingest_semantic_plan_compact_v1":
+        # Compact knowledge-only input records only the semantic claims the
+        # agent actually analysed.  The complete canonical body is retained
+        # separately; treating every paragraph or heading as an analysed
+        # coverage unit would misrepresent that fact and make later optional
+        # infographic work rewrite the accepted parent coverage.
+        source_kind = (kp.get("source") or {}).get("source_input_kind")
+        catalog = {
+            str(block.get("id") or "").strip(): str(block.get("text") or "").strip()
+            for block in source_blocks or []
+            if isinstance(block, dict)
+            and str(block.get("id") or "").strip()
+            and str(block.get("text") or "").strip()
+        }
+        analysed_block_ids: set[str] = set()
+        for index, unit in enumerate(handled_units, start=1):
+            block_ids = unit.get("source_block_ids")
+            if not isinstance(block_ids, list) or not block_ids or not all(isinstance(value, str) and value.strip() for value in block_ids):
+                errors.append(f"compact coverage unit {index} lacks accepted source block IDs")
+                continue
+            unknown = sorted({str(value) for value in block_ids} - set(catalog))
+            if unknown:
+                errors.append(
+                    f"compact coverage unit {index} names unknown source block(s): {', '.join(unknown)}"
+                )
+                continue
+            analysed_block_ids.update(str(value) for value in block_ids)
+            evidence = str(unit.get("source_evidence") or "").strip()
+            if source_kind != "user_provided_image" and not canonical_body_contains_anchor(canonical_body, evidence):
+                errors.append(f"compact coverage unit {index} is not grounded in canonical source")
+        if source_kind != "user_provided_image":
+            for required in extracted_required_units(canonical_body):
+                required_key = comparable_unit_text(required["text"])
+                required_blocks = [
+                    block_id
+                    for block_id, block_text in catalog.items()
+                    if required_key in comparable_unit_text(block_text)
+                ]
+                if required_blocks and not set(required_blocks) & analysed_block_ids:
+                    errors.append(
+                        "compact semantic plan omits required core source block(s): "
+                        + ", ".join(required_blocks)
+                    )
+        return errors
 
     for required in extracted_required_units(canonical_body):
         key = comparable_unit_text(required["text"])
@@ -2675,6 +3171,12 @@ def bind_package_to_job(
     job.setdefault("input_ready_at", iso_now())
     bundle = read_json(package / "input_bundle.json")
     job.setdefault("source_profile", bundle.get("source_profile", "article"))
+    bundle_mode = bundle.get("asset_mode", ASSET_MODE_FORMAL)
+    if bundle_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}:
+        raise CompilerWorkerV2Error("input bundle asset_mode is invalid")
+    if job.get("asset_mode") not in (None, "", bundle_mode):
+        raise CompilerWorkerV2Error("accepted job asset_mode differs from its input bundle")
+    job["asset_mode"] = bundle_mode
     write_v2_job(root, job)
 
 
@@ -2836,6 +3338,46 @@ def write_input_bundle(
     return out_dir
 
 
+def accepted_asset_mode(args: argparse.Namespace) -> str:
+    """Return the explicit new-job mode; new sources are text-first by default."""
+    asset_mode = str(getattr(args, "asset_mode", ASSET_MODE_KNOWLEDGE) or ASSET_MODE_KNOWLEDGE)
+    if asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE}:
+        raise CompilerWorkerV2Error("accepted input asset_mode is invalid")
+    return asset_mode
+
+
+_TEXT_TITLE_MARKDOWN_IMAGE = re.compile(
+    r"^\s*(?:!\[[^\]]*\]\([^)]*\)|\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\))(?:\s*\{[^}]*\})?\s*$"
+)
+_TEXT_TITLE_HTML_IMAGE = re.compile(
+    r"^\s*(?:<figure\b[^>]*>\s*)?(?:<a\b[^>]*>\s*)?<img\b[^>]*>(?:\s*</a>)?(?:\s*</figure>)?\s*$",
+    re.IGNORECASE,
+)
+_TEXT_TITLE_NAVIGATION = frozenset({
+    "skip to content",
+    "skip to main content",
+    "skip navigation",
+    "skip to navigation",
+    "jump to content",
+    "jump to main content",
+})
+
+
+def source_derived_text_title(canonical_body: str) -> str:
+    """Use the first meaningful retained line without inventing a source title."""
+    for line in canonical_body.splitlines():
+        candidate = line.strip("# ").strip()
+        if not candidate or _TEXT_TITLE_MARKDOWN_IMAGE.fullmatch(candidate) or _TEXT_TITLE_HTML_IMAGE.fullmatch(candidate):
+            continue
+        markdown_link = re.fullmatch(r"\[([^\]]+)\]\([^)]*\)", candidate)
+        html_link = re.fullmatch(r"<a\b[^>]*>\s*([^<]+?)\s*</a>", candidate, re.IGNORECASE)
+        navigation_label = (markdown_link.group(1) if markdown_link else html_link.group(1) if html_link else candidate)
+        if " ".join(navigation_label.split()).casefold() in _TEXT_TITLE_NAVIGATION:
+            continue
+        return candidate
+    return "User text"
+
+
 def command_accept_text(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     source_id = validated_identifier(args.source_id, "source_id")
@@ -2848,10 +3390,7 @@ def command_accept_text(args: argparse.Namespace) -> int:
     except UnicodeDecodeError as exc:
         raise CompilerWorkerV2Error("text input must be UTF-8") from exc
     source_hash = sha256_bytes(source_bytes)
-    title = args.title or next(
-        (line.strip("# ").strip() for line in canonical_body.splitlines() if line.strip()),
-        "User text",
-    )
+    title = args.title or source_derived_text_title(canonical_body)
     slug = output_slug(args.slug or slugify(title))
     source_identity = f"user_provided_text:{source_hash}"
     representative_anchors = [
@@ -2879,7 +3418,7 @@ def command_accept_text(args: argparse.Namespace) -> int:
         title_source="user_supplied" if args.title else "source_derived",
         slug=slug,
         canonical_body=canonical_body,
-        source_fields={"source_content_sha256": source_hash, "source_retention_mode": "full_body_required", "source_profile": getattr(args, "profile", "article")},
+        source_fields={"source_content_sha256": source_hash, "source_retention_mode": "full_body_required", "source_profile": getattr(args, "profile", "article"), "asset_mode": accepted_asset_mode(args)},
         capture_metadata={
             "source_content_sha256": source_hash,
             "source_retention_mode": "full_body_required",
@@ -2929,12 +3468,19 @@ def accepted_body_integrity_issues(
     if source.get("source_input_kind") != kind or source.get("source_identity") != bundle.get("source_identity"):
         issue("source.source_identity", "Knowledge Package source differs from the accepted input", "Use the accepted source identity and kind.")
     declared_mode = source.get("retention_mode") or source.get("source_retention_mode")
-    if declared_mode != "full_body_required" or (
+    archive_mode = bundle.get("source_retention_mode") == TRANSCRIPT_ARCHIVE_MODE
+    if declared_mode != (TRANSCRIPT_ARCHIVE_MODE if archive_mode else "full_body_required") or (
         source.get("retention_mode") and source.get("source_retention_mode")
         and source["retention_mode"] != source["source_retention_mode"]
     ):
-        issue("source.retention_mode", "accepted text/URL source must keep its complete body", "Set full_body_required; preserve the complete accepted body in the source note.")
-    if bundle.get("source_retention_mode") not in {None, "full_body_required"}:
+        if archive_mode:
+            issue("source.retention_mode", "accepted YouTube caption source must keep its transcript archive", "Set transcript_archive_required; the complete transcript stays in the package archive.")
+        else:
+            issue("source.retention_mode", "accepted text/URL source must keep its complete body", "Set full_body_required; preserve the complete accepted body in the source note.")
+    if archive_mode:
+        if kind != "url" or bundle.get("acquisition_policy") != YOUTUBE_CAPTURE_POLICY or bundle.get("asset_mode") != ASSET_MODE_KNOWLEDGE:
+            issue("input_bundle.json", "transcript archive mode is only valid for an accepted knowledge_only YouTube caption capture", "Restore the accepted YouTube caption input bundle.")
+    elif bundle.get("source_retention_mode") not in {None, "full_body_required"}:
         issue("input_bundle.json", "accepted source retention mode was downgraded", "Restore the full-body accepted input bundle.")
     canonical_path = package / "canonical_source.md"
     if not canonical_path.is_file():
@@ -2968,6 +3514,8 @@ def accepted_body_integrity_issues(
         metadata = read_json(metadata_path) if metadata_path.is_file() else {}
         if bundle.get("acquisition_policy") == YOUTUBE_CAPTURE_POLICY:
             policy_fields = ("acquisition_policy", "capture_provider", "submitted_url_attestation", "youtube_video_id", "youtube_caption_language", "youtube_caption_track_kind", "youtube_caption_selection_policy", "youtube_caption_path", "youtube_caption_sha256", "youtube_info_path", "youtube_info_sha256", "yt_dlp_version", "canonical_body_sha256")
+            if bundle.get("youtube_caption_selection_policy") == YOUTUBE_SELECTION_POLICY:
+                policy_fields += ("youtube_caption_group_key", "youtube_caption_item_index", "youtube_caption_item_language", "youtube_caption_non_translated")
             if any(bundle.get(key) != metadata.get(key) for key in policy_fields):
                 issue("input_bundle.json", "YouTube caption evidence differs from its accepted metadata", "Restore the matching yt-dlp caption evidence.")
             if bundle.get("capture_provider") != "yt-dlp" or bundle.get("submitted_url_attestation") != YOUTUBE_SUBMITTED_URL_ATTESTATION:
@@ -2981,6 +3529,30 @@ def accepted_body_integrity_issues(
                     issue(caption_path, "accepted YouTube caption VTT is missing or changed", "Restore the original yt-dlp VTT capture.")
                 if not raw_info_path.is_file() or sha256_bytes(raw_info_path.read_bytes()) != bundle.get("youtube_info_sha256"):
                     issue(info_path, "accepted YouTube metadata is missing or changed", "Restore the original yt-dlp metadata capture.")
+                if bundle.get("youtube_caption_selection_policy") == YOUTUBE_SELECTION_POLICY:
+                    try:
+                        selected = selected_caption_track(json.loads(raw_info_path.read_text(encoding="utf-8")))
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        issue(info_path, "accepted YouTube metadata cannot replay its selected VTT item", "Restore the original verified yt-dlp metadata capture.")
+                    else:
+                        expected_selection = (
+                            bundle.get("youtube_caption_group_key"),
+                            bundle.get("youtube_caption_item_index"),
+                            bundle.get("youtube_caption_item_language"),
+                            bundle.get("youtube_caption_language"),
+                            bundle.get("youtube_caption_track_kind"),
+                            bundle.get("youtube_caption_non_translated"),
+                        )
+                        actual_selection = (
+                            selected.group_key,
+                            selected.item_index,
+                            selected.item_language,
+                            selected.item_language,
+                            selected.track_kind,
+                            True,
+                        )
+                        if expected_selection != actual_selection:
+                            issue(info_path, "accepted YouTube metadata no longer selects the recorded original VTT item", "Restore the raw metadata and its matching original-language VTT capture.")
                 if vtt_path.is_file():
                     try:
                         recovered = vtt_to_canonical_body(vtt_path.read_bytes(), normalized_url=str(bundle.get("normalized_url") or ""), video_id=str(bundle.get("youtube_video_id") or ""), language=str(bundle.get("youtube_caption_language") or ""), track_kind=str(bundle.get("youtube_caption_track_kind") or ""))
@@ -2993,10 +3565,13 @@ def accepted_body_integrity_issues(
             policy_fields = ("acquisition_policy", "capture_provider", "provider_attempts", "raw_html_capture_path", "raw_html_sha256", "canonical_body_sha256")
             if any(bundle.get(key) != metadata.get(key) for key in policy_fields):
                 issue("input_bundle.json", "URL direct-only acquisition evidence differs from its accepted metadata", "Restore the matching direct-only HTML evidence.")
-            if (bundle.get("capture_provider") != "compiler-worker-v2-direct" or bundle.get("provider_attempts") != []
-                    or bundle.get("raw_html_capture_path") != "source_capture.html"
-                    or not re.fullmatch(r"[0-9a-f]{64}", str(bundle.get("raw_html_sha256") or ""))
-                    or bundle.get("api_capture_path")):
+            if (
+                bundle.get("capture_provider") != "compiler-worker-v2-direct"
+                or bundle.get("provider_attempts") != []
+                or bundle.get("raw_html_capture_path") != "source_capture.html"
+                or not re.fullmatch(r"[0-9a-f]{64}", str(bundle.get("raw_html_sha256") or ""))
+                or bundle.get("api_capture_path")
+            ):
                 issue("input_bundle.json", "direct-only capture evidence is invalid", "Restore the direct-only HTML capture without API attempt records.")
         elif bundle.get("acquisition_policy") or metadata.get("acquisition_policy") or bundle.get("api_capture_path"):
             policy_fields = ("acquisition_policy", "capture_provider", "provider_attempts", "api_capture_path", "api_capture_sha256", "raw_html_capture_path", "raw_html_sha256", "canonical_body_sha256")
@@ -3103,6 +3678,7 @@ def command_accept_image(args: argparse.Namespace) -> int:
             "source_id": source_id,
             "source_input_kind": "user_provided_image",
             "source_identity": source_identity,
+            "asset_mode": accepted_asset_mode(args),
             "source_image_sha256": source_hash,
             "source_image_mime": inspection.mime_type,
             "source_image_dimensions": {"width": inspection.width, "height": inspection.height},
@@ -3167,6 +3743,7 @@ def command_accept_image(args: argparse.Namespace) -> int:
         canonical_body=canonical_body,
         source_fields={
             "source_profile": getattr(args, "profile", "article"),
+            "asset_mode": accepted_asset_mode(args),
             "source_image_sha256": source_hash,
             "source_image_mime": mime,
             "source_image_dimensions": {"width": inspection.width, "height": inspection.height},
@@ -3213,17 +3790,20 @@ def command_accept_image(args: argparse.Namespace) -> int:
 
 def command_accept_url(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    requested_asset_mode = accepted_asset_mode(args)
+    source_id = validated_identifier(args.source_id, "source_id")
+    normalized_url = normalize_url(args.url)
     capture_mode = str(getattr(args, "capture_mode", URL_CAPTURE_API_FIRST) or URL_CAPTURE_API_FIRST)
     if capture_mode not in {URL_CAPTURE_API_FIRST, URL_CAPTURE_DIRECT_HTML_ONLY}:
         raise CompilerWorkerV2Error("URL capture mode is invalid")
-    source_id = validated_identifier(args.source_id, "source_id")
-    normalized_url = normalize_url(args.url)
     case_evidence_file = (
         relative_to_root(args.case_evidence_file, root, "case evidence manifest")
         if getattr(args, "case_evidence_file", None)
         else None
     )
     if case_evidence_file:
+        if requested_asset_mode != ASSET_MODE_FORMAL:
+            raise CompilerWorkerV2Error("case evidence cannot be combined with knowledge_only")
         try:
             validate_case_evidence_manifest(root, case_evidence_file, primary_url=normalized_url)
         except CaseEvidenceError as exc:
@@ -3240,11 +3820,14 @@ def command_accept_url(args: argparse.Namespace) -> int:
     raw_api_bytes = None
     raw_youtube_vtt = None
     raw_youtube_info = None
+    acquisition: dict[str, Any] = {}
     youtube_capture = getattr(args, "youtube_capture", None)
     if is_youtube_url(normalized_url):
         if youtube_capture is None:
             try:
                 youtube_capture = capture_youtube_transcript(normalized_url, temporary_root=root / DEFAULT_PACKAGE_ROOT / "_youtube_caption_tmp", timeout_seconds=args.timeout_seconds)
+            except YoutubeTranscriptError as exc:
+                raise CompilerWorkerV2Error(str(exc), diagnostic=exc.diagnostic()) from exc
             except ValueError as exc:
                 raise CompilerWorkerV2Error(str(exc)) from exc
         if not isinstance(youtube_capture, YoutubeTranscriptCapture):
@@ -3257,12 +3840,15 @@ def command_accept_url(args: argparse.Namespace) -> int:
         capture_proof = {"capture_provider": "yt-dlp", "acquisition_policy": YOUTUBE_CAPTURE_POLICY,
             "submitted_url_attestation": YOUTUBE_SUBMITTED_URL_ATTESTATION, "youtube_video_id": youtube_capture.video_id,
             "youtube_caption_language": youtube_capture.selected_language, "youtube_caption_track_kind": youtube_capture.selected_track_kind,
-            "youtube_caption_selection_policy": "declared_source_language_manual_before_automatic_v2", "youtube_caption_path": "source_capture_youtube.vtt",
+            "youtube_caption_group_key": youtube_capture.selected_track_group,
+            "youtube_caption_item_index": youtube_capture.selected_track_item_index,
+            "youtube_caption_item_language": youtube_capture.selected_track_item_language,
+            "youtube_caption_non_translated": True,
+            "youtube_caption_selection_policy": YOUTUBE_SELECTION_POLICY, "youtube_caption_path": "source_capture_youtube.vtt",
             "youtube_caption_sha256": sha256_bytes(raw_youtube_vtt), "youtube_info_path": "source_capture_youtube.info.json",
             "youtube_info_sha256": sha256_bytes(raw_youtube_info), "yt_dlp_version": youtube_capture.yt_dlp_version,
             "youtube_channel": youtube_capture.channel, "youtube_upload_date": youtube_capture.upload_date}
     else:
-        acquisition: dict[str, Any] = {}
         if capture_mode == URL_CAPTURE_DIRECT_HTML_ONLY:
             request = urllib.request.Request(normalized_url, headers={"User-Agent": "Agent-Handoff-Kit-Compiler-Worker-v2/0.1"})
             with urllib.request.urlopen(request, timeout=args.timeout_seconds) as response:
@@ -3313,7 +3899,7 @@ def command_accept_url(args: argparse.Namespace) -> int:
     anchors = [line for line in canonical_body.splitlines() if line.strip()][:8]
 
     out_dir = package_dir(root, source_id, slug)
-    case_evidence_binding: dict[str, Any] = {"asset_mode": ASSET_MODE_FORMAL}
+    case_evidence_binding: dict[str, Any] = {"asset_mode": requested_asset_mode}
     if case_evidence_file:
         try:
             case_evidence_binding = stage_case_evidence_manifest(
@@ -3324,6 +3910,13 @@ def command_accept_url(args: argparse.Namespace) -> int:
             )
         except CaseEvidenceError as exc:
             raise CompilerWorkerV2Error(f"case evidence staging failed: {exc}") from exc
+    # A new knowledge_only YouTube caption job keeps its transcript only in the
+    # package archive.  Ordinary URLs (and the legacy formal route) keep the body.
+    retention_mode = (
+        TRANSCRIPT_ARCHIVE_MODE
+        if raw_youtube_vtt is not None and requested_asset_mode == ASSET_MODE_KNOWLEDGE
+        else "full_body_required"
+    )
     input_bundle = {
         "schema_version": SCHEMA_VERSION,
         "stage": "input_bundle",
@@ -3346,7 +3939,7 @@ def command_accept_url(args: argparse.Namespace) -> int:
         **capture_proof,
         "execution_policy_version": EXECUTION_CONTRACT_VERSION,
         "source_profile": getattr(args, "profile", "article"),
-        "source_retention_mode": "full_body_required",
+        "source_retention_mode": retention_mode,
         "canonical_body_sha256": sha256_text(canonical_body),
         "canonical_body_length": len(canonical_body),
         "anchors": anchors,
@@ -3379,8 +3972,8 @@ def command_accept_url(args: argparse.Namespace) -> int:
         "content_type": content_type,
         "capture_date": capture_date,
         "accepted_at": now,
-        "source_retention_mode": "full_body_required",
-        "canonical_body_required": True,
+        "source_retention_mode": retention_mode,
+        "canonical_body_required": retention_mode == "full_body_required",
         "canonical_body_representative_anchors": anchors,
         "canonical_body_sha256": sha256_text(canonical_body),
         "canonical_body_length": len(canonical_body),
@@ -3406,8 +3999,8 @@ def command_accept_url(args: argparse.Namespace) -> int:
         "image_receipt_status": "pending_kp",
         "knowledge_package_status": "pending_kp",
         "coverage_units_status": "pending_kp",
-        "source_retention_mode": "full_body_required",
-        "canonical_body_required": True,
+        "source_retention_mode": retention_mode,
+        "canonical_body_required": retention_mode == "full_body_required",
         "canonical_body_representative_anchors": anchors,
         "canonical_body_sha256": sha256_text(canonical_body),
         "title": title,
@@ -3486,6 +4079,15 @@ def validate_case_evidence_kp(kp: dict[str, Any], package: Path) -> list[str]:
     return errors
 
 
+def compact_coverage_source_blocks(kp: dict[str, Any], package: Path) -> list[dict[str, Any]] | None:
+    """Reuse the work-order catalog when validating compact semantic coverage."""
+
+    if kp.get("semantic_plan_version") != "ingest_semantic_plan_compact_v1":
+        return None
+    catalog = source_block_catalog(package, version=kp.get("source_catalog_version"))
+    return [*catalog.get("blocks", []), *catalog.get("legacy_blocks", [])]
+
+
 def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
     errors: list[str] = []
     image_anchor_ids: set[str] = set()
@@ -3494,7 +4096,7 @@ def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
         errors.append("invalid KP schema_version")
     source = kp.get("source") or {}
     asset_mode = source.get("asset_mode", ASSET_MODE_FORMAL)
-    if asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE}:
+    if asset_mode not in {ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE}:
         errors.append("unsupported source.asset_mode")
     if not (package / "completion_receipt.json").is_file():
         try:
@@ -3590,7 +4192,20 @@ def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
                 if isinstance(anchor, dict) and str(anchor.get("id") or "").startswith("IMG-")
             }
     if canonical_body:
-        errors.extend(validate_coverage_units(kp, canonical_body))
+        try:
+            source_blocks = compact_coverage_source_blocks(kp, package)
+        except ValueError as exc:
+            errors.append(f"compact source block catalog is invalid: {exc}")
+            source_blocks = None
+        errors.extend(validate_coverage_units(
+            kp, canonical_body, source_blocks=source_blocks,
+        ))
+    primary_metadata_is_new = (
+        not (package / "completion_receipt.json").is_file()
+        and "primary_work_status" in source
+    )
+    if primary_metadata_is_new and canonical_body:
+        errors.extend(validate_primary_work_metadata(source, canonical_body))
     if not kp.get("knowledge"):
         errors.append("missing knowledge items")
     elif source_input_kind == "user_provided_image":
@@ -3605,6 +4220,13 @@ def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
         errors.append("missing projection plan")
     if asset_mode == ASSET_MODE_CASE:
         errors.extend(validate_case_evidence_kp(kp, package))
+        return errors
+    if asset_mode == ASSET_MODE_KNOWLEDGE:
+        if kp.get("infographics"):
+            errors.append("knowledge_only must not carry infographic pages")
+        if (kp.get("projection") or {}).get("asset_mode") != ASSET_MODE_KNOWLEDGE:
+            errors.append("knowledge_only projection asset mode mismatch")
+        errors.extend(validate_coverage_audit(kp))
         return errors
     infographics = kp.get("infographics") or []
     if not infographics:
@@ -3641,7 +4263,8 @@ def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
                     f"infographic {page_index} does not use the current prompt contract or a current core review confirmation"
                 )
     if current_contract_pages:
-        errors.extend(validate_primary_work_metadata(source, canonical_body))
+        if not primary_metadata_is_new:
+            errors.extend(validate_primary_work_metadata(source, canonical_body))
         errors.extend(validate_coverage_audit(kp))
         errors.extend(
             validate_content_map(
@@ -3707,7 +4330,11 @@ def validate_kp(kp: dict[str, Any], package: Path) -> list[str]:
     return errors
 
 
-def validate_user_text_external_origin(source: dict[str, Any]) -> list[str]:
+def validate_user_text_external_origin(
+    source: dict[str, Any],
+    *,
+    workspace_root_path: Path | None = None,
+) -> list[str]:
     """Prevent confusing the user who pasted text with the cited source."""
 
     errors: list[str] = []
@@ -3715,11 +4342,11 @@ def validate_user_text_external_origin(source: dict[str, Any]) -> list[str]:
     source_label = str(source.get("source_label") or "").strip()
     content_owner = str(source.get("content_owner") or "").strip()
     title = str(source.get("title") or "").strip()
-    if "使用者" in author or author.startswith(("使用者", "用戶")):
+    if matches_submitter_identity(author, workspace_root_path=workspace_root_path):
         errors.append("user text external source author must name the original author, not the submitting user")
-    if source_label.startswith(("使用者", "使用者", "用戶")) or "使用者 評註" in source_label:
+    if matches_submitter_identity(source_label, workspace_root_path=workspace_root_path):
         errors.append("user text external source_label must name the original publication/source, not the submitting user")
-    if "使用者" in content_owner or content_owner.startswith(("使用者", "用戶")):
+    if matches_submitter_identity(content_owner, workspace_root_path=workspace_root_path):
         errors.append("user text content owner must derive from source material, not the submitting user")
     if re.search(r"^[^｜|]{2,80}[｜|]\s*\S", title):
         errors.append("user text external source title must be the work title only, not author-title combined")
@@ -4003,6 +4630,7 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         f"| 來源身分 | {markdown_cell(source['source_identity'])} |",
         f"| 資產模式 | {markdown_cell(asset_mode)} |",
     ]
+    citation_authors = ""
     if source_kind == "url":
         identity_rows.extend([
             f"| URL | {markdown_cell(source.get('source_url') or source.get('normalized_url'))} |",
@@ -4018,8 +4646,9 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
             identity_rows.append(f"| 原文題名 | {markdown_cell(citation.get('title'))} |")
         if str(citation.get("publication") or "").strip():
             identity_rows.append(f"| 原始來源機構 | {markdown_cell(citation.get('publication'))} |")
-        if str(citation.get("authors") or "").strip():
-            identity_rows.append(f"| 原作者 | {markdown_cell(citation.get('authors'))} |")
+        citation_authors = str(citation.get("authors") or "").strip()
+        if citation_authors:
+            identity_rows.append(f"| 原作者 | {markdown_cell(citation_authors)} |")
         if str(citation.get("original_date") or "").strip():
             identity_rows.append(f"| 原文日期 | {markdown_cell(citation.get('original_date'))} |")
         if str(citation.get("original_source_url") or "").strip():
@@ -4045,6 +4674,17 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
             f"| Manifest SHA-256 | {markdown_cell(evidence.get('manifest_sha256'))} |",
             f"| Source manifest SHA-256 | {markdown_cell(source.get('case_evidence_source_manifest_sha256'))} |",
         ])
+    elif asset_mode == ASSET_MODE_KNOWLEDGE:
+        identity_rows.append("| 資訊圖狀態 | not_requested |")
+
+    source_author = str(source.get("author") or "").strip()
+    if source_author and not citation_authors:
+        identity_rows.append(f"| 原作者 | {markdown_cell(source_author)} |")
+    source_label = str(source.get("source_label") or "").strip()
+    if source_label:
+        identity_rows.append(f"| 來源標示 | {markdown_cell(source_label)} |")
+    raw_retrieval_aliases = source.get("retrieval_aliases")
+    retrieval_aliases = [str(item).strip() for item in raw_retrieval_aliases if str(item).strip()] if isinstance(raw_retrieval_aliases, list) else []
 
     claims = analysis.get("source_claims") if isinstance(analysis.get("source_claims"), list) else []
     if not claims:
@@ -4098,6 +4738,7 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         f"| 已映射入資訊圖 | {coverage_audit.get('mapped_to_infographic')} |",
         f"| 正式資訊圖頁數 | {coverage_audit.get('infographic_page_count')} |",
         f"| 多卷狀態 | {markdown_cell(coverage_audit.get('multi_volume_status'))} |",
+        f"| 待映射入資訊圖 | {markdown_cell('、'.join(string_list(coverage_audit.get('pending_infographic_mappings'))) or '無')} |",
         f"| 來源主張單元 | {disposition_counts.get('source_claim', 0)} |",
         f"| 主知識點單元 | {disposition_counts.get('knowledge_point', 0)} |",
         f"| 應用單元 | {disposition_counts.get('application', 0)} |",
@@ -4130,6 +4771,8 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
             "| 來源截圖／本地重現 | 見下方案例證據，原站與衍生成品分列 |",
         ]
         coverage_page_rows = ["| case-evidence | case_evidence | 原站證據與本地最小重現 | 不適用 | 不適用 |"]
+    elif asset_mode == ASSET_MODE_KNOWLEDGE:
+        coverage_page_rows = ["| 0 | not_requested | 本次沒有要求資訊圖 | 不適用 | 0 |"]
     omission_rows = [
         "| {id} | {reason} |".format(
             id=markdown_cell(item.get("id")),
@@ -4166,9 +4809,57 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
             )
         )
 
+    # Validated cross-source links travel to the writer as one hidden projection, like the KP semantics.
+    prior_knowledge_lines: list[str] = []
+    if isinstance(kp.get("prior_knowledge"), dict):
+        prior_payload = {
+            "job_id": str(kp.get("job_id") or ""),
+            "cross_links": [
+                {"source_kp_id": link.get("source_kp"), "target_kp_uid": link.get("target_kp_uid"),
+                 "relation": link.get("relation_type"), "insight": link.get("insight"),
+                 "evidence": link.get("evidence_anchor"), "confidence": "中"}
+                for link in kp["prior_knowledge"].get("cross_links") or [] if isinstance(link, dict)
+            ],
+        }
+        prior_knowledge_lines = [
+            "<!-- prior_knowledge_json: " + json.dumps(prior_payload, ensure_ascii=False).replace("-->", "--\\u003e") + " -->",
+            "",
+        ]
+
     full_body = ""
     full_body_rows: list[str] = []
-    if source_kind in {"url", "user_provided_text"} and retention_mode == "full_body_required":
+    if source_kind == "url" and retention_mode == TRANSCRIPT_ARCHIVE_MODE:
+        # The transcript never enters the Vault.  The note records where the
+        # archive is and enough hashes/anchors for the writer to re-derive it.
+        archive_bundle = read_json(package / "input_bundle.json")
+        archive_body = (package / "canonical_source.md").read_text(encoding="utf-8").rstrip("\n")
+        reading = caption_reading_chunks(archive_body)
+        full_body_rows.extend([
+            f"| 正文保存模式 | {TRANSCRIPT_ARCHIVE_MODE} |",
+            f"| 正文保存 SHA-256 | {source['canonical_body_sha256']} |",
+        ])
+        full_body = "\n".join([
+            "## 字幕存檔",
+            "",
+            "| 欄位 | 內容 |",
+            "|---|---|",
+            f"| 保存模式 | {TRANSCRIPT_ARCHIVE_MODE} |",
+            f"| 影片 URL | {markdown_cell(source.get('source_url') or source.get('normalized_url'))} |",
+            f"| 字幕語言 | {markdown_cell(archive_bundle.get('youtube_caption_language'))} |",
+            f"| 字幕軌道 | {markdown_cell(archive_bundle.get('youtube_caption_track_kind'))} |",
+            f"| 正文 SHA-256 | {source['canonical_body_sha256']} |",
+            f"| 原始字幕 VTT SHA-256 | {markdown_cell(archive_bundle.get('youtube_caption_sha256'))} |",
+            "| 存檔位置 | canonical_source.md；source_capture_youtube.vtt |",
+            f"| 閱讀版字數 | {sum(len(chunk['text']) for chunk in reading)} |",
+            "",
+            "完整字幕只保存在工作包存檔，不放入知識庫；引述可由存檔重建核對。",
+            "",
+            "### 閱讀版代表錨點",
+            "",
+            *[f"- {chunk['text']}" for chunk in reading[:3]],
+            "",
+        ])
+    elif source_kind in {"url", "user_provided_text"} and retention_mode == "full_body_required":
         canonical_body = (package / "canonical_source.md").read_text(encoding="utf-8").rstrip("\n")
         raw_anchors = string_list(source.get("anchors"))
         anchors = [
@@ -4421,6 +5112,7 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         "| 是否可入庫 | 可以 |",
         "| AI 來源分析狀態 | complete |",
         "| AI 來源分析證據 | Knowledge Package 的來源、覆蓋、知識點與圖片憑證已通過一致性檢查。 |",
+        *(["<!-- retrieval_aliases_json: " + json.dumps(retrieval_aliases, ensure_ascii=False).replace("-->", "--\\u003e") + " -->", ""] if retrieval_aliases else []),
         "## 原文層",
         "",
         "### 原文主張",
@@ -4448,6 +5140,11 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         "",
         "### 知識點草案",
         "",
+        "<!-- knowledge_semantics_json: " + json.dumps([
+            {"kp_id": item["kp_id"], "title": item.get("title", ""),
+             **({"reusable_concept": item["reusable_concept"]} if "reusable_concept" in item else {})}
+            for item in kp.get("knowledge", [])], ensure_ascii=False) + " -->",
+        "",
         "| ID | 知識點 | 層級 | 可信度 | 來源證據 |",
         "|---|---|---|---|---|",
         *kp_rows,
@@ -4458,6 +5155,7 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         "|---|---|---|---|---|",
         *relation_rows,
         "",
+        *prior_knowledge_lines,
         "## 覆蓋審計",
         "",
         "| 欄位 | 內容 |",
@@ -4476,8 +5174,11 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         "|---|---|",
         *(omission_rows or ["| 無 | 無 |"]),
         "",
-        "## For 使用者:個人化消化",
+        PERSONAL_LAYER_HEADING,
         "",
+        "<!-- application_semantics_json: " + json.dumps({
+            key: application[key] for key in ("personal_relevance", "personal_relevance_reason", "idea_candidate_status")
+            if key in application}, ensure_ascii=False) + " -->",
         "### 關係",
         "",
         *(personalization_links or ["本來源暫未建立個人化扣連。"]),
@@ -4661,7 +5362,8 @@ def render_application_enrichment(application, package):
     return lines
 
 
-def project_source_slice(kp: dict[str, Any], package: Path) -> Path:
+def source_slice_target(kp: dict[str, Any], package: Path) -> Path:
+    """The deterministic path of a package's source slice; computing it writes nothing."""
     source = kp["source"]
     source_id = str(source["source_id"])
     prefix = f"{source_id}_"
@@ -4673,7 +5375,11 @@ def project_source_slice(kp: dict[str, Any], package: Path) -> Path:
             if package.name.startswith(prefix)
             else slugify(str(source["title"]))
         )
-    target = package / f"{source_id}_{slug}.md"
+    return package / f"{source_id}_{slug}.md"
+
+
+def project_source_slice(kp: dict[str, Any], package: Path) -> Path:
+    target = source_slice_target(kp, package)
     try:
         assert_generated_path(target, label="Compiler Worker source slice")
     except PathBudgetError as exc:
@@ -4719,9 +5425,13 @@ def write_vault_and_readback(
     root: Path,
     vault: Path,
     source_slice: Path,
-    knowledge_point_count: int,
+    knowledge_point_ids: list[str],
     write: bool = True,
 ) -> dict[str, Any]:
+    if not knowledge_point_ids or any(not value for value in knowledge_point_ids):
+        raise CompilerWorkerV2Error("Knowledge Package has no valid knowledge-point IDs")
+    if len(set(knowledge_point_ids)) != len(knowledge_point_ids):
+        raise CompilerWorkerV2Error("Knowledge Package has duplicate knowledge-point IDs")
     adapter = Path(__file__).resolve().with_name("obsidian_vault_adapter.py")
     command = [
         sys.executable,
@@ -4731,7 +5441,7 @@ def write_vault_and_readback(
         "--vault",
         str(vault),
         "--max-kp",
-        str(max(1, knowledge_point_count)),
+        str(len(knowledge_point_ids)),
         "--verify",
         "--source-local",
         "--json",
@@ -4749,7 +5459,944 @@ def write_vault_and_readback(
             "Obsidian writer did not pass source-local readback"
             + (f": {', '.join(failed)}" if failed else "")
         )
+    actual_ids = [Path(str(path)).stem for path in result.get("knowledge_points", [])]
+    if actual_ids != knowledge_point_ids:
+        raise CompilerWorkerV2Error(
+            "Obsidian writer did not retain every Knowledge Package point "
+            f"(expected {knowledge_point_ids}, read back {actual_ids})"
+        )
     return result
+
+
+def source_completion_payloads(root: Path, source_id: str) -> list[tuple[str, dict[str, Any]]]:
+    """(root-relative path, receipt) of every completion receipt issued for this source.
+
+    Fails closed: a receipt that cannot be read must not make a source look unfinished.
+    """
+    found: list[tuple[str, dict[str, Any]]] = []
+    for path in sorted((root / DEFAULT_PACKAGE_ROOT).rglob("completion_receipt*.json")):
+        try:
+            payload = read_json(path)
+        except (OSError, ValueError) as exc:
+            raise CompilerWorkerV2Error(f"completion receipt is unreadable: {path.relative_to(root).as_posix()}") from exc
+        if not isinstance(payload, dict):
+            raise CompilerWorkerV2Error(f"completion receipt is not an object: {path.relative_to(root).as_posix()}")
+        if payload.get("source_id") == source_id:
+            found.append((path.relative_to(root).as_posix(), payload))
+    return found
+
+
+def source_completion_receipts(root: Path, source_id: str) -> list[str]:
+    return [path for path, _ in source_completion_payloads(root, source_id)]
+
+
+ACCEPTED_NOTES_REASON_PREFIX = "accepted note-level revisions: "
+ACCEPTED_NOTES_STAGE = "revision_would_erase_accepted_notes"
+ACCEPTED_NOTES_NEXT_ACTION = (
+    "do not re-prepare: accepted note-level revisions would be overwritten by the full writer; "
+    "a knowledge_only source can use add-infographic (knowledge-only overlay); "
+    "a formal-mode source has no supported formal revision until a note-preserving writer exists "
+    "- stop and ask the operator"
+)
+
+
+def accepted_note_paths_in_chain(
+    root: Path, predecessor: str, receipts: list[tuple[str, dict[str, Any]]],
+) -> list[str]:
+    """Accepted revision paths that are neither a KP, a slice nor an outcome page, over the predecessor chain.
+
+    Starts at the predecessor completion and follows ``revision.supersedes_completion_path`` /
+    ``original_completion_path`` (else the unique receipt of ``revision.origin_package``) back to the original
+    completion.  Each ancestor's record is filtered with that ancestor's own receipt.  Raises on a missing
+    ancestor, an unreadable record, an unfollowable link or a cycle (fail closed).
+    """
+    by_path = dict(receipts)
+    read_current = _overlay_read_current()
+    outcome_prefix = vault_relative_posix() + "/outcome-pages/"
+    notes: list[str] = []
+    seen: set[str] = set()
+    path = predecessor
+    while path:
+        if path in seen or len(seen) > len(by_path):
+            raise CompilerWorkerV2Error(f"the predecessor chain loops at {path}")
+        seen.add(path)
+        payload = by_path.get(path)
+        if payload is None:
+            raise CompilerWorkerV2Error(f"ancestor {path} is not a completion receipt of this source")
+        package = (root / str(payload.get("knowledge_package_path") or "")).parent
+        accepted = read_current(root, package, payload, verify=False)
+        derived = {str(payload.get("knowledge_package_path") or ""), str(payload.get("source_slice_path") or "")}
+        notes.extend(
+            str(item) for item in accepted
+            if item not in derived and not (str(item).startswith(outcome_prefix) and str(item).endswith(".html"))
+        )
+        revision = payload.get("revision") if isinstance(payload.get("revision"), dict) else {}
+        path = str(revision.get("supersedes_completion_path") or revision.get("original_completion_path") or "")
+        origin = str(revision.get("origin_package") or "")
+        if not path and origin:
+            matches = [
+                other for other, body in receipts
+                if (root / str(body.get("knowledge_package_path") or "")).parent == root / origin
+            ]
+            if len(matches) > 1:
+                raise CompilerWorkerV2Error(f"origin package {origin} has {len(matches)} completion receipts")
+            # No receipt: the origin was never completed (an incomplete-infographic recovery), so it has no record.
+            path = matches[0] if matches else ""
+        elif not path and revision.get("kind"):
+            raise CompilerWorkerV2Error(f"a {revision.get('kind')} receipt names no ancestor completion")
+    return sorted(notes)
+
+
+def current_revision_predecessor_errors(
+    root: Path,
+    package: Path,
+    kp: dict[str, Any],
+    job: dict[str, Any],
+    receipts: list[tuple[str, dict[str, Any]]],
+    uses_full_writer: bool = True,
+) -> list[str]:
+    """Why this package may not reach the full writer as a revision; empty means it may.
+
+    ``uses_full_writer`` is the caller's single decision that this package is projected by the full
+    writer (False only for a knowledge-only overlay), which is what check (e) protects against.
+
+    A revision is trusted only while the completion it was prepared against is still
+    the current one, so a stale sibling or an accepted content revision cannot be
+    overwritten by it.
+    """
+    revision = kp.get("revision") if isinstance(kp.get("revision"), dict) else {}
+    kind = revision.get("kind")
+    if kind not in {"infographic_revision", "case_revalidation"}:
+        return ["the package is not a bound revision of a completed source"]
+    if job.get("job_kind") != kind:
+        return [f"job kind {job.get('job_kind')!r} does not match revision kind {kind!r}"]
+    case = kind == "case_revalidation"
+    path_field, hash_field = (
+        ("original_completion_path", "original_completion_receipt_sha256") if case
+        else ("supersedes_completion_path", "supersedes_completion_payload_sha256")
+    )
+    by_path = dict(receipts)
+    predecessor = str(revision.get(path_field) or "")
+    payload = by_path.get(predecessor)
+    recorded = str(revision.get(hash_field) or "")
+    if payload is None or not recorded:
+        return [f"revision predecessor {predecessor or '(none)'} is not a completion receipt of this source"]
+    if case:
+        bound = sha256_bytes((root / predecessor).read_bytes()) == recorded
+    else:
+        bound = payload.get("payload_sha256") == recorded == canonical_payload_sha256(payload)
+    if not bound:
+        return [f"revision predecessor {predecessor} no longer matches the receipt it was prepared against"]
+    errors: list[str] = []
+    own = package.relative_to(root).as_posix() + "/"
+    for path, other in receipts:
+        other_revision = other.get("revision") if isinstance(other.get("revision"), dict) else {}
+        named = other_revision.get("supersedes_completion_path") or other_revision.get("original_completion_path")
+        if path != predecessor and not path.startswith(own) and named == predecessor:
+            errors.append(f"another revision ({path}) already superseded {predecessor}")
+    pointer_path = infographic_origin_package(root, package, kp) / "infographic_current.json"
+    if pointer_path.is_file():
+        try:
+            current = read_json(pointer_path).get("current_completion_path")
+        except (OSError, ValueError, AttributeError):
+            current = None
+        if current != predecessor:
+            errors.append(f"the current infographic pointer selects {current!r}, not {predecessor}")
+    parent = (root / str(payload.get("knowledge_package_path") or "")).parent
+    if (parent / "completion_revision_current.json").is_file():
+        origin_path = package / "revision_origin.json"
+        recorded_kp = read_json(origin_path).get("original_knowledge_package_sha256") if origin_path.is_file() else None
+        kp_file = parent / "knowledge_package.json"
+        if not recorded_kp or not kp_file.is_file() or sha256_bytes(kp_file.read_bytes()) != recorded_kp:
+            errors.append("the parent accepted a content revision after this revision was prepared")
+    if uses_full_writer:
+        # (e) The full writer re-renders every note from the KP, and an accepted note-level revision changes the
+        # notes and its record but never the KP, so it would be erased.  The records may sit on any ancestor
+        # completion (an overlay child keeps none of its own), so the whole predecessor chain is read.
+        try:
+            notes = accepted_note_paths_in_chain(root, predecessor, receipts)
+        except Exception as exc:  # fail closed: an unreadable link cannot show the writer is safe
+            errors.append(
+                f"{ACCEPTED_NOTES_REASON_PREFIX}the predecessor chain cannot be read "
+                f"({type(exc).__name__}: {exc}), so the full writer cannot be shown to preserve them"
+            )
+        else:
+            if notes:
+                errors.append(
+                    f"{ACCEPTED_NOTES_REASON_PREFIX}the parent chain has {len(notes)} accepted note-level paths "
+                    f"(e.g. {notes[0]}) that the full writer would overwrite"
+                )
+    return errors
+
+
+INFOGRAPHIC_OVERLAY_SCHEMA = "completed_source_infographic_overlay_v1"
+# prepared: staged, targets may be at before or after.  applied: every target is
+# at after.  outcome_projected: the parent's derived outcome page was rebuilt and
+# its bytes recorded; this is the terminal state the child receipt binds.
+INFOGRAPHIC_OVERLAY_STATES = ("prepared", "applied", "outcome_projected")
+_OVERLAY_SHA256 = re.compile(r"[0-9a-f]{64}")
+INFOGRAPHIC_OVERLAY_EVIDENCE_DIR = "overlay"
+INFOGRAPHIC_OVERLAY_FOLDER_ID_CHARS = 12
+
+
+def _overlay_evidence_folder_name(overlay_id: str) -> str:
+    """Return the collision-resistant, Windows-safe directory name for one overlay."""
+
+    if not _OVERLAY_SHA256.fullmatch(overlay_id):
+        raise CompilerWorkerV2Error("infographic overlay id is invalid")
+    return overlay_id[:INFOGRAPHIC_OVERLAY_FOLDER_ID_CHARS]
+
+
+def _assert_overlay_evidence_path_budget(folder: Path, names: list[str]) -> None:
+    """Check every staged overlay artifact before creating its evidence directory."""
+
+    try:
+        assert_generated_path(folder, label="completed infographic overlay evidence directory")
+        for name in names:
+            target = folder / name
+            assert_generated_path(target, label="completed infographic overlay evidence")
+            # These staged candidate and before files use Path.write_bytes
+            # directly below, so they have no adjacent atomic temporary name.
+        journal_path = folder / "overlay.json"
+        assert_generated_path(journal_path, label="completed infographic overlay journal")
+        assert_generated_path(
+            folder / ("." + "0" * 32 + ".tmp"),
+            label="completed infographic overlay temporary journal",
+        )
+    except PathBudgetError as exc:
+        raise CompilerWorkerV2Error(str(exc)) from exc
+
+
+def _is_knowledge_only_overlay_revision(kp: dict[str, Any]) -> bool:
+    revision = kp.get("revision") if isinstance(kp.get("revision"), dict) else {}
+    return (
+        revision.get("kind") == "infographic_revision"
+        and revision.get("mode") == "knowledge_only_to_infographic"
+    )
+
+
+def is_completed_source_infographic_revision(kp: dict[str, Any]) -> bool:
+    return _is_knowledge_only_overlay_revision(kp)
+
+
+def _overlay_adapter_module():
+    try:
+        from tools import obsidian_vault_adapter as adapter
+    except ModuleNotFoundError:
+        import obsidian_vault_adapter as adapter  # type: ignore
+    return adapter
+
+
+def _overlay_read_current():
+    try:
+        from .completion_revisions import read_current
+    except ImportError:
+        from completion_revisions import read_current
+    return read_current
+
+
+def _overlay_parent_context(root: Path, package: Path, kp: dict[str, Any]) -> dict[str, Any]:
+    """Read the parent facts a staged overlay stays bound to, without the strict readback.
+
+    The strict parent readback is exactly what rejects a half-written overlay, so
+    the journal validator cannot call it.  This reads the parent receipt, the
+    accepted revision record (verify=False: only its own pointer and hashes) and
+    the pointer file hash, so a parent that accepted a newer revision after the
+    journal was staged no longer matches.
+    """
+    origin_package = infographic_origin_package(root, package, kp)
+    origin_kp_path = origin_package / "knowledge_package.json"
+    if not origin_kp_path.is_file():
+        raise CompilerWorkerV2Error("completed infographic overlay origin package is missing")
+    origin_kp = read_json(origin_kp_path)
+    completion_path = bound_completion_path(root, origin_package, origin_kp_path, origin_kp)
+    if not completion_path.is_file():
+        raise CompilerWorkerV2Error("completed infographic overlay parent receipt is missing")
+    completion = read_json(completion_path)
+    if (
+        completion.get("schema_version") != COMPLETION_SCHEMA_VERSION
+        or completion.get("status") != "completed"
+        or completion.get("payload_sha256") != canonical_payload_sha256(completion)
+    ):
+        raise CompilerWorkerV2Error("completed infographic overlay parent receipt is invalid")
+    try:
+        changes = _overlay_read_current()(root, origin_package, completion, verify=False)
+    except (OSError, ValueError, KeyError) as exc:
+        raise CompilerWorkerV2Error(str(exc)) from exc
+    revision_pointer = origin_package / "completion_revision_current.json"
+    adapter_value = completion.get("adapter") if isinstance(completion.get("adapter"), dict) else {}
+    manifest: dict[str, str] = {}
+    for manifest_item in completion.get("artifact_manifest") or []:
+        if isinstance(manifest_item, dict):
+            manifest[str(manifest_item.get("path") or "")] = str(manifest_item.get("sha256") or "")
+
+    def accepted_note(field: str) -> dict[str, Any]:
+        original = str(adapter_value.get(field) or "")
+        if not original:
+            raise CompilerWorkerV2Error("completed source has no " + field.replace("_", " "))
+        change = changes.get(original) if isinstance(changes.get(original), dict) else {}
+        expected = str(change.get("sha256") or manifest.get(original) or "")
+        if not _OVERLAY_SHA256.fullmatch(expected):
+            raise CompilerWorkerV2Error("completed source note has no accepted hash")
+        return {
+            "original": original,
+            "path": str(change.get("current_path") or original),
+            "expected_sha256": expected,
+            "revised": bool(change),
+        }
+
+    outcome_path = f"{vault_relative_posix()}/outcome-pages/{completion.get('source_id')}_outcome.html"
+    outcome_expected = outcome_revision_hash(root, origin_package, completion, outcome_path) or manifest.get(outcome_path) or ""
+    return {
+        "origin_package": origin_package,
+        "completion_path": completion_path,
+        "completion": completion,
+        "changes": changes,
+        "revision_pointer_sha256": (
+            sha256_bytes(revision_pointer.read_bytes()) if revision_pointer.is_file() else ""
+        ),
+        "source_note": accepted_note("source_note"),
+        "application_note": accepted_note("application_note"),
+        "outcome_path": outcome_path,
+        "outcome_expected_sha256": outcome_expected,
+    }
+
+
+def build_completed_infographic_overlay(
+    *,
+    root: Path,
+    vault: Path,
+    package: Path,
+    kp: dict[str, Any],
+    source_slice: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Stage the exact visual-only delta for a completed source.
+
+    The normal adapter writer renders a whole source package.  A pure
+    infographic child is different: it may add its reviewed PNGs and the
+    generated visual fields, but it cannot regenerate knowledge, concepts or
+    registries that an accepted content revision already owns.
+    """
+    if not is_completed_source_infographic_revision(kp):
+        raise CompilerWorkerV2Error("completed infographic overlay requires a knowledge-only infographic revision")
+    origin_package = infographic_origin_package(root, package, kp)
+    origin_kp_path = origin_package / "knowledge_package.json"
+    if not origin_kp_path.is_file():
+        raise CompilerWorkerV2Error("completed infographic overlay origin package is missing")
+    origin_kp = read_json(origin_kp_path)
+    parent_completion = completed_receipt_readback(root, origin_package, origin_kp_path, origin_kp)
+    if not parent_completion:
+        raise CompilerWorkerV2Error("completed infographic overlay parent receipt is missing")
+    if parent_completion.get("superseded_by"):
+        raise CompilerWorkerV2Error("completed infographic overlay parent is already superseded")
+    context = _overlay_parent_context(root, package, kp)
+    revision = kp.get("revision") if isinstance(kp.get("revision"), dict) else {}
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    if (
+        context["completion"].get("payload_sha256") != parent_completion.get("payload_sha256")
+        or context["completion_path"].relative_to(root).as_posix() != revision.get("supersedes_completion_path")
+        or context["completion"].get("payload_sha256") != revision.get("supersedes_completion_payload_sha256")
+    ):
+        raise CompilerWorkerV2Error("completed infographic overlay parent does not match the revision")
+    source_before_path = relative_to_root(root / context["source_note"]["path"], root, "accepted completed-source note")
+    application_before_path = relative_to_root(root / context["application_note"]["path"], root, "accepted completed-source note")
+    if not source_before_path.is_file() or not application_before_path.is_file():
+        raise CompilerWorkerV2Error("accepted completed-source notes are missing")
+    outcome_target = relative_to_root(root / context["outcome_path"], root, "completed infographic overlay parent outcome")
+    if (
+        not context["outcome_expected_sha256"]
+        or not outcome_target.is_file()
+        or sha256_bytes(outcome_target.read_bytes()) != context["outcome_expected_sha256"]
+    ):
+        raise CompilerWorkerV2Error("completed infographic overlay parent outcome page is not at its accepted bytes")
+    adapter = _overlay_adapter_module()
+    data = adapter.parse_slice(source_slice, len(knowledge_package_point_ids(kp)))
+    plan = adapter.build_plan(root, vault, source_slice, data)
+    source_target = plan.get("source_note")
+    application_target = plan.get("application_note")
+    if source_target != source_before_path or application_target != application_before_path:
+        raise CompilerWorkerV2Error("completed infographic overlay note paths no longer match the accepted source")
+    source_after, application_after = adapter.render_infographic_overlay(
+        source_before=source_before_path.read_bytes(),
+        source_rendered=str(plan.get("source_body") or ""),
+        application_before=application_before_path.read_bytes(),
+        application_rendered=str(plan.get("application_body") or ""),
+    )
+    asset_srcs = list(plan.get("asset_srcs") or [])
+    asset_dests = list(plan.get("asset_dests") or [])
+    if not asset_srcs or len(asset_srcs) != len(asset_dests):
+        raise CompilerWorkerV2Error("completed infographic overlay has no one-to-one image assets")
+    staged_seed = {
+        "schema_version": INFOGRAPHIC_OVERLAY_SCHEMA,
+        "source_id": source.get("source_id"),
+        "source_identity": source.get("source_identity"),
+        "parent_completion_path": context["completion_path"].relative_to(root).as_posix(),
+        "parent_completion_payload_sha256": parent_completion.get("payload_sha256"),
+        "parent_current_revision": context["changes"],
+        "parent_revision_pointer_sha256": context["revision_pointer_sha256"],
+        "origin_package": origin_package.relative_to(root).as_posix(),
+        "child_package": package.relative_to(root).as_posix(),
+        "child_job_id": kp.get("job_id"),
+        "revision_id": revision.get("revision_id"),
+        "source_before_sha256": sha256_bytes(source_before_path.read_bytes()),
+        "source_after_sha256": sha256_bytes(source_after),
+        "application_before_sha256": sha256_bytes(application_before_path.read_bytes()),
+        "application_after_sha256": sha256_bytes(application_after),
+        "parent_adapter": dict(parent_completion.get("adapter") or {}),
+        "outcome": {
+            "path": context["outcome_path"],
+            "before_sha256": context["outcome_expected_sha256"],
+            "after_sha256": "",
+        },
+        "assets": [
+            {
+                "candidate_sha256": sha256_bytes(Path(raw).read_bytes()),
+                "destination": Path(destination).relative_to(root).as_posix(),
+            }
+            for raw, destination in zip(asset_srcs, asset_dests)
+            if isinstance(raw, Path) and isinstance(destination, Path) and raw.is_file()
+        ],
+    }
+    if len(staged_seed["assets"]) != len(asset_srcs):
+        raise CompilerWorkerV2Error("completed infographic overlay asset evidence is missing")
+    overlay_id = sha256_text(json.dumps(staged_seed, ensure_ascii=False, sort_keys=True))
+    folder = package / INFOGRAPHIC_OVERLAY_EVIDENCE_DIR / _overlay_evidence_folder_name(overlay_id)
+    journal_path = folder / "overlay.json"
+    if journal_path.is_file():
+        existing_journal = read_json(journal_path)
+        if existing_journal.get("overlay_id") != overlay_id:
+            raise CompilerWorkerV2Error("completed infographic overlay journal folder hash prefix collided")
+        if existing_journal.get("state") != "prepared":
+            raise CompilerWorkerV2Error("completed infographic overlay journal has already advanced")
+    _assert_overlay_evidence_path_budget(
+        folder,
+        [
+            "source-note.md",
+            "source-note.before.md",
+            "application-note.md",
+            "application-note.before.md",
+            *(f"asset-{index:02d}.png" for index in range(1, len(asset_srcs) + 1)),
+        ],
+    )
+    folder.mkdir(parents=True, exist_ok=True)
+    candidates = [
+        ("source-note", source_before_path, source_after, "infographic_source_note"),
+        ("application-note", application_before_path, application_after, "infographic_application_note"),
+    ]
+    items: list[dict[str, Any]] = []
+    for stem, target, after, kind in candidates:
+        before_bytes = target.read_bytes()
+        candidate = folder / f"{stem}.md"
+        before_snapshot = folder / f"{stem}.before.md"
+        candidate.write_bytes(after)
+        before_snapshot.write_bytes(before_bytes)
+        items.append({
+            "path": target.relative_to(root).as_posix(),
+            "candidate_path": candidate.relative_to(root).as_posix(),
+            "before_path": before_snapshot.relative_to(root).as_posix(),
+            "before_sha256": sha256_bytes(before_bytes),
+            "after_sha256": sha256_bytes(after),
+            "projection_kind": kind,
+        })
+    for index, (raw, destination) in enumerate(zip(asset_srcs, asset_dests), start=1):
+        if not isinstance(raw, Path) or not isinstance(destination, Path) or not raw.is_file():
+            raise CompilerWorkerV2Error("completed infographic overlay asset path is invalid")
+        existing = destination.read_bytes() if destination.exists() else b""
+        after = raw.read_bytes()
+        candidate = folder / f"asset-{index:02d}.png"
+        candidate.write_bytes(after)
+        if destination.exists() and existing != after:
+            raise CompilerWorkerV2Error("completed infographic overlay asset target has unknown bytes")
+        items.append({
+            "path": destination.relative_to(root).as_posix(),
+            "candidate_path": candidate.relative_to(root).as_posix(),
+            "before_sha256": sha256_bytes(existing) if destination.exists() else "",
+            "after_sha256": sha256_bytes(after),
+            "projection_kind": "infographic_asset",
+        })
+    journal = {
+        **staged_seed,
+        "overlay_id": overlay_id,
+        "state": "prepared",
+        "items": items,
+        "payload_sha256": "",
+    }
+    journal["payload_sha256"] = canonical_payload_sha256(journal)
+    write_json(journal_path, journal)
+    # The staged journal must pass the one binding validator before anything uses it.
+    return load_prepared_completed_infographic_overlay(
+        root, package, journal_path.relative_to(root).as_posix(), kp,
+    )
+
+
+def apply_completed_infographic_overlay(
+    *, root: Path, vault: Path, package: Path, kp: dict[str, Any], source_slice: Path,
+    prepared: tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    items, portable, journal = prepared or build_completed_infographic_overlay(
+        root=root, vault=vault, package=package, kp=kp, source_slice=source_slice,
+    )
+    adapter = _overlay_adapter_module()
+    adapter.apply_reviewed_content_projection(
+        root, vault, items, source_id=str((kp.get("source") or {}).get("source_id") or ""),
+    )
+    for item in items:
+        target = relative_to_root(root / item["path"], root, "completed infographic overlay readback")
+        if not target.is_file() or sha256_bytes(target.read_bytes()) != item["after_sha256"]:
+            raise CompilerWorkerV2Error("completed infographic overlay readback mismatch")
+    if journal["state"] == "prepared":
+        journal["state"] = "applied"
+        journal["payload_sha256"] = canonical_payload_sha256(journal)
+        journal_path = relative_to_root(root / str(portable["overlay_journal"]), root, "completed infographic overlay journal")
+        write_json(journal_path, journal)
+    return portable, journal
+
+
+def record_completed_infographic_overlay_outcome(
+    root: Path, package: Path, kp: dict[str, Any], journal_value: str, outcome_sha256: str,
+) -> dict[str, Any]:
+    """Journal the rebuilt parent outcome page before any later step uses it.
+
+    The page is derived, so it is rebuilt by its owner; the journal then bounds
+    the parent's accepted outcome page to exactly {before, this hash}.  Once the
+    child receipt exists the journal is bound by hash and is no longer written.
+    """
+    _, _, journal = load_prepared_completed_infographic_overlay(root, package, journal_value, kp)
+    if journal["state"] == "prepared":
+        raise CompilerWorkerV2Error("infographic overlay outcome cannot be recorded before the overlay is applied")
+    if not _OVERLAY_SHA256.fullmatch(outcome_sha256):
+        raise CompilerWorkerV2Error("infographic overlay outcome hash is invalid")
+    if journal["state"] == "outcome_projected" and journal["outcome"]["after_sha256"] == outcome_sha256:
+        return journal
+    if (package / "completion_receipt.json").exists():
+        raise CompilerWorkerV2Error("infographic overlay journal is already bound by a child receipt")
+    journal["outcome"]["after_sha256"] = outcome_sha256
+    journal["state"] = "outcome_projected"
+    journal["payload_sha256"] = canonical_payload_sha256(journal)
+    write_json(relative_to_root(root / journal_value, root, "completed infographic overlay journal"), journal)
+    return journal
+
+
+_OVERLAY_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp"})
+_OVERLAY_IMAGE_EXTENSION_PATTERN = r"(?:png|jpe?g|gif|webp|svg|bmp)"
+# Every way a note can point at a file: wikilink / embed, Markdown link / image, reference definition,
+# HTML src, and any ``assets/...<image>`` path written anywhere (the original, narrower check).
+_OVERLAY_WIKILINK = re.compile(r"\[\[([^\]\n]+?)\]\]")
+_OVERLAY_MARKDOWN_TARGET = re.compile(r"\]\(\s*(<[^>\n]*>|[^)\n]*)\)")
+_OVERLAY_REFERENCE_DEFINITION = re.compile(r"(?m)^[ \t]*\[[^\]\n]+\]:[ \t]*(<[^>\n]*>|\S+)")
+_OVERLAY_HTML_SOURCE = re.compile(r"""(?i)\bsrc\s*=\s*["']([^"'\n]+)["']""")
+_OVERLAY_ASSETS_PATH = re.compile(
+    r"assets/[^\s\]\)\"'|#<>]+?\." + _OVERLAY_IMAGE_EXTENSION_PATTERN + r"(?![A-Za-z0-9])", re.IGNORECASE,
+)
+
+
+def _overlay_image_identity(target: str) -> tuple[str, str] | None:
+    """(basename, normalized path) of a note target when it names an image file, else None.
+
+    Both parts are case-folded and decoded so that ``![[A.PNG]]``, ``](a%20b.png)`` and
+    ``assets/x/a.png#anchor`` compare by what Obsidian would resolve, not by spelling.
+    """
+    value = target.strip()
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+    value = value.strip("\"'").strip()
+    value = unquote(value) if "%" in value else value
+    for separator in ("|", "#", "?"):
+        value = value.split(separator, 1)[0]
+    value = value.replace("\\", "/").strip()
+    if not value or posixpath.splitext(value)[1].casefold() not in _OVERLAY_IMAGE_EXTENSIONS:
+        return None
+    path = value if "://" in value else posixpath.normpath(value).lstrip("/")
+    path = unicodedata.normalize("NFC", path).casefold()
+    vault_prefix = vault_relative_posix().casefold() + "/"
+    while path.startswith(vault_prefix):
+        path = path[len(vault_prefix):]
+    return path.rsplit("/", 1)[-1], path
+
+
+def _overlay_image_references(text: str) -> set[tuple[str, str]]:
+    """Every image the note names, in any link, embed, reference or YAML frontmatter value."""
+    targets: list[str] = []
+    for pattern in (_OVERLAY_WIKILINK, _OVERLAY_MARKDOWN_TARGET, _OVERLAY_REFERENCE_DEFINITION, _OVERLAY_HTML_SOURCE):
+        targets.extend(match.group(1) for match in pattern.finditer(text))
+    targets.extend(_OVERLAY_ASSETS_PATH.findall(text))
+    # Markdown link targets may carry a title (``](a.png "title")``); the path is the first token.
+    for match in _OVERLAY_MARKDOWN_TARGET.finditer(text):
+        inner = match.group(1).strip()
+        if not inner.startswith("<"):
+            targets.append(inner.split(None, 1)[0] if inner else "")
+    if text.startswith("---\n"):
+        end = text.find("\n---", 4)
+        for line in text[4:end if end != -1 else len(text)].splitlines():
+            row = re.match(r"^\s*-\s+(.*)$", line) or re.match(r"^[^\s:][^:]*:\s*(.*)$", line)
+            value = row.group(1).strip() if row else ""
+            if value.startswith("[") and value.endswith("]"):
+                targets.extend(value[1:-1].split(","))
+            elif value:
+                targets.append(value)
+    return {identity for identity in map(_overlay_image_identity, targets) if identity}
+
+
+def _overlay_image_allowed(reference: tuple[str, str], allowed: set[tuple[str, str]]) -> bool:
+    """Same file name AND a compatible path: equal, a bare name (resolved by name), or a trailing sub-path."""
+    name, path = reference
+    return any(
+        name == allowed_name and (path == allowed_path or path == name or allowed_path.endswith("/" + path))
+        for allowed_name, allowed_path in allowed
+    )
+
+
+def _overlay_reviewed_assets(root: Path, package: Path, kp: dict[str, Any]) -> dict[str, str]:
+    """Vault destination -> PNG hash for every page the child's own Knowledge Package and ledger accepted."""
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    source_id = str(source.get("source_id") or "")
+    pages = [page for page in kp.get("infographics") or [] if isinstance(page, dict)]
+    if not pages:
+        raise CompilerWorkerV2Error("infographic overlay child has no infographic pages")
+    ledger = load_image_attempt_ledger(package, str(source.get("source_identity") or ""))
+    adapter = _overlay_adapter_module()
+    slice_target = source_slice_target(kp, package)
+    expected: dict[str, str] = {}
+    for index, page in enumerate(pages, start=1):
+        page_id = str(page.get("page_id") or "")
+        png_sha256 = str(page.get("png_sha256") or "")
+        _, asset_path, _ = locked_infographic_context(package, page)
+        record = ledger["pages"].get(page_id) if isinstance(ledger["pages"].get(page_id), dict) else {}
+        accepted = [
+            attempt for attempt in record.get("attempts") or []
+            if isinstance(attempt, dict) and attempt.get("status") == "accepted"
+        ]
+        if (
+            page.get("status") != "receipt_verified"
+            or not _OVERLAY_SHA256.fullmatch(png_sha256)
+            or not accepted
+            or accepted[-1].get("png_sha256") != png_sha256
+            or not asset_path.is_file()
+            or sha256_bytes(asset_path.read_bytes()) != png_sha256
+        ):
+            raise CompilerWorkerV2Error("infographic overlay page is not the reviewed image of the child")
+        destination = (
+            f"{vault_relative_posix()}/assets/{source_id.lower()}/"
+            + adapter.vault_infographic_asset_filename(slice_target, source_id, asset_path, index, len(pages))
+        )
+        if destination in expected:
+            raise CompilerWorkerV2Error("infographic overlay child pages share one destination")
+        expected[destination] = png_sha256
+    return expected
+
+
+def verify_overlay_journal_content(
+    root: Path, package: Path, kp: dict[str, Any], journal_path: Path, journal: dict[str, Any],
+) -> None:
+    """Bind every journalled ``after`` to what the child itself reviewed; raises before any write.
+
+    A journal's own hash only proves it is self-consistent.  Assets must be the
+    child's accepted PNGs at their canonical destinations; each note may differ
+    from its staged before bytes only in the generated overlay fields and
+    sections (re-running the overlay on before + after must reproduce after,
+    which is stable across days, unlike re-rendering the child's plan); and the
+    journal seed and folder name must describe exactly these items.
+    """
+    items = [item for item in journal.get("items") or [] if isinstance(item, dict)]
+    by_kind: dict[str, list[dict[str, Any]]] = {}
+    for item in items:
+        by_kind.setdefault(str(item.get("projection_kind") or ""), []).append(item)
+    source_item = (by_kind.get("infographic_source_note") or [None])[0]
+    application_item = (by_kind.get("infographic_application_note") or [None])[0]
+    asset_items = by_kind.get("infographic_asset") or []
+    if source_item is None or application_item is None or not asset_items:
+        raise CompilerWorkerV2Error("infographic overlay journal scope is incomplete")
+    # Assets: exactly the child's reviewed pages, at their canonical destinations.
+    reviewed = _overlay_reviewed_assets(root, package, kp)
+    if {str(item["path"]): str(item["after_sha256"]) for item in asset_items} != reviewed or len(asset_items) != len(reviewed):
+        raise CompilerWorkerV2Error("infographic overlay assets are not the child's reviewed images")
+    # Seed: the staged summary must be the items, and the folder name must be its hash.
+    seed_assets = sorted(
+        (str(row.get("destination") or ""), str(row.get("candidate_sha256") or ""))
+        for row in journal.get("assets") or [] if isinstance(row, dict)
+    )
+    if (
+        journal.get("source_before_sha256") != source_item.get("before_sha256")
+        or journal.get("source_after_sha256") != source_item.get("after_sha256")
+        or journal.get("application_before_sha256") != application_item.get("before_sha256")
+        or journal.get("application_after_sha256") != application_item.get("after_sha256")
+        or len(journal.get("assets") or []) != len(asset_items)
+        or seed_assets != sorted((str(item["path"]), str(item["after_sha256"])) for item in asset_items)
+    ):
+        raise CompilerWorkerV2Error("infographic overlay journal summary does not match its items")
+    # Notes: only the generated overlay fields and sections may differ from the staged before bytes.
+    adapter = _overlay_adapter_module()
+    folder = journal_path.parent
+    staged: dict[str, tuple[bytes, bytes]] = {}
+    for kind, item in (("source", source_item), ("application", application_item)):
+        before_file = relative_to_root(root / str(item.get("before_path") or ""), root, "infographic overlay before snapshot")
+        candidate = relative_to_root(root / str(item.get("candidate_path") or ""), root, "infographic overlay candidate")
+        if before_file.parent != folder.resolve() or not before_file.is_file() or not candidate.is_file():
+            raise CompilerWorkerV2Error("infographic overlay note evidence is missing")
+        staged[kind] = (before_file.read_bytes(), candidate.read_bytes())
+    for item in (source_item, application_item):
+        if sha256_bytes(staged["source" if item is source_item else "application"][0]) != item.get("before_sha256"):
+            raise CompilerWorkerV2Error("infographic overlay before snapshot changed")
+    try:
+        replayed_source, replayed_application = adapter.render_infographic_overlay(
+            source_before=staged["source"][0], source_rendered=staged["source"][1].decode("utf-8-sig"),
+            application_before=staged["application"][0], application_rendered=staged["application"][1].decode("utf-8-sig"),
+        )
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CompilerWorkerV2Error("infographic overlay note changes more than the generated visual fields: " + str(exc)) from exc
+    if replayed_source != staged["source"][1] or replayed_application != staged["application"][1]:
+        raise CompilerWorkerV2Error("infographic overlay note changes more than the generated visual fields")
+    vault_prefix = vault_relative_posix() + "/"
+    journal_assets = {str(item["path"])[len(vault_prefix):] for item in asset_items if str(item["path"]).startswith(vault_prefix)}
+
+    def note_text(data: bytes) -> str:
+        return data.decode("utf-8-sig").replace("\r\n", "\n")
+
+    source_fields = adapter.frontmatter_fields_from_text(note_text(staged["source"][1]))
+    for field in ("source_assets", "infographics"):
+        value = source_fields.get(field)
+        listed = set(value) if isinstance(value, list) else ({value} if value else set())
+        if listed != journal_assets:
+            raise CompilerWorkerV2Error("infographic overlay source note does not reference exactly the journalled images")
+    journal_images = {identity for path in journal_assets if (identity := _overlay_image_identity(path))}
+    for kind in ("source", "application"):
+        allowed = _overlay_image_references(note_text(staged[kind][0])) | journal_images
+        if any(not _overlay_image_allowed(ref, allowed) for ref in _overlay_image_references(note_text(staged[kind][1]))):
+            raise CompilerWorkerV2Error("infographic overlay note references an image that is not journalled")
+    # The full hash remains in the journal.  New folders use its short locator;
+    # old folders remain full-hash named for their entire lifetime.
+    seed = {
+        key: value for key, value in journal.items()
+        if key not in {"overlay_id", "state", "items", "payload_sha256"}
+    }
+    seed["outcome"] = {**(journal.get("outcome") or {}), "after_sha256": ""}
+    expected_overlay_id = sha256_text(json.dumps(seed, ensure_ascii=False, sort_keys=True))
+    new_parent = (package / INFOGRAPHIC_OVERLAY_EVIDENCE_DIR).resolve()
+    legacy_parent = (package / "infographic_projection_evidence").resolve()
+    folder_parent = journal_path.parent.parent.resolve()
+    folder_name = journal_path.parent.name
+    overlay_id = journal.get("overlay_id")
+    if folder_parent == new_parent:
+        if (
+            not isinstance(overlay_id, str)
+            or overlay_id != expected_overlay_id
+            or folder_name != _overlay_evidence_folder_name(overlay_id)
+        ):
+            raise CompilerWorkerV2Error("infographic overlay journal folder does not match its staged summary")
+    elif folder_parent == legacy_parent:
+        if "overlay_id" in journal or folder_name != expected_overlay_id:
+            raise CompilerWorkerV2Error("infographic overlay journal folder does not match its staged summary")
+    else:
+        raise CompilerWorkerV2Error("infographic overlay journal folder does not match its staged summary")
+
+
+def load_prepared_completed_infographic_overlay(
+    root: Path, package: Path, journal_value: str, kp: dict[str, Any],
+    *, with_parent_context: bool = False,
+):
+    """The one pre-write binding check for a staged overlay journal; read-only.
+
+    It compares the journal with the live child Knowledge Package, job-bound
+    parent receipt, accepted parent revision, vault targets and staged files,
+    and raises before the caller writes anything.  Nothing is rebuilt from
+    changed parent notes.
+    """
+    if not is_completed_source_infographic_revision(kp):
+        raise CompilerWorkerV2Error("prepared infographic overlay requires a knowledge-only infographic revision")
+    journal_path = relative_to_root(root / journal_value, root, "completed infographic overlay journal")
+    folder = journal_path.parent
+    new_evidence_root = (package / INFOGRAPHIC_OVERLAY_EVIDENCE_DIR).resolve()
+    legacy_evidence_root = (package / "infographic_projection_evidence").resolve()
+    if (
+        not journal_path.is_file()
+        or journal_path.name != "overlay.json"
+        or folder.parent.resolve() not in {new_evidence_root, legacy_evidence_root}
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay journal is outside its child package")
+    journal = read_json(journal_path)
+    if (
+        journal.get("schema_version") != INFOGRAPHIC_OVERLAY_SCHEMA
+        or journal.get("payload_sha256") != canonical_payload_sha256(journal)
+        or journal.get("state") not in INFOGRAPHIC_OVERLAY_STATES
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay journal is invalid")
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    revision = kp.get("revision") if isinstance(kp.get("revision"), dict) else {}
+    context = _overlay_parent_context(root, package, kp)
+    parent = context["completion"]
+    if (
+        not source.get("source_id")
+        or not source.get("source_identity")
+        or journal.get("source_id") != source.get("source_id")
+        or journal.get("source_id") != parent.get("source_id")
+        or journal.get("source_identity") != source.get("source_identity")
+        or journal.get("source_identity") != parent.get("source_identity")
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay journal belongs to another source")
+    parent_path = context["completion_path"].relative_to(root).as_posix()
+    if (
+        journal.get("child_package") != package.relative_to(root).as_posix()
+        or journal.get("child_job_id") != kp.get("job_id")
+        or journal.get("revision_id") != revision.get("revision_id")
+        or journal.get("origin_package") != context["origin_package"].relative_to(root).as_posix()
+        or journal.get("parent_completion_path") != parent_path
+        or parent_path != revision.get("supersedes_completion_path")
+        or journal.get("parent_completion_payload_sha256") != parent.get("payload_sha256")
+        or parent.get("payload_sha256") != revision.get("supersedes_completion_payload_sha256")
+        or journal.get("parent_adapter") != parent.get("adapter")
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay journal belongs to another package or parent")
+    if (
+        journal.get("parent_current_revision") != context["changes"]
+        or journal.get("parent_revision_pointer_sha256") != context["revision_pointer_sha256"]
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay journal is stale: the parent accepted revision changed")
+    state = str(journal["state"])
+    outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
+    outcome_after = str(outcome.get("after_sha256") or "")
+    if (
+        outcome.get("path") != context["outcome_path"]
+        or outcome.get("before_sha256") != context["outcome_expected_sha256"]
+        or not _OVERLAY_SHA256.fullmatch(str(outcome.get("before_sha256") or ""))
+        or (state == "outcome_projected") != bool(outcome_after)
+        or (outcome_after and not _OVERLAY_SHA256.fullmatch(outcome_after))
+    ):
+        raise CompilerWorkerV2Error("prepared infographic overlay outcome binding is invalid")
+    raw_items = journal.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise CompilerWorkerV2Error("prepared infographic overlay journal has no items")
+    note_scope = {
+        "infographic_source_note": context["source_note"],
+        "infographic_application_note": context["application_note"],
+    }
+    asset_prefix = f"{vault_relative_posix()}/assets/{str(source.get('source_id')).lower()}/"
+    seen_paths: set[str] = set()
+    seen_kinds: dict[str, int] = {}
+    items: list[dict[str, Any]] = []
+    assets: list[str] = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            raise CompilerWorkerV2Error("prepared infographic overlay journal item is invalid")
+        path = str(item.get("path") or "")
+        kind = str(item.get("projection_kind") or "")
+        before = str(item.get("before_sha256") or "")
+        after = str(item.get("after_sha256") or "")
+        if not path or path in seen_paths:
+            raise CompilerWorkerV2Error("prepared infographic overlay has a duplicate or empty target")
+        seen_paths.add(path)
+        if not _OVERLAY_SHA256.fullmatch(after):
+            raise CompilerWorkerV2Error("prepared infographic overlay hashes are invalid")
+        target = relative_to_root(root / path, root, "prepared infographic overlay target")
+        if kind in note_scope:
+            seen_kinds[kind] = seen_kinds.get(kind, 0) + 1
+            scope = note_scope[kind]
+            if path != scope["path"] or not _OVERLAY_SHA256.fullmatch(before):
+                raise CompilerWorkerV2Error("prepared infographic overlay note is not the parent's accepted note")
+            if before != scope["expected_sha256"]:
+                # Only a newline variant of the accepted bytes may differ, proven by the staged snapshot.
+                snapshot = relative_to_root(root / str(item.get("before_path") or ""), root, "prepared infographic overlay snapshot")
+                if (
+                    snapshot.parent != folder.resolve()
+                    or not snapshot.is_file()
+                    or sha256_bytes(snapshot.read_bytes()) != before
+                    or not receipt_artifact_matches(snapshot, scope["expected_sha256"])
+                ):
+                    raise CompilerWorkerV2Error("prepared infographic overlay note does not start from the parent's accepted bytes")
+            allowed_current = {before, after}
+        elif kind == "infographic_asset":
+            if (
+                not path.startswith(asset_prefix)
+                or not path.endswith(".png")
+                or before not in {"", after}
+            ):
+                raise CompilerWorkerV2Error("prepared infographic overlay asset scope is invalid")
+            assets.append(path)
+            allowed_current = {before, after}
+        else:
+            raise CompilerWorkerV2Error("prepared infographic overlay contains a non-visual target")
+        candidate = relative_to_root(root / str(item.get("candidate_path") or ""), root, "prepared infographic overlay candidate")
+        if (
+            candidate.parent != folder.resolve()
+            or not candidate.is_file()
+            or sha256_bytes(candidate.read_bytes()) != after
+        ):
+            raise CompilerWorkerV2Error("prepared infographic overlay candidate drifted")
+        current = sha256_bytes(target.read_bytes()) if target.is_file() else ""
+        if state != "prepared":
+            allowed_current = {after}
+        if current not in allowed_current or (not current and kind != "infographic_asset"):
+            raise CompilerWorkerV2Error("prepared infographic overlay target has unknown bytes")
+        items.append(dict(item))
+    if any(seen_kinds.get(kind) != 1 for kind in note_scope) or len(seen_kinds) != len(note_scope) or not assets:
+        raise CompilerWorkerV2Error("prepared infographic overlay scope is incomplete")
+    verify_overlay_journal_content(root, package, kp, journal_path, journal)
+    portable = dict(journal["parent_adapter"])
+    portable.update({
+        "source_note": context["source_note"]["path"],
+        "application_note": context["application_note"]["path"],
+        "assets": sorted(assets),
+        "mode": "completed_source_infographic_overlay",
+        "overlay_journal": journal_path.relative_to(root).as_posix(),
+    })
+    if with_parent_context:
+        return items, portable, journal, context
+    return items, portable, journal
+
+
+def _child_selected_by_infographic_pointer(root: Path, package: Path, kp: dict[str, Any]) -> bool:
+    """True once ``infographic_current.json`` names this child's completion."""
+    pointer_path = infographic_origin_package(root, package, kp) / "infographic_current.json"
+    if not pointer_path.is_file():
+        return False
+    pointer = read_json(pointer_path)
+    if pointer.get("payload_sha256") != canonical_payload_sha256(pointer):
+        raise CompilerWorkerV2Error("current infographic pointer is invalid")
+    child_completion = bound_completion_path(root, package, package / "knowledge_package.json", kp)
+    return pointer.get("current_completion_path") == child_completion.relative_to(root).as_posix()
+
+
+def overlay_resume_parent_allowance(
+    root: Path, package: Path, journal: dict[str, Any], items: list[dict[str, Any]], context: dict[str, Any],
+) -> dict[str, Any]:
+    """The bounded set of parent bytes a validated, not-yet-current overlay may leave behind.
+
+    Modelled on ``completion_revisions._verify_prepare_predecessor``: only the
+    journal's own note targets and the parent's derived outcome page are allowed
+    to be at their journalled before/after bytes; every other parent artifact
+    stays bound to its accepted hash.
+    """
+    after_by_path = {
+        str(item["path"]): str(item["after_sha256"])
+        for item in items if item["projection_kind"] != "infographic_asset"
+    }
+    current: dict[str, set[str]] = {}
+    artifacts: dict[str, set[str]] = {}
+    for field in ("source_note", "application_note"):
+        scope = context[field]
+        after = after_by_path[scope["path"]]
+        artifacts[scope["path"]] = {scope["expected_sha256"], after}
+        if scope["revised"]:
+            current[scope["path"]] = {scope["expected_sha256"], after}
+    outcome = journal["outcome"]
+    outcome_path = str(outcome["path"])
+    allowed_outcome = {str(outcome["before_sha256"])}
+    if outcome.get("after_sha256"):
+        allowed_outcome.add(str(outcome["after_sha256"]))
+    artifacts[outcome_path] = allowed_outcome
+    drift: set[str] = set()
+    outcome_target = relative_to_root(root / outcome_path, root, "infographic overlay parent outcome")
+    live = sha256_bytes(outcome_target.read_bytes()) if outcome_target.is_file() else ""
+    # A rebuild that stopped before its hash was journalled leaves a derived page
+    # the command rebuilds again; its bytes are never bound.  Once the child
+    # receipt exists nothing is rebuilt, so the page must be at journalled bytes.
+    if live not in allowed_outcome and not (package / "completion_receipt.json").exists():
+        drift.add(outcome_path)
+    return {"current": current, "artifacts": artifacts, "drift": drift}
+
+
+def knowledge_package_point_ids(kp: dict[str, Any]) -> list[str]:
+    knowledge = kp.get("knowledge") if isinstance(kp.get("knowledge"), list) else []
+    return [str(item.get("kp_id") or "").strip() for item in knowledge if isinstance(item, dict)]
 
 
 def generate_incremental_outcome(root: Path, vault: Path, source_id: str) -> dict[str, Any]:
@@ -4759,6 +6406,8 @@ def generate_incremental_outcome(root: Path, vault: Path, source_id: str) -> dic
         str(generator),
         "--incremental-source-id",
         source_id,
+        "--root",
+        str(root),
         "--vault",
         str(vault),
         "--output-dir",
@@ -5345,6 +6994,160 @@ def bound_completion_path(root: Path, package: Path, kp_path: Path, kp: dict[str
     return target
 
 
+def verified_knowledge_only_resume_parent_artifacts(
+    root: Path,
+    package: Path,
+    kp: dict[str, Any],
+    child_job: dict[str, Any],
+    parent_completion: dict[str, Any],
+) -> set[str]:
+    """Prove the one parent-note change made by an interrupted child writer.
+
+    A formal child replaces the source-local note before its reader receipt and
+    current pointer exist.  The old parent receipt must normally reject that
+    change.  During this narrow, known child-commit window, rerun the existing
+    read-only adapter against the deterministic child source slice.  Only its
+    exact source-note path may then differ from the parent's old manifest.
+    """
+
+    if child_job.get("status") != "committing":
+        return set()
+    if str(child_job.get("commit_stage") or "") not in {
+        "adapter_pending", "outcome_pending", "outcome_running",
+        "reader_quality_pending", "completion_pending",
+    }:
+        return set()
+    parent_adapter = (
+        parent_completion.get("adapter")
+        if isinstance(parent_completion.get("adapter"), dict)
+        else {}
+    )
+    parent_source_note = str(parent_adapter.get("source_note") or "")
+    if not parent_source_note:
+        return set()
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    source_id = str(source.get("source_id") or "")
+    expected_slice_hash = sha256_bytes(
+        (render_source_slice(kp, package).rstrip() + "\n").encode("utf-8")
+    )
+    matching_slices = [
+        path
+        for path in package.glob(f"{source_id}_*.md")
+        if path.is_file() and receipt_artifact_matches(path, expected_slice_hash)
+    ]
+    if len(matching_slices) != 1:
+        return set()
+    try:
+        adapter_readback = write_vault_and_readback(
+            root=root,
+            vault=relative_to_root(root / vault_relative_posix(), root, "vault"),
+            source_slice=matching_slices[0],
+            knowledge_point_ids=knowledge_package_point_ids(kp),
+            write=False,
+        )
+        portable = portable_tool_result(
+            adapter_readback,
+            root=root,
+            scalar_path_fields=(
+                "registry", "knowledge_point_registry", "relation_registry",
+                "source_note", "application_note", "asset",
+            ),
+            list_path_fields=("knowledge_points", "concepts", "assets", "bases"),
+        )
+    except CompilerWorkerV2Error:
+        return set()
+    if portable.get("source_note") != parent_source_note:
+        return set()
+    # A later image changes this source's rendered note and application note.
+    # They have just passed the adapter's exact readback; all knowledge-point
+    # and other parent-manifest paths remain hash-bound below.
+    allowed = {
+        str(portable.get(field) or "")
+        for field in ("source_note", "application_note")
+    }
+    return {path for path in allowed if path}
+
+
+def verify_knowledge_only_infographic_origin(
+    root: Path,
+    package: Path,
+    kp: dict[str, Any],
+    child_job: dict[str, Any],
+) -> None:
+    """Recheck the immutable text-first parent immediately before projection."""
+
+    revision = kp.get("revision") if isinstance(kp.get("revision"), dict) else {}
+    if revision.get("kind") != "infographic_revision" or revision.get("mode") != "knowledge_only_to_infographic":
+        return
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    projection = kp.get("projection") if isinstance(kp.get("projection"), dict) else {}
+    if source.get("asset_mode") != ASSET_MODE_FORMAL or projection.get("asset_mode") != ASSET_MODE_FORMAL:
+        raise CompilerWorkerV2Error("knowledge-only infographic revision asset modes are inconsistent")
+    origin_package = infographic_origin_package(root, package, kp)
+    origin_kp_path = origin_package / "knowledge_package.json"
+    origin_path = package / "revision_origin.json"
+    if not origin_kp_path.is_file() or not origin_path.is_file():
+        raise CompilerWorkerV2Error("knowledge-only infographic revision origin is missing")
+    origin = read_json(origin_path)
+    if (
+        origin.get("payload_sha256") != canonical_payload_sha256(origin)
+        or origin.get("mode") != "knowledge_only_to_infographic"
+        or origin.get("original_package") != origin_package.relative_to(root).as_posix()
+        or origin.get("target_asset_mode") != ASSET_MODE_FORMAL
+    ):
+        raise CompilerWorkerV2Error("knowledge-only infographic revision origin receipt is invalid")
+    origin_kp = read_json(origin_kp_path)
+    origin_source = origin_kp.get("source") if isinstance(origin_kp.get("source"), dict) else {}
+    if (
+        origin_source.get("asset_mode") != ASSET_MODE_KNOWLEDGE
+        or origin.get("original_knowledge_package_sha256") != sha256_bytes(origin_kp_path.read_bytes())
+        or origin.get("source_id") != origin_source.get("source_id")
+        or origin.get("source_identity") != origin_source.get("source_identity")
+        or origin.get("original_semantic_content_sha256") != revision_semantic_content_sha256(origin_kp)
+        or revision.get("original_semantic_content_sha256") != origin.get("original_semantic_content_sha256")
+        or revision_semantic_content_sha256(kp) != origin.get("original_semantic_content_sha256")
+        or knowledge_only_infographic_overlay_errors(
+            origin_kp.get("coverage_units"), kp.get("coverage_units"),
+        )
+    ):
+        raise CompilerWorkerV2Error("knowledge-only infographic revision changed accepted semantic content")
+    # Bridge a staged overlay by pointer state, never by job state: until
+    # infographic_current.json selects this child, the parent's notes may sit at
+    # the one validated journal's before/after bytes and nothing else.  A journal
+    # that fails the single binding validator is an error, with no other way
+    # through; once the pointer selects the child, the verified overlay chain in
+    # completed_receipt_readback takes over.
+    resume_allowance: dict[str, Any] | None = None
+    journal_value = str(child_job.get("commit_overlay_journal") or "")
+    if journal_value and not _child_selected_by_infographic_pointer(root, package, kp):
+        overlay_items, _, overlay_journal, overlay_context = load_prepared_completed_infographic_overlay(
+            root, package, journal_value, kp, with_parent_context=True,
+        )
+        resume_allowance = overlay_resume_parent_allowance(
+            root, package, overlay_journal, overlay_items, overlay_context,
+        )
+    original_completion = completed_receipt_readback(
+        root, origin_package, origin_kp_path, origin_kp, resume_allowance=resume_allowance,
+    )
+    if (
+        original_completion is None
+        or original_completion.get("payload_sha256") != origin.get("original_completion_payload_sha256")
+        or revision.get("original_completion_payload_sha256") != origin.get("original_completion_payload_sha256")
+    ):
+        raise CompilerWorkerV2Error("knowledge-only infographic revision parent receipt drifted")
+    bundle_path = package / "input_bundle.json"
+    if not bundle_path.is_file():
+        raise CompilerWorkerV2Error("knowledge-only infographic revision input bundle is missing")
+    bundle = read_json(bundle_path)
+    if (
+        bundle.get("asset_mode") != ASSET_MODE_FORMAL
+        or bundle.get("source_id") != source.get("source_id")
+        or bundle.get("source_identity") != source.get("source_identity")
+        or bundle.get("job_id") != kp.get("job_id")
+    ):
+        raise CompilerWorkerV2Error("knowledge-only infographic revision input bundle is inconsistent")
+
+
 def validate_job_package_binding(
     root: Path,
     kp_path: Path,
@@ -5380,6 +7183,7 @@ def validate_job_package_binding(
     expected_completion = bound_completion_path(root, kp_path.parent, kp_path, kp).relative_to(root).as_posix()
     if completion_path and completion_path != expected_completion:
         raise CompilerWorkerV2Error("v2 job is bound to another completion receipt")
+    verify_knowledge_only_infographic_origin(root, kp_path.parent, kp, job)
     return job
 
 
@@ -5518,8 +7322,22 @@ def write_current_infographic_pointer(
         previous = read_json(pointer_path)
         if previous.get("payload_sha256") != canonical_payload_sha256(previous):
             raise CompilerWorkerV2Error("previous infographic pointer hash mismatch")
-        pointer["superseded_artifact_paths"] = sorted(set(
-            pointer["superseded_artifact_paths"] + previous.get("superseded_artifact_paths", [])))
+        # A replay of this exact completion is idempotent.  A different child
+        # may only replace the completion it explicitly supersedes: allowing a
+        # stale child to merge this pointer would silently roll a newer image
+        # set back to an older receipt.
+        if (
+            previous.get("current_completion_path") == pointer["current_completion_path"]
+            and previous.get("current_completion_file_sha256") == pointer["current_completion_file_sha256"]
+            and previous.get("current_completion_payload_sha256") == pointer["current_completion_payload_sha256"]
+        ):
+            return previous
+        if (
+            previous.get("current_completion_path") != pointer["supersedes_completion_path"]
+            or previous.get("current_completion_payload_sha256")
+            != pointer["supersedes_completion_payload_sha256"]
+        ):
+            raise CompilerWorkerV2Error("infographic pointer predecessor no longer matches this revision")
     pointer["payload_sha256"] = canonical_payload_sha256(pointer)
     write_json(pointer_path, pointer)
     readback = read_current_infographic_pointer(root, package, kp)
@@ -5552,8 +7370,22 @@ def outcome_revision_hash(root: Path, package: Path, completion: dict[str, Any],
     return previous
 
 
-def refresh_completed_outcome(root: Path, kp_path: Path) -> dict[str, Any]:
-    """Regenerate only the derived reader page; preserve the original receipt."""
+def refresh_completed_outcome(
+    root: Path,
+    kp_path: Path,
+    *,
+    shell_only: bool = False,
+    _compiler_lock_held: bool = False,
+) -> dict[str, Any]:
+    """Refresh a completed reader projection without rebinding its receipt.
+
+    ``shell_only`` is deliberately narrower than the established full repair:
+    it may only reapply ``reader_shell.apply_theme`` to an already verified
+    live page.  This keeps routine reader visual refreshes from treating a
+    completed outcome as an unregistered caller-owned HTML write.
+    """
+    if shell_only:
+        return refresh_completed_outcome_shell(root, kp_path, _compiler_lock_held=_compiler_lock_held)
     kp = read_json(kp_path)
     package = kp_path.parent
     completion = completed_receipt_readback(
@@ -5574,6 +7406,53 @@ def refresh_completed_outcome(root: Path, kp_path: Path) -> dict[str, Any]:
     if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
         raise CompilerWorkerV2Error("completed outcome has no valid expected hash")
     observed_hash = sha256_bytes(prior)
+    revision_path = package / "outcome_projection_revisions.json"
+    revision_bytes = revision_path.read_bytes() if revision_path.exists() else None
+    candidate = target.with_name(f".{source_id}_outcome_revision_candidate.html")
+    generator_hash = sha256_bytes((root / "tools/outcome_page_generator.py").read_bytes())
+    try:
+        from tools.outcome_page_generator import generate_outcome_page
+    except ModuleNotFoundError:
+        from outcome_page_generator import generate_outcome_page
+    recovered_candidate = candidate.is_file()
+    if candidate.is_symlink() or (candidate.exists() and not recovered_candidate):
+        raise CompilerWorkerV2Error("outcome candidate is not a regular file")
+    if recovered_candidate:
+        # A candidate created before its chain record is not trusted just for
+        # existing. Regenerate from the same verified inputs, compare all bytes
+        # except the one displayed generation timestamp, then recheck the chain.
+        verification = target.with_name(f".{source_id}_outcome_verify_{uuid.uuid4().hex}.html")
+        try:
+            generate_outcome_page(source_id=source_id, vault=vault_path(root), output=verification, root=root)
+            def stable_page(value: bytes) -> bytes:
+                normalized, count = re.subn(
+                    rb'(?m)^    <p class="generated-at"><span>[^<]*</span> \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}</p>$',
+                    b'<p class="generated-at">verified-generation-time</p>', value)
+                if count != 1:
+                    raise CompilerWorkerV2Error("outcome candidate has no unique generation timestamp")
+                return normalized
+            if stable_page(candidate.read_bytes()) != stable_page(verification.read_bytes()):
+                raise CompilerWorkerV2Error("outcome candidate does not bind current verified content")
+        finally:
+            if verification.is_file(): verification.unlink()  # This call's recreatable scratch output only.
+        completed_receipt_readback(root, package, kp_path, kp, allow_derived_outcome_drift=True)
+        if target.read_bytes() != prior or (revision_path.read_bytes() if revision_path.exists() else None) != revision_bytes:
+            raise CompilerWorkerV2Error("outcome state changed during candidate recovery")
+        record = read_json(revision_path) if revision_path.exists() else {}
+        revisions = record.get("revisions") or []
+        latest = revisions[-1] if revisions else {}
+        candidate_hash = sha256_bytes(candidate.read_bytes())
+        pending = (latest.get("sha256") == candidate_hash == expected_hash
+                   and latest.get("generator_sha256") == generator_hash
+                   and latest.get("reason") == "rebuild derived reader page from unchanged verified vault content")
+        if pending and observed_hash in {latest.get("previous_sha256"), expected_hash}:
+            if observed_hash != expected_hash: os.replace(candidate, target)
+            else: candidate.unlink()
+            completed_receipt_readback(root, package, kp_path, kp)
+            return {"status": "ready", "page": portable,
+                    "revision_receipt": revision_path.relative_to(root).as_posix(),
+                    "source_and_images_unchanged": True, "original_completion_preserved": True,
+                    "recovered_pending_projection": True, "write_performed": observed_hash != expected_hash}
     unregistered_backup: Path | None = None
     if observed_hash != expected_hash:
         backup_dir = package / "outcome_projection_unregistered"
@@ -5583,18 +7462,14 @@ def refresh_completed_outcome(root: Path, kp_path: Path) -> dict[str, Any]:
             raise CompilerWorkerV2Error("unregistered outcome backup hash collision")
         if not unregistered_backup.exists():
             unregistered_backup.write_bytes(prior)
-    candidate = target.with_name(f".{source_id}_outcome_revision_candidate.html")
-    if candidate.exists():
-        raise CompilerWorkerV2Error("outcome revision candidate already exists; inspect interrupted work")
-    try:
-        from tools.outcome_page_generator import generate_outcome_page
-    except ModuleNotFoundError:
-        from outcome_page_generator import generate_outcome_page
-    result = generate_outcome_page(source_id=source_id, vault=vault_path(root), output=candidate)
+    if not recovered_candidate:
+        generate_outcome_page(source_id=source_id, vault=vault_path(root), output=candidate, root=root)
     # Recheck every source/input after rendering, before changing the live page.
     completed_receipt_readback(root, package, kp_path, kp, allow_derived_outcome_drift=True)
     if target.read_bytes() != prior:
         raise CompilerWorkerV2Error("outcome changed during refresh; candidate retained for inspection")
+    if (revision_path.read_bytes() if revision_path.exists() else None) != revision_bytes:
+        raise CompilerWorkerV2Error("outcome revision chain changed during refresh")
     new_bytes = candidate.read_bytes()
     revision_path = package / "outcome_projection_revisions.json"
     record = read_json(revision_path) if revision_path.exists() else {
@@ -5615,7 +7490,7 @@ def refresh_completed_outcome(root: Path, kp_path: Path) -> dict[str, Any]:
                 "status": "unregistered_live_projection",
             })
     record["revisions"].append({"previous_sha256": expected_hash, "sha256": sha256_bytes(new_bytes),
-        "generated_at": iso_now(), "generator_sha256": sha256_bytes((root / "tools/outcome_page_generator.py").read_bytes()),
+        "generated_at": iso_now(), "generator_sha256": generator_hash,
         "reason": "rebuild derived reader page from unchanged verified vault content"})
     record["payload_sha256"] = canonical_payload_sha256(record)
     # A pending record plus candidate is recoverable after interruption; no old
@@ -5627,6 +7502,197 @@ def refresh_completed_outcome(root: Path, kp_path: Path) -> dict[str, Any]:
             "source_and_images_unchanged": True, "original_completion_preserved": True,
             "unregistered_live_backup": unregistered_backup.relative_to(root).as_posix() if unregistered_backup else "",
             "observed_live_sha256": observed_hash if unregistered_backup else ""}
+
+
+def refresh_completed_outcome_shell(
+    root: Path,
+    kp_path: Path,
+    *,
+    _compiler_lock_held: bool = False,
+) -> dict[str, Any]:
+    """Apply the current reader shell to one receipt-bound completed outcome.
+
+    The compiler lock is acquired before the reader catalogue lock.  This
+    function is called only by the reader runtime, which does not already hold
+    either lock; CLI compiler commands keep using the explicit full repair
+    entry above and must not recursively acquire the compiler lock.
+    """
+    root = root.resolve()
+    kp_path = relative_to_root(kp_path, root, "completed Knowledge Package")
+
+    def refresh_under_compiler_lock() -> dict[str, Any]:
+        kp = read_json(kp_path)
+        package = kp_path.parent
+        completion_path = bound_completion_path(root, package, kp_path, kp)
+        provisional = read_json(completion_path)
+        source_id = str(provisional["source_id"])
+        portable = f"{vault_relative_posix()}/outcome-pages/{source_id}_outcome.html"
+        target = relative_to_root(root / portable, root, "derived outcome page")
+        revision_path = package / "outcome_projection_revisions.json"
+        candidate = target.with_name(f".{source_id}_outcome_shell_candidate.html")
+        try:
+            from tools.reader_shell import apply_theme, atomic_reader_write, catalogue_projection_lock
+        except ModuleNotFoundError:
+            from reader_shell import apply_theme, atomic_reader_write, catalogue_projection_lock
+        # Permit only this derived output to be behind while deciding whether a
+        # prior interrupted shell publish has an exact, receipt-bound recovery.
+        completion = completed_receipt_readback(
+            root, package, kp_path, kp, allowed_artifact_drift={portable},
+        )
+        if not completion:
+            raise CompilerWorkerV2Error("outcome shell refresh requires a verified completion")
+        prior = target.read_bytes()
+        expected_hash = outcome_revision_hash(root, package, completion, portable) or next(
+            (item.get("sha256") for item in completion.get("artifact_manifest") or []
+             if isinstance(item, dict) and item.get("path") == portable),
+            None,
+        )
+        if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise CompilerWorkerV2Error("completed outcome has no valid expected hash")
+        candidate_bytes = candidate.read_bytes() if candidate.is_file() else None
+        rendered_prior = apply_theme(prior.decode("utf-8"), target, vault_path(root), "knowledge")
+        reader_generator = sha256_bytes((root / "tools/reader_shell.py").read_bytes())
+        if candidate_bytes is not None and sha256_bytes(prior) == expected_hash:
+            # State C: the page was published but cleanup was interrupted.
+            record = read_json(revision_path) if revision_path.is_file() else {}
+            revisions = record.get("revisions") if isinstance(record.get("revisions"), list) else []
+            latest = revisions[-1] if revisions and isinstance(revisions[-1], dict) else {}
+            if (
+                latest.get("sha256") == expected_hash
+                and latest.get("sha256") == sha256_bytes(candidate_bytes)
+                and latest.get("generator_sha256") == reader_generator
+                and latest.get("reason") == "refresh shared reader shell from unchanged verified outcome"
+                and candidate_bytes == rendered_prior.encode("utf-8")
+            ):
+                completed_receipt_readback(root, package, kp_path, kp)
+                candidate.unlink()
+                return {
+                    "status": "ready", "page": portable,
+                    "revision_receipt": revision_path.relative_to(root).as_posix(),
+                    "source_and_images_unchanged": True, "original_completion_preserved": True,
+                    "write_performed": False, "recovered_pending_shell_publish": True,
+                }
+            if candidate_bytes != rendered_prior.encode("utf-8"):
+                raise CompilerWorkerV2Error("outcome shell candidate does not bind the current reader shell")
+        if sha256_bytes(prior) != expected_hash:
+            if not candidate.is_file() or not revision_path.is_file():
+                raise CompilerWorkerV2Error("completed outcome readback mismatch before shell refresh")
+            record = read_json(revision_path)
+            revisions = record.get("revisions") if isinstance(record.get("revisions"), list) else []
+            latest = revisions[-1] if revisions and isinstance(revisions[-1], dict) else {}
+            if (
+                latest.get("previous_sha256") != sha256_bytes(prior)
+                or latest.get("sha256") != sha256_bytes(candidate.read_bytes())
+                or latest.get("sha256") != expected_hash
+                or latest.get("generator_sha256") != reader_generator
+                or latest.get("reason") != "refresh shared reader shell from unchanged verified outcome"
+                or candidate.read_bytes() != rendered_prior.encode("utf-8")
+            ):
+                raise CompilerWorkerV2Error("outcome shell candidate does not bind the pending revision")
+            try:
+                from tools.reader_shell import atomic_reader_write, catalogue_projection_lock
+            except ModuleNotFoundError:
+                from reader_shell import atomic_reader_write, catalogue_projection_lock
+            with catalogue_projection_lock(target.parent):
+                if target.read_bytes() != prior or candidate.read_bytes() != candidate_bytes:
+                    raise CompilerWorkerV2Error("outcome changed during shell recovery; candidate retained for inspection")
+                atomic_reader_write(target, candidate.read_text(encoding="utf-8"))
+                completed_receipt_readback(root, package, kp_path, kp)
+            candidate.unlink()
+            return {
+                "status": "ready", "page": portable,
+                "revision_receipt": revision_path.relative_to(root).as_posix(),
+                "source_and_images_unchanged": True, "original_completion_preserved": True,
+                "write_performed": True, "recovered_pending_shell_publish": True,
+            }
+        # No candidate recovery is needed: now require the live page itself to
+        # match the receipt/revision chain before producing another shell.
+        completed_receipt_readback(root, package, kp_path, kp)
+        completion_bytes = completion_path.read_bytes()
+        revision_bytes = revision_path.read_bytes() if revision_path.exists() else None
+        source = prior.decode("utf-8")
+        rendered = rendered_prior
+        if rendered == source:
+            return {
+                "status": "ready", "page": portable,
+                "revision_receipt": revision_path.relative_to(root).as_posix() if revision_path.exists() else "",
+                "source_and_images_unchanged": True, "original_completion_preserved": True,
+                "write_performed": False,
+            }
+        if candidate.exists():
+            # State A: candidate was persisted before its revision record.
+            if candidate.read_bytes() != rendered.encode("utf-8"):
+                raise CompilerWorkerV2Error("outcome shell candidate does not bind the current reader shell")
+        else:
+            atomic_reader_write(candidate, rendered)
+        try:
+            with catalogue_projection_lock(target.parent):
+                # Every protected input is checked again after rendering and
+                # before either the chain or live projection can change.
+                completed_receipt_readback(root, package, kp_path, kp)
+                if target.read_bytes() != prior:
+                    raise CompilerWorkerV2Error("outcome changed during shell refresh; candidate retained for inspection")
+                if completion_path.read_bytes() != completion_bytes:
+                    raise CompilerWorkerV2Error("completion receipt changed during shell refresh; candidate retained for inspection")
+                if revision_bytes is None:
+                    if revision_path.exists():
+                        raise CompilerWorkerV2Error("outcome revision record changed during shell refresh; candidate retained for inspection")
+                    record = {
+                        "schema_version": "outcome_projection_revisions_v1",
+                        "completion_payload_sha256": completion["payload_sha256"],
+                        "artifact_path": portable,
+                        "revisions": [],
+                    }
+                else:
+                    if not revision_path.is_file() or revision_path.read_bytes() != revision_bytes:
+                        raise CompilerWorkerV2Error("outcome revision record changed during shell refresh; candidate retained for inspection")
+                    record = read_json(revision_path)
+                expected_hash = outcome_revision_hash(root, package, completion, portable) or next(
+                    (item.get("sha256") for item in completion.get("artifact_manifest") or []
+                     if isinstance(item, dict) and item.get("path") == portable),
+                    None,
+                )
+                if sha256_bytes(prior) != expected_hash:
+                    raise CompilerWorkerV2Error("completed outcome changed during shell refresh; candidate retained for inspection")
+                new_bytes = candidate.read_bytes()
+                record["revisions"].append({
+                    "previous_sha256": expected_hash,
+                    "sha256": sha256_bytes(new_bytes),
+                    "generated_at": iso_now(),
+                    "generator_sha256": reader_generator,
+                    "reason": "refresh shared reader shell from unchanged verified outcome",
+                })
+                record["payload_sha256"] = canonical_payload_sha256(record)
+                write_json(revision_path, record)
+                written_revision_bytes = revision_path.read_bytes()
+                try:
+                    atomic_reader_write(target, rendered)
+                except OSError:
+                    # A normal I/O failure is recoverable when no other writer
+                    # touched the live page or our just-written record.
+                    if target.read_bytes() == prior and revision_path.read_bytes() == written_revision_bytes:
+                        if revision_bytes is None:
+                            revision_path.unlink()
+                        else:
+                            write_bytes(revision_path, revision_bytes)
+                    raise
+                completed_receipt_readback(root, package, kp_path, kp)
+        except BaseException:
+            # The candidate is evidence for a real concurrent change and is
+            # intentionally retained for inspection rather than overwritten.
+            raise
+        else:
+            candidate.unlink()
+        return {
+            "status": "ready", "page": portable,
+            "revision_receipt": revision_path.relative_to(root).as_posix(),
+            "source_and_images_unchanged": True, "original_completion_preserved": True,
+            "write_performed": True,
+        }
+    if _compiler_lock_held:
+        return refresh_under_compiler_lock()
+    with compiler_process_lock(root):
+        return refresh_under_compiler_lock()
 
 
 def receipt_artifact_matches(path: Path, expected_hash: str) -> bool:
@@ -5652,6 +7718,180 @@ def receipt_artifact_matches(path: Path, expected_hash: str) -> bool:
     return expected_hash in {sha256_bytes(lf), sha256_bytes(lf.replace(b"\n", b"\r\n"))}
 
 
+def transcript_archive_receipt(root: Path, package: Path) -> dict[str, Any]:
+    """Recompute the archive evidence from the package; never trust a stored claim."""
+    bundle = read_json(package / "input_bundle.json")
+    canonical_path = package / "canonical_source.md"
+    vtt_path = package / str(bundle.get("youtube_caption_path") or "")
+    if bundle.get("source_retention_mode") != TRANSCRIPT_ARCHIVE_MODE:
+        raise CompilerWorkerV2Error("transcript archive receipt requires an accepted transcript_archive_required bundle")
+    if not canonical_path.is_file() or not vtt_path.is_file() or not bundle.get("youtube_caption_path"):
+        raise CompilerWorkerV2Error("transcript archive is missing from the package")
+    canonical_sha256 = sha256_text(canonical_path.read_text(encoding="utf-8").rstrip("\n"))
+    vtt_sha256 = sha256_bytes(vtt_path.read_bytes())
+    if canonical_sha256 != bundle.get("canonical_body_sha256") or vtt_sha256 != bundle.get("youtube_caption_sha256"):
+        raise CompilerWorkerV2Error("transcript archive hash differs from the accepted input bundle")
+    return {
+        "canonical_sha256": canonical_sha256,
+        "vtt_sha256": vtt_sha256,
+        "canonical_path": canonical_path.relative_to(root).as_posix(),
+        "vtt_path": vtt_path.relative_to(root).as_posix(),
+        "verified": True,
+    }
+
+
+def verified_completed_infographic_overlay(
+    root: Path,
+    package: Path,
+    kp: dict[str, Any],
+    completion_path: Path,
+    completion: dict[str, Any],
+) -> dict[str, dict[str, set[str]]]:
+    """Return the exact parent-note hashes a current infographic child may overlay.
+
+    This deliberately does not call completed_receipt_readback for the child:
+    that would recurse back to this parent.  It instead binds the current
+    pointer, child receipt, child package/revision, accepted parent revision,
+    ledger and the child-owned overlay journal as one finite evidence chain.
+    """
+    pointer = read_current_infographic_pointer(root, package, kp)
+    if not pointer:
+        return {}
+    current_path = relative_to_root(root / str(pointer.get("current_completion_path") or ""), root, "overlay child completion")
+    if current_path == completion_path:
+        return {}
+    child_completion = read_json(current_path)
+    overlay = child_completion.get("completed_source_infographic_overlay")
+    if not isinstance(overlay, dict):
+        return {}
+    child_kp_path = relative_to_root(root / str(child_completion.get("knowledge_package_path") or ""), root, "overlay child Knowledge Package")
+    if not child_kp_path.is_file():
+        raise CompilerWorkerV2Error("infographic overlay child Knowledge Package is missing")
+    child_kp = read_json(child_kp_path)
+    revision = child_kp.get("revision") if isinstance(child_kp.get("revision"), dict) else {}
+    expected_parent = completion_path.relative_to(root).as_posix()
+    if (
+        not is_completed_source_infographic_revision(child_kp)
+        or child_completion.get("source_id") != completion.get("source_id")
+        or child_completion.get("source_identity") != completion.get("source_identity")
+        or revision.get("supersedes_completion_path") != expected_parent
+        or revision.get("supersedes_completion_payload_sha256") != completion.get("payload_sha256")
+        or pointer.get("supersedes_completion_path") != expected_parent
+        or pointer.get("supersedes_completion_payload_sha256") != completion.get("payload_sha256")
+    ):
+        raise CompilerWorkerV2Error("infographic overlay parent/child binding mismatch")
+    journal_path = relative_to_root(root / str(overlay.get("journal_path") or ""), root, "infographic overlay journal")
+    if not journal_path.is_file() or sha256_bytes(journal_path.read_bytes()) != overlay.get("journal_sha256"):
+        raise CompilerWorkerV2Error("infographic overlay journal changed")
+    journal = read_json(journal_path)
+    if (
+        journal.get("schema_version") != INFOGRAPHIC_OVERLAY_SCHEMA
+        or journal.get("payload_sha256") != canonical_payload_sha256(journal)
+        or journal.get("payload_sha256") != overlay.get("payload_sha256")
+        or journal.get("state") != "outcome_projected"
+        or journal.get("parent_completion_payload_sha256") != completion.get("payload_sha256")
+        or journal.get("parent_completion_path") != expected_parent
+        or journal.get("child_package") != child_kp_path.parent.relative_to(root).as_posix()
+        or journal.get("child_job_id") != child_kp.get("job_id")
+        or journal.get("revision_id") != revision.get("revision_id")
+        or journal.get("source_id") != completion.get("source_id")
+        or journal.get("source_identity") != completion.get("source_identity")
+    ):
+        raise CompilerWorkerV2Error("infographic overlay journal binding mismatch")
+    try:
+        try:
+            from .completion_revisions import read_current
+        except ImportError:
+            from completion_revisions import read_current
+        accepted = read_current(root, package, completion, include_record=True, verify=False)
+    except (OSError, ValueError, KeyError) as exc:
+        raise CompilerWorkerV2Error(str(exc)) from exc
+    parent_changes = {item.get("original_path"): item for item in accepted.get("changes", []) if isinstance(item, dict)}
+    parent_adapter = completion.get("adapter") if isinstance(completion.get("adapter"), dict) else {}
+    source_path = str((parent_changes.get(parent_adapter.get("source_note")) or {}).get("current_path") or parent_adapter.get("source_note") or "")
+    application_path = str((parent_changes.get(parent_adapter.get("application_note")) or {}).get("current_path") or parent_adapter.get("application_note") or "")
+    expected_paths = {source_path: "infographic_source_note", application_path: "infographic_application_note"}
+    items = journal.get("items") if isinstance(journal.get("items"), list) else []
+    child_manifest: dict[str, str] = {}
+    for manifest_item in child_completion.get("artifact_manifest") or []:
+        if not isinstance(manifest_item, dict):
+            raise CompilerWorkerV2Error("infographic overlay child artifact manifest is invalid")
+        manifest_path = str(manifest_item.get("path") or "")
+        manifest_hash = str(manifest_item.get("sha256") or "")
+        if (
+            not manifest_path
+            or manifest_path in child_manifest
+            or not re.fullmatch(r"[0-9a-f]{64}", manifest_hash)
+        ):
+            raise CompilerWorkerV2Error("infographic overlay child artifact manifest is invalid")
+        child_manifest[manifest_path] = manifest_hash
+    after_by_path: dict[str, str] = {}
+    asset_paths: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise CompilerWorkerV2Error("infographic overlay journal item is invalid")
+        path = str(item.get("path") or "")
+        kind = str(item.get("projection_kind") or "")
+        before = str(item.get("before_sha256") or "")
+        after = str(item.get("after_sha256") or "")
+        if not re.fullmatch(r"[0-9a-f]{64}", after) or path in after_by_path:
+            raise CompilerWorkerV2Error("infographic overlay journal hashes are invalid")
+        if path in expected_paths:
+            if kind != expected_paths[path] or not re.fullmatch(r"[0-9a-f]{64}", before):
+                raise CompilerWorkerV2Error("infographic overlay note scope is invalid")
+        elif kind == "infographic_asset":
+            source_id = str(completion.get("source_id") or "").lower()
+            if not path.startswith(f"{vault_relative_posix()}/assets/{source_id}/") or not path.endswith(".png"):
+                raise CompilerWorkerV2Error("infographic overlay asset scope is invalid")
+            asset_paths.add(path)
+        else:
+            raise CompilerWorkerV2Error("infographic overlay includes a non-visual target")
+        current = relative_to_root(root / path, root, "infographic overlay current target")
+        if not current.is_file() or sha256_bytes(current.read_bytes()) != after:
+            raise CompilerWorkerV2Error("infographic overlay target drifted")
+        if child_manifest.get(path) != after:
+            raise CompilerWorkerV2Error("infographic overlay child manifest does not bind its target")
+        after_by_path[path] = after
+    if set(expected_paths) - set(after_by_path) or not asset_paths:
+        raise CompilerWorkerV2Error("infographic overlay journal is incomplete")
+    child_adapter = child_completion.get("adapter") if isinstance(child_completion.get("adapter"), dict) else {}
+    if set(str(path) for path in child_adapter.get("assets") or []) != asset_paths:
+        raise CompilerWorkerV2Error("infographic overlay assets do not match child receipt")
+    verify_overlay_journal_content(root, child_kp_path.parent, child_kp, journal_path, journal)
+    ledger_path = str(child_completion.get("image_attempt_ledger_path") or "")
+    ledger_sha = str(child_completion.get("image_attempt_ledger_sha256") or "")
+    ledger = relative_to_root(root / ledger_path, root, "infographic overlay child ledger")
+    if not ledger_path or not ledger_sha or not ledger.is_file() or sha256_bytes(ledger.read_bytes()) != ledger_sha:
+        raise CompilerWorkerV2Error("infographic overlay child ledger changed")
+    if validate_image_attempt_ledger(child_kp, child_kp_path.parent):
+        raise CompilerWorkerV2Error("infographic overlay child image ledger is invalid")
+    outcome = child_completion.get("outcome") if isinstance(child_completion.get("outcome"), dict) else {}
+    outcome_path = f"{vault_relative_posix()}/outcome-pages/{completion['source_id']}_outcome.html"
+    if str(outcome.get("current_page") or "") != outcome_path:
+        raise CompilerWorkerV2Error("infographic overlay child outcome path is invalid")
+    outcome_hash = child_manifest.get(outcome_path, "")
+    outcome_target = relative_to_root(root / outcome_path, root, "infographic overlay child outcome")
+    if (
+        not re.fullmatch(r"[0-9a-f]{64}", outcome_hash)
+        or not outcome_target.is_file()
+        or sha256_bytes(outcome_target.read_bytes()) != outcome_hash
+    ):
+        raise CompilerWorkerV2Error("infographic overlay child outcome readback mismatch")
+    journal_outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
+    if journal_outcome.get("path") != outcome_path or journal_outcome.get("after_sha256") != outcome_hash:
+        raise CompilerWorkerV2Error("infographic overlay journal does not bind the child outcome page")
+    # An accepted revision of the parent's source or application note stays valid
+    # beside the overlay: the note may be at its accepted bytes or the overlay's.
+    allowed_current: dict[str, set[str]] = {}
+    for note_field, note_path in (("source_note", source_path), ("application_note", application_path)):
+        note_change = parent_changes.get(parent_adapter.get(note_field)) or {}
+        if note_change:
+            allowed_current[note_path] = {str(note_change.get("sha256") or ""), after_by_path[note_path]}
+    artifact_hashes = {path: {hash_} for path, hash_ in after_by_path.items()}
+    artifact_hashes[outcome_path] = {outcome_hash}
+    return {"current": allowed_current, "artifacts": artifact_hashes}
+
+
 def completed_receipt_readback(
     root: Path,
     package: Path,
@@ -5659,7 +7899,19 @@ def completed_receipt_readback(
     kp: dict[str, Any],
     *,
     allow_derived_outcome_drift: bool = False,
+    allowed_artifact_drift: set[str] | None = None,
+    resume_allowance: dict[str, Any] | None = None,
+    defer_job_completion: bool = False,
 ) -> dict[str, Any] | None:
+    """Strict receipt readback.
+
+    ``resume_allowance`` is the bounded before/after set of one validated,
+    not-yet-current infographic overlay (see overlay_resume_parent_allowance);
+    it is kept apart from ``overlay_hashes`` because a current overlay's
+    existence decides which artifacts are superseded.  ``defer_job_completion``
+    lets a caller that must write the current pointer first complete the job
+    itself afterwards.
+    """
     completion_path = bound_completion_path(root, package, kp_path, kp)
     if not completion_path.exists():
         return None
@@ -5668,16 +7920,25 @@ def completed_receipt_readback(
         raise CompilerWorkerV2Error("existing completion receipt is not a completed v2 receipt")
     if completion.get("payload_sha256") != canonical_payload_sha256(completion):
         raise CompilerWorkerV2Error("existing completion receipt hash mismatch")
+    overlay_hashes = verified_completed_infographic_overlay(root, package, kp, completion_path, completion)
     try:
         try:
             from .completion_revisions import read_current
         except ImportError:
             from completion_revisions import read_current
-        accepted_changes = read_current(root, package, completion)
+        resume = resume_allowance or {}
+        allowed_current = {
+            path: set(hashes) for path, hashes in (overlay_hashes.get("current") or {}).items()
+        }
+        for path, hashes in (resume.get("current") or {}).items():
+            allowed_current.setdefault(path, set()).update(hashes)
+        accepted_changes = read_current(root, package, completion, allowed_current_hashes=allowed_current or None)
     except (ValueError, KeyError, OSError) as exc:
         raise CompilerWorkerV2Error(str(exc)) from exc
     if completion.get("job_id") != kp.get("job_id"):
         raise CompilerWorkerV2Error("existing completion receipt job mismatch")
+    if isinstance(completion.get("transcript_archive"), dict) and completion["transcript_archive"] != transcript_archive_receipt(root, package):
+        raise CompilerWorkerV2Error("completed transcript archive readback mismatch")
     source = kp.get("source") or {}
     if completion.get("source_identity") != source.get("source_identity"):
         raise CompilerWorkerV2Error("existing completion receipt source identity mismatch")
@@ -5722,7 +7983,7 @@ def completed_receipt_readback(
             raise CompilerWorkerV2Error("existing completion artifact manifest is invalid")
         portable_artifact_path = str(item.get("path") or "")
         accepted_change = accepted_changes.get(portable_artifact_path, {})
-        artifact_is_superseded = portable_artifact_path in superseded_paths
+        artifact_is_superseded = portable_artifact_path in superseded_paths and not overlay_hashes
         artifact_path = Path(accepted_change.get("current_path", portable_artifact_path))
         artifact = relative_to_root(
             artifact_path if artifact_path.is_absolute() else root / artifact_path,
@@ -5734,19 +7995,27 @@ def completed_receipt_readback(
                 continue
             raise CompilerWorkerV2Error(f"completed artifact readback mismatch: {artifact}")
         expected_hash = outcome_revision_hash(root, package, completion, portable_artifact_path) or accepted_change.get("sha256", item.get("sha256"))
+        overlay_expected = set(overlay_hashes.get("artifacts", {}).get(portable_artifact_path, set()))
+        overlay_expected |= set((resume_allowance or {}).get("artifacts", {}).get(portable_artifact_path, set()))
         if (
-            not receipt_artifact_matches(artifact, expected_hash)
+            not (receipt_artifact_matches(artifact, expected_hash) or any(receipt_artifact_matches(artifact, value) for value in overlay_expected))
             and not artifact_is_superseded
+            and portable_artifact_path not in (allowed_artifact_drift or set())
+            and portable_artifact_path not in set((resume_allowance or {}).get("drift", set()))
         ):
             if allow_derived_outcome_drift and portable_artifact_path == derived_outcome_path:
                 continue
             raise CompilerWorkerV2Error(f"completed artifact readback mismatch: {artifact}")
     job = validate_job_package_binding(root, kp_path, kp)
     expected_receipt = completion_path.relative_to(root).as_posix()
-    if job.get("status") == "committing" and not job.get("completion_receipt_path"):
+    job_pending = job.get("status") == "committing" and not job.get("completion_receipt_path")
+    if job_pending and not defer_job_completion:
         complete_v2_job(root, str(completion.get("job_id") or ""), completion_path)
         job = read_json(job_file(root, str(completion.get("job_id") or "")))
-    if job.get("status") != "completed" or str(job.get("completion_receipt_path") or "") != expected_receipt:
+        job_pending = False
+    if not job_pending and (
+        job.get("status") != "completed" or str(job.get("completion_receipt_path") or "") != expected_receipt
+    ):
         raise CompilerWorkerV2Error("completion receipt and v2 job state do not agree")
     if current_pointer and current_completion_path != this_completion_path:
         return {**completion, "superseded_by": current_pointer}
@@ -5930,11 +8199,11 @@ def archive_contract_defect_assets(
 ) -> list[dict[str, str]]:
     """Copy prior rendered PNGs before their canonical asset paths are reused."""
 
-    archive_dir = package / "assets" / f"contract_defect_reopen_{reopen_index:02d}"
-    archived: list[dict[str, str]] = []
+    archive_dir = package / "assets" / f"reopen-{reopen_index:02d}"
+    pending: list[tuple[int, str, Path, str, Path]] = []
     pages = ledger.get("pages")
     assert isinstance(pages, dict)
-    for page_id, record in pages.items():
+    for page_ordinal, (page_id, record) in enumerate(pages.items(), start=1):
         if not isinstance(record, dict):
             raise CompilerWorkerV2Error("contract defect ledger has an invalid page record")
         attempts = record.get("attempts")
@@ -5964,7 +8233,16 @@ def archive_contract_defect_assets(
             raise CompilerWorkerV2Error(
                 f"contract-defect infographic asset hash mismatch: {page_id}"
             )
-        archive_path = archive_dir / asset_path.name
+        archive_path = archive_dir / f"{page_ordinal:02d}-{observed_sha256[:12]}.png"
+        pending.append((page_ordinal, str(page_id), asset_path, observed_sha256, archive_path))
+    try:
+        assert_generated_path(archive_dir, label="contract-defect asset archive directory")
+        for _, _, _, _, archive_path in pending:
+            assert_generated_path(archive_path, label="contract-defect asset archive")
+    except PathBudgetError as exc:
+        raise CompilerWorkerV2Error(str(exc)) from exc
+    archived: list[dict[str, str]] = []
+    for _, page_id, asset_path, observed_sha256, archive_path in pending:
         if archive_path.exists():
             raise CompilerWorkerV2Error("contract-defect asset archive path already exists")
         archive_path.parent.mkdir(parents=True, exist_ok=True)
@@ -6047,6 +8325,18 @@ def reopen_contract_defect_infographic_attempts(
     return receipt
 
 
+def locked_semantic_content(kp: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    """The plan content a lock binds.
+
+    ``prior_knowledge`` joins only when the package carries it, so a package
+    without the field keeps the hash it was locked with.
+    """
+    content = {key: kp.get(key) for key in keys}
+    if "prior_knowledge" in kp:
+        content["prior_knowledge"] = kp["prior_knowledge"]
+    return content
+
+
 def ingest_plan_scope(job: dict[str, Any], kp: dict[str, Any]) -> dict[str, Any]:
     source = kp.get("source") or {}
     profile = job.get("source_profile", source.get("source_profile", "article"))
@@ -6076,9 +8366,8 @@ def ingest_plan_scope(job: dict[str, Any], kp: dict[str, Any]) -> dict[str, Any]
     }
     if kp.get("semantic_plan_version") or job.get("semantic_plan_version"):
         scope["semantic_plan_version"] = kp.get("semantic_plan_version")
-        scope["semantic_content_sha256"] = canonical_payload_sha256({
-            key: kp.get(key) for key in ("source", "analysis", "knowledge", "relations", "application", "projection")
-        })
+        scope["semantic_content_sha256"] = canonical_payload_sha256(locked_semantic_content(
+            kp, ("source", "analysis", "knowledge", "relations", "application", "projection")))
     return scope
 
 
@@ -6148,6 +8437,123 @@ def lock_case_ingest_plan(job: dict[str, Any], kp: dict[str, Any], package: Path
     }
 
 
+def knowledge_execution_scope(job: dict[str, Any], kp: dict[str, Any], package: Path) -> dict[str, Any]:
+    """Lock a text-first package without treating it as a case or image plan."""
+    source = kp.get("source") if isinstance(kp.get("source"), dict) else {}
+    if source.get("asset_mode") != ASSET_MODE_KNOWLEDGE or kp.get("infographics"):
+        raise CompilerWorkerV2Error("knowledge execution scope requires a zero-infographic knowledge_only package")
+    errors = validate_kp(kp, package)
+    if errors:
+        raise CompilerWorkerV2Error("knowledge execution lock blocked: " + "; ".join(errors))
+    canonical = (package / "canonical_source.md").read_text(encoding="utf-8").rstrip("\n")
+    if sha256_text(canonical) != source.get("canonical_body_sha256"):
+        raise CompilerWorkerV2Error("knowledge execution lock canonical hash mismatch")
+    coverage = build_coverage_audit(kp)
+    return {
+        "asset_mode": ASSET_MODE_KNOWLEDGE,
+        "source_identity": source.get("source_identity"),
+        "canonical_body_sha256": source.get("canonical_body_sha256"),
+        "source_profile": source.get("source_profile", job.get("source_profile", "article")),
+        "semantic_content_sha256": canonical_payload_sha256(locked_semantic_content(
+            kp, ("source", "analysis", "coverage_units", "knowledge", "relations", "application", "projection"))),
+        "coverage_sha256": canonical_payload_sha256({"units": kp.get("coverage_units")}),
+        "coverage_audit_status": coverage["status"],
+        "infographic_page_count": 0,
+        "zero_imagegen": True,
+    }
+
+
+def knowledge_execution_timing_policy(package: Path) -> tuple[str, int]:
+    """Choose timing only from an accepted single-source capture identity.
+
+    ``knowledge_execution_scope`` has already run ``validate_kp`` before this
+    helper is used by the formal lock or recovery gate.  That validation binds
+    the YouTube VTT, metadata snapshot and canonical body.  This small
+    discriminator deliberately treats every incomplete or non-YouTube bundle
+    as the ordinary route, so an arbitrary URL cannot claim the longer target.
+    """
+    normal = ("normal_knowledge_only_v1", 180)
+    bundle_path = package / "input_bundle.json"
+    if not bundle_path.is_file():
+        return normal
+    try:
+        bundle = read_json(bundle_path)
+    except (OSError, json.JSONDecodeError):
+        return normal
+    if not isinstance(bundle, dict):
+        return normal
+    normalized_url = str(bundle.get("normalized_url") or "")
+    video_id = str(bundle.get("youtube_video_id") or "")
+    if (
+        bundle.get("source_input_kind") == "url"
+        and is_youtube_url(normalized_url)
+        and normalize_source_url(normalized_url).endswith(f"watch?v={video_id}")
+        and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+        and bundle.get("acquisition_policy") == YOUTUBE_CAPTURE_POLICY
+        and bundle.get("capture_provider") == "yt-dlp"
+        and bundle.get("submitted_url_attestation") == YOUTUBE_SUBMITTED_URL_ATTESTATION
+        and bundle.get("youtube_caption_path") == "source_capture_youtube.vtt"
+        and bundle.get("youtube_info_path") == "source_capture_youtube.info.json"
+        and re.fullmatch(r"[0-9a-f]{64}", str(bundle.get("youtube_caption_sha256") or ""))
+        and re.fullmatch(r"[0-9a-f]{64}", str(bundle.get("youtube_info_sha256") or ""))
+    ):
+        return ("youtube_caption_knowledge_only_v1", 240)
+    return normal
+
+
+def require_knowledge_ingest_plan(job: dict[str, Any], kp: dict[str, Any], package: Path) -> dict[str, Any]:
+    contract = job.get("execution_contract")
+    if not isinstance(contract, dict):
+        raise CompilerWorkerV2Error("knowledge_execution_plan_missing: submit the knowledge_only semantic plan before formal write")
+    scope = knowledge_execution_scope(job, kp, package)
+    if (
+        contract.get("schema_version") != EXECUTION_CONTRACT_VERSION
+        or contract.get("mode") != "knowledge_only_zero_imagegen"
+        or contract.get("scope") != scope
+        or contract.get("scope_sha256") != canonical_payload_sha256(scope)
+        or contract.get("first_accepted_at") != job.get("first_accepted_at")
+        or contract.get("imagegen") != "prohibited"
+    ):
+        raise CompilerWorkerV2Error("knowledge execution contract drifted")
+    # Existing accepted compact jobs retain normal_knowledge_only_v1 / 180,
+    # including historical YouTube captions.  New locks identify accepted
+    # caption evidence explicitly, so upgrade does not rewrite or drift a
+    # prior receipt while ordinary URLs cannot claim the 240-second target.
+    profile = contract.get("execution_profile")
+    target = contract.get("target_seconds")
+    if profile == "normal_knowledge_only_v1" and target == 180:
+        return contract
+    if profile is not None and (profile, target) != knowledge_execution_timing_policy(package):
+        raise CompilerWorkerV2Error("knowledge execution timing contract drifted")
+    return contract
+
+
+def lock_knowledge_ingest_plan(job: dict[str, Any], kp: dict[str, Any], package: Path) -> None:
+    scope = knowledge_execution_scope(job, kp, package)
+    previous = job.get("execution_contract")
+    if previous:
+        require_knowledge_ingest_plan(job, kp, package)
+        return
+    normal_compact_route = kp.get("semantic_plan_version") == "ingest_semantic_plan_compact_v1"
+    timing_policy = knowledge_execution_timing_policy(package)
+    job["execution_contract"] = {
+        "schema_version": EXECUTION_CONTRACT_VERSION,
+        "mode": "knowledge_only_zero_imagegen",
+        "first_accepted_at": job["first_accepted_at"],
+        "plan_locked_at": iso_now(),
+        "scope": scope,
+        "scope_sha256": canonical_payload_sha256(scope),
+        "imagegen": "prohibited",
+        **({
+            "execution_profile": timing_policy[0],
+            "target_seconds": timing_policy[1],
+        } if normal_compact_route else {}),
+        "stage_order": ["input_bundle", "locked_knowledge_plan", "source_local_write_readback", "completed"],
+        "normative_owner": "docs/Compiler Worker與Knowledge Package設計及驗收規格.md#7.1",
+        "enforcement_boundary": "compiler entry points; not arbitrary shell, editor or model reasoning",
+    }
+
+
 def require_ingest_plan(job: dict[str, Any], kp: dict[str, Any]) -> dict[str, Any]:
     contract = job.get("execution_contract")
     if not isinstance(contract, dict):
@@ -6171,6 +8577,14 @@ def ensure_ingest_plan(root: Path, job: dict[str, Any], kp: dict[str, Any], pack
     if source.get("asset_mode") == ASSET_MODE_CASE:
         require_case_ingest_plan(job, kp, package)
         return False
+    if source.get("asset_mode") == ASSET_MODE_KNOWLEDGE:
+        if job.get("execution_contract"):
+            require_knowledge_ingest_plan(job, kp, package)
+            return False
+        lock_knowledge_ingest_plan(job, kp, package)
+        job["execution_policy_version"] = EXECUTION_CONTRACT_VERSION
+        write_v2_job(root, job)
+        return True
     if job.get("execution_contract"):
         require_ingest_plan(job, kp)
         return False
@@ -6296,6 +8710,198 @@ def lock_ingest_plan(job: dict[str, Any], kp: dict[str, Any], package: Path,
     job["execution_contract"] = contract
 
 
+INFOGRAPHIC_WORK_ORDER_ACTION = "prepare_infographic_revision"
+
+
+def _event_seconds(begin: Any, end: Any) -> Any:
+    try:
+        moment = lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        value = round((moment(end) - moment(begin)).total_seconds(), 3)
+    except (TypeError, ValueError):
+        return "not_available"
+    return value if value >= 0 else "not_available"
+
+
+def infographic_revision_breakdown(job: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Planning window of an infographic revision: work order issued -> plan accepted -> compiled.
+
+    The revision job only exists once its plan is accepted, so the issue time is
+    the ``work_order_issued`` event copied from the parent when the revision was
+    prepared.  A revision without that event (any earlier job) gets no field.
+    """
+    issued = next((row for row in events
+                   if row.get("stage") == "work_order_issued" and row.get("status") == "completed"
+                   and row.get("action") == INFOGRAPHIC_WORK_ORDER_ACTION and row.get("ended_at")), None)
+    if issued is None:
+        return None
+    unavailable = "not_available"
+    compiles = [row for row in events if row.get("stage") == "compile_plan" and row.get("status") in {"completed", "failed"}]
+    compiled = next((row for row in compiles if row.get("status") == "completed"), None)
+    compiled_at = compiled.get("ended_at") if compiled else None
+    return {
+        "work_order_issued_at": issued["ended_at"],
+        "plan_accepted_at": job.get("first_accepted_at") or unavailable,
+        "compiled_at": compiled_at or unavailable,
+        "work_order_to_plan_accepted_seconds": _event_seconds(issued["ended_at"], job.get("first_accepted_at")),
+        "plan_accepted_to_compiled_seconds": _event_seconds(job.get("first_accepted_at"), compiled_at) if compiled_at else unavailable,
+        "compile_attempts": len(compiles),
+        "failed_compile_attempts": sum(1 for row in compiles if row.get("status") == "failed"),
+    }
+
+
+def knowledge_and_plan_breakdown(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Split knowledge_and_plan into read / first draft / repair, from rail events.
+
+    Only a job whose semantic work order was issued by the rail has the events
+    this needs; every other job gets no field at all.  Missing or inconsistent
+    data is reported as "not_available", never guessed.
+    """
+    events = [row for row in job.get("rail_events") or [] if isinstance(row, dict)]
+    if job.get("job_kind") == "infographic_revision":
+        return infographic_revision_breakdown(job, events)
+    issued_at_index = next((index for index, row in enumerate(events)
+                            if row.get("stage") == "work_order_issued" and row.get("status") == "completed"
+                            and row.get("ended_at") and row.get("action") != INFOGRAPHIC_WORK_ORDER_ACTION), None)
+    if issued_at_index is None:
+        return None
+    unavailable = "not_available"
+    issued_at = events[issued_at_index]["ended_at"]
+    submits = [row for row in events[issued_at_index + 1:]
+               if row.get("stage") == "submit_plan" and row.get("status") in {"completed", "failed"}]
+    accepted = next((row for row in submits if row.get("status") == "completed"), None)
+    first_submit_at = submits[0].get("started_at") if submits else None
+    accepted_submit_at = accepted.get("ended_at") if accepted else None
+
+    def seconds(begin: Any, end: Any) -> Any:
+        try:
+            moment = lambda value: datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            value = round((moment(end) - moment(begin)).total_seconds(), 3)
+        except (TypeError, ValueError):
+            return unavailable
+        return value if value >= 0 else unavailable
+
+    # check-plan rounds before this submit, copied into the submit_plan event by the rail; older jobs have none.
+    checks = next((row.get("check_attempts") for row in ([accepted] if accepted else []) + submits[::-1]
+                   if isinstance(row.get("check_attempts"), dict)), None)
+    return {
+        "work_order_issued_at": issued_at,
+        "first_submit_at": first_submit_at or unavailable,
+        "accepted_submit_at": accepted_submit_at or unavailable,
+        "submit_attempts": len(submits),
+        "failed_submit_attempts": sum(1 for row in submits if row.get("status") == "failed"),
+        "accept_to_work_order_seconds": seconds(job.get("first_accepted_at"), issued_at),
+        "work_order_to_first_submit_seconds": seconds(issued_at, first_submit_at) if first_submit_at else unavailable,
+        "first_to_accepted_submit_seconds": (
+            seconds(first_submit_at, accepted_submit_at) if first_submit_at and accepted_submit_at else unavailable),
+        "check_plan_rounds": checks["rounds"] if checks else "not_recorded",
+        "failed_check_plan_rounds": checks["failed_rounds"] if checks else "not_recorded",
+        "check_error_codes": checks["error_codes"] if checks else "not_recorded",
+    }
+
+
+READING_VOLUME_FIELDS = ("reading_block_count", "reading_chars_total", "reading_file_count", "catalog_version", "volume_class")
+# Added with the web reading view; a work order issued before it carries only the five fields above.
+# reading_chars_total is the displayed required reading, reference_chars the optional reference
+# files, and reading_chars_displayed both together.
+READING_VOLUME_OPTIONAL_FIELDS = ("reading_chars_displayed", "reference_chars")
+
+# Volume-tiered time targets: the one owner of the table.  A knowledge_only receipt that carries
+# ``reading_volume`` measures its wall time against max(contract target, the tier target of its
+# ``volume_class``); a class missing from this table (and a receipt without reading_volume) keeps
+# the contract target.  tools/ingest_benchmark.py reuses this table for its recomputed column.
+VOLUME_TIER_TARGET_SECONDS = {"short": 180, "medium": 180, "long": 240, "very_long": 360}
+# The second part of the time standard (Compiler spec section 7): a source whose receipt reviewed older-knowledge candidates
+# (``prior_knowledge_effect.status == "candidates_reviewed"``) gets this many extra seconds, by volume class, for linking
+# it to that knowledge.  Without candidates the target is exactly as before.
+COMPOUNDING_ALLOWANCE_SECONDS = {"short": 60, "medium": 60, "long": 90, "very_long": 90}
+
+
+def prior_candidates_reviewed(job: dict[str, Any]) -> bool:
+    """True when the job's accepted plan was offered older-knowledge candidates (the receipt then reads ``candidates_reviewed``)."""
+    offer = job.get("prior_knowledge_offer")
+    return isinstance(offer, dict) and bool(offer.get("candidates_offered"))
+
+
+def volume_target_fields(contract_target: Any, volume: dict[str, Any] | None, *, candidates_reviewed: bool = False) -> dict[str, Any]:
+    """Effective-target fields for a receipt; ``{}`` (change nothing) without a numeric contract target and a reading volume.
+
+    ``candidates_reviewed`` adds the compounding allowance of the volume class to the core target (the target without it):
+    ``core_target_seconds`` and ``compounding_allowance_seconds`` are then recorded and ``target_basis`` ends in
+    ``+compounding_allowance``.  A class missing from the allowance table adds nothing.
+    """
+    if not isinstance(volume, dict) or isinstance(contract_target, bool) or not isinstance(contract_target, (int, float)):
+        return {}
+    volume_class = volume.get("volume_class")
+    tier = VOLUME_TIER_TARGET_SECONDS.get(volume_class) if isinstance(volume_class, str) else None
+    if tier is not None and tier > contract_target:
+        core, basis = tier, f"volume_tier:{volume_class}"
+    else:
+        core, basis = contract_target, "contract"
+    fields = {"target_seconds": core, "contract_target_seconds": contract_target, "target_basis": basis}
+    allowance = COMPOUNDING_ALLOWANCE_SECONDS.get(volume_class) if candidates_reviewed and isinstance(volume_class, str) else None
+    if allowance is not None:
+        fields.update(target_seconds=core + allowance, target_basis=basis + "+compounding_allowance",
+                      core_target_seconds=core, compounding_allowance_seconds=allowance)
+    return fields
+
+
+def reading_volume(job: dict[str, Any]) -> dict[str, Any] | None:
+    """Reading-volume fields recorded on the one work_order_issued event; None when it carries none (legacy jobs)."""
+    for row in job.get("rail_events") or []:
+        if (isinstance(row, dict) and row.get("stage") == "work_order_issued" and row.get("status") == "completed"
+                and row.get("action") != INFOGRAPHIC_WORK_ORDER_ACTION):
+            if all(key in row for key in READING_VOLUME_FIELDS):
+                return {key: row[key] for key in (*READING_VOLUME_FIELDS, *READING_VOLUME_OPTIONAL_FIELDS) if key in row}
+            return None
+    return None
+
+
+def prior_knowledge_effect_receipt(job: dict[str, Any], kp: dict[str, Any]) -> dict[str, Any]:
+    """What the source did to older knowledge: counts from the job's offer record and the locked plan (Compiler spec section 7.2).
+
+    ``check_plan_rounds`` comes from the check log summary the rail copies into the submit_plan event;
+    a job from before that log keeps ``not_recorded``.
+    A reusable concept name counts as merged when it already existed when the plan was accepted
+    (``existing_concept_names`` in the offer); an older job without that list falls back to "has an understanding_delta".
+    """
+    if not prior_candidates_reviewed(job):
+        return {"status": "no_prior_candidates"}
+    offer = job["prior_knowledge_offer"]
+    prior = kp.get("prior_knowledge") if isinstance(kp.get("prior_knowledge"), dict) else {}
+    links = [link for link in prior.get("cross_links") or [] if isinstance(link, dict)]
+    counts = {relation: 0 for relation in RELATION_TYPES}
+    for link in links:
+        if link.get("relation_type") in counts:
+            counts[link["relation_type"]] += 1
+    existing = offer.get("existing_concept_names")
+    merged: set[str] = set()
+    new: set[str] = set()
+    for item in kp.get("knowledge") or []:
+        concept = item.get("reusable_concept") if isinstance(item, dict) and isinstance(item.get("reusable_concept"), dict) else {}
+        name = str(concept.get("name") or "").strip()
+        if concept.get("status") == "reusable" and name:
+            known = name in existing if isinstance(existing, list) else bool(str(concept.get("understanding_delta") or "").strip())
+            (merged if known else new).add(name)
+    events = job.get("rail_events") if isinstance(job.get("rail_events"), list) else []
+    return {
+        "status": "candidates_reviewed",
+        "decision": str(prior.get("decision") or ""),
+        "candidates_offered": int(offer["candidates_offered"]),
+        "above_threshold": int(offer.get("above_threshold") or 0),
+        "must_decide": int(offer.get("must_decide") or 0),
+        "not_linked": len(prior.get("not_linked") or []),
+        "relation_counts": counts,
+        "new_concepts": len(new - merged),
+        "merged_concepts": len(merged),
+        "check_plan_rounds": next((row["check_attempts"]["rounds"] for row in reversed(events)
+                                  if isinstance(row, dict) and row.get("stage") == "submit_plan"
+                                  and isinstance(row.get("check_attempts"), dict)), "not_recorded"),
+        "submit_plan_attempts": sum(1 for row in events if isinstance(row, dict) and row.get("stage") == "submit_plan"),
+        "links": [{"relation_type": str(link.get("relation_type") or ""), "insight": str(link.get("insight") or ""),
+                   "target_source_id": str(link.get("target_kp_uid") or "").split(":", 1)[0]} for link in links],
+    }
+
+
 def ingest_execution_summary(job: dict[str, Any], *, completed_at: str | None = None) -> dict[str, Any]:
     contract = job.get("execution_contract") or {}
     finish = completed_at or iso_now()
@@ -6312,9 +8918,15 @@ def ingest_execution_summary(job: dict[str, Any], *, completed_at: str | None = 
     end = timestamp(finish)
     if end < start:
         raise CompilerWorkerV2Error("ingest completion precedes acceptance")
+    not_applicable_stages = {
+        "image_generation_and_readback"
+    } if contract.get("mode") == "knowledge_only_zero_imagegen" else set()
     cursor = start
     stages = {}
     for name, raw in milestones:
+        if name in not_applicable_stages:
+            stages[name] = "not_applicable"
+            continue
         if raw:
             point = timestamp(str(raw))
             if point < cursor or point > end:
@@ -6327,16 +8939,30 @@ def ingest_execution_summary(job: dict[str, Any], *, completed_at: str | None = 
         stages = {name: None for name, _ in milestones}
     wall = round((end - start).total_seconds(), 3)
     target = contract.get("target_seconds")
+    observed = {name: value for name, value in stages.items() if isinstance(value, (int, float))}
+    slowest = max(observed.items(), key=lambda item: item[1]) if observed else None
+    breakdown = knowledge_and_plan_breakdown(job) if completed_at else None
+    volume = reading_volume(job) if completed_at else None
+    target_fields = volume_target_fields(target, volume, candidates_reviewed=prior_candidates_reviewed(job))
+    target = target_fields.get("target_seconds", target)
     return {
         "scope_sha256": contract.get("scope_sha256"),
         "first_accepted_at": job["first_accepted_at"], "measured_at": finish,
         "wall_seconds": wall, "target_seconds": target,
+        **{key: value for key, value in target_fields.items() if key != "target_seconds"},
         "target_status": "not_comparable" if target is None else ("over_target" if wall > target else "within_target"),
         "stage_wall_seconds": stages,
-        "stage_timing_available": not bool(contract.get("adopted_legacy_plan")) and all(value is not None for value in stages.values()),
+        "stage_timing_available": not bool(contract.get("adopted_legacy_plan")) and all(
+            value is not None for value in stages.values() if value != "not_applicable"
+        ),
+        "slowest_observed_stage": (
+            {"name": slowest[0], "seconds": slowest[1]} if slowest else None
+        ),
         "timing_scope": "observed stage intervals, including agent work/waits/readback; not provider-only time",
         "next_action": "stop" if completed_at else "resume_remaining_required_work_only",
         "quality_gate_waived": False,
+        **({"knowledge_and_plan_breakdown": breakdown} if breakdown is not None else {}),
+        **({"reading_volume": volume} if volume is not None else {}),
     }
 
 
@@ -6457,7 +9083,11 @@ def infographic_plan_preflight_issues(
         contract_errors = [
             (message, "") for message in [
                 *validate_primary_work_metadata(source, canonical_body),
-                *validate_coverage_units(kp, canonical_body),
+                *validate_coverage_units(
+                    kp,
+                    canonical_body,
+                    source_blocks=compact_coverage_source_blocks(kp, package),
+                ),
                 *validate_coverage_audit(kp),
                 *validate_content_map(units, pages, canonical_body),
                 *validate_multi_page_orientation([page for page in pages if isinstance(page, dict)]),
@@ -6509,8 +9139,12 @@ def infographic_plan_text_template(kp: dict[str, Any]) -> list[dict[str, Any]]:
         for unit in kp.get("coverage_units") or []
         if isinstance(unit, dict)
     }
+    pages, _ = materialize_infographic_page_bindings(
+        kp.get("coverage_units") if isinstance(kp.get("coverage_units"), list) else [],
+        kp.get("infographics") if isinstance(kp.get("infographics"), list) else [],
+    )
     templates: list[dict[str, Any]] = []
-    for page in kp.get("infographics") or []:
+    for page in pages:
         if not isinstance(page, dict):
             continue
         mappings = []
@@ -6524,8 +9158,7 @@ def infographic_plan_text_template(kp: dict[str, Any]) -> list[dict[str, Any]]:
             if not lines:
                 missing.append(coverage_id)
             mappings.append({"coverage_id": coverage_id, "source_evidence": str(unit.get("source_evidence") or ""), "visible_text": lines})
-        visible = list(dict.fromkeys(line for row in mappings for line in row["visible_text"]))
-        templates.append({"page_id": page.get("page_id"), "status": "planned", "coverage_ids": page.get("coverage_ids", []), "content_map": mappings, "visible_text": visible, "missing_reviewed_coverage_ids": missing})
+        templates.append({"page_id": page.get("page_id"), "status": "planned", "coverage_ids": page.get("coverage_ids", []), "content_map": mappings, "visible_text": page.get("visible_text", []), "source_anchors": page.get("source_anchors", []), "missing_reviewed_coverage_ids": missing})
     return templates
 
 
@@ -6543,6 +9176,48 @@ def command_plan_text_template(args: argparse.Namespace) -> int:
     kp_path = relative_to_root(args.kp_file, root, "Knowledge Package")
     print(json.dumps({"status": "draft_requires_review", "knowledge_package": str(kp_path), "pages": infographic_plan_text_template(read_json(kp_path)), "write_performed": False}, ensure_ascii=False))
     return 0
+
+
+def apply_compile_page_rules(source: dict[str, Any], infographic: dict[str, Any], generated_on: str) -> None:
+    """What compile changes on a page before it renders the prompt: the reader-form title and the dispatch date."""
+    if source.get("primary_work_status") != "primary":
+        infographic["title"] = reader_infographic_title(infographic.get("title"))
+    infographic["generated_on"] = generated_on
+
+
+def infographic_plan_contract_errors(
+    kp: dict[str, Any],
+    package: Path,
+    source: dict[str, Any],
+    canonical_body: str,
+    infographics: list[dict[str, Any]],
+) -> list[str]:
+    """The plan-contract errors compile enforces before it locks a plan (shared with the zero-write plan check)."""
+    return [
+        *validate_primary_work_metadata(source, canonical_body),
+        *validate_coverage_units(
+            kp,
+            canonical_body,
+            source_blocks=compact_coverage_source_blocks(kp, package),
+        ),
+        *validate_coverage_audit(kp),
+        *validate_content_map(
+            kp.get("coverage_units") or [],
+            infographics,
+            canonical_body,
+        ),
+        *validate_multi_page_orientation(infographics),
+        *[
+            error
+            for infographic in infographics
+            for error in validate_reader_metadata(source, infographic, canonical_body)
+        ],
+        *[
+            error
+            for infographic in infographics
+            for error in validate_visual_structure(infographic)
+        ],
+    ]
 
 
 def command_compile_infographics(args: argparse.Namespace) -> int:
@@ -6605,27 +9280,7 @@ def command_compile_infographics(args: argparse.Namespace) -> int:
             "only planned infographic pages can be compiled: "
             + ", ".join(invalid_statuses)
         )
-    plan_errors = [
-        *validate_primary_work_metadata(source, canonical_body),
-        *validate_coverage_units(kp, canonical_body),
-        *validate_coverage_audit(kp),
-        *validate_content_map(
-            kp.get("coverage_units") or [],
-            infographics,
-            canonical_body,
-        ),
-        *validate_multi_page_orientation(infographics),
-        *[
-            error
-            for infographic in infographics
-            for error in validate_reader_metadata(source, infographic, canonical_body)
-        ],
-        *[
-            error
-            for infographic in infographics
-            for error in validate_visual_structure(infographic)
-        ],
-    ]
+    plan_errors = infographic_plan_contract_errors(kp, package, source, canonical_body, infographics)
     if plan_errors:
         raise CompilerWorkerV2Error(
             "infographic plan validation failed: " + "; ".join(plan_errors)
@@ -6640,9 +9295,7 @@ def command_compile_infographics(args: argparse.Namespace) -> int:
     generated_on = (str(mutable_infographics[0].get("generated_on") or date.today().isoformat())
                     if job.get("execution_contract") else date.today().isoformat())
     for infographic in mutable_infographics:
-        if source.get("primary_work_status") != "primary":
-            infographic["title"] = reader_infographic_title(infographic.get("title"))
-        infographic["generated_on"] = generated_on
+        apply_compile_page_rules(source, infographic, generated_on)
     compiled_pages = [
         compiled_infographic_page(kp, package, infographic)
         for infographic in mutable_infographics
@@ -6720,6 +9373,25 @@ def command_compile_infographics(args: argparse.Namespace) -> int:
     return 0
 
 
+def visual_repair_reference_archive_path(reference: Path, first: dict[str, Any]) -> Path:
+    """Keep the rejected original byte-stable while its public asset path is replaced."""
+
+    attempt_number = int(first.get("attempt_number") or 1)
+    png_sha256 = str(first.get("png_sha256") or "")
+    if not _OVERLAY_SHA256.fullmatch(png_sha256):
+        raise CompilerWorkerV2Error("visual repair reference hash is invalid")
+    return reference.with_name(f"ref-{attempt_number}-{png_sha256[:12]}{reference.suffix}")
+
+
+def _legacy_visual_repair_reference_archive_path(reference: Path, first: dict[str, Any]) -> Path:
+    """Locate the v1 archive spelling without ever creating it for new repairs."""
+
+    attempt_number = int(first.get("attempt_number") or 1)
+    return reference.with_name(
+        f"{reference.stem}.attempt-{attempt_number}-reference{reference.suffix}"
+    )
+
+
 def validate_visual_repair_authorization(package, kp, infographic, first, authorization):
     if not isinstance(authorization, dict):
         raise CompilerWorkerV2Error("explicit visual repair authorization is required")
@@ -6734,28 +9406,43 @@ def validate_visual_repair_authorization(package, kp, infographic, first, author
         raise CompilerWorkerV2Error("visual repair must retain the rejected first attempt")
     if not str(authorization.get("user_instruction") or "").strip() or not str(authorization.get("remove_icon_description") or "").strip():
         raise CompilerWorkerV2Error("visual repair requires the explicit instruction and exact icon target")
-    reference_value = authorization.get("preserved_reference_asset") or authorization.get("reference_asset", "")
+    reference_value = (
+        authorization.get("preserved_reference_asset")
+        or authorization.get("reference_asset", "")
+    )
     reference = package_relative_path(package, reference_value, "repair original image")
     expected_hash = first["png_sha256"]
     if reference.is_file() and sha256_bytes(reference.read_bytes()) == expected_hash:
         return reference
-    legacy_reference = package_relative_path(package, authorization.get("reference_asset", ""), "repair original image")
-    legacy_archive = visual_repair_reference_archive_path(legacy_reference, first)
-    if legacy_archive.is_file() and sha256_bytes(legacy_archive.read_bytes()) == expected_hash:
-        return legacy_archive
+
+    # A v1 authorization created before the archive field existed may still
+    # name the output asset as its reference.  The deterministic archive keeps
+    # that rejected original verifiable after the edit replaces the output.
+    legacy_reference = package_relative_path(
+        package, authorization.get("reference_asset", ""), "repair original image"
+    )
+    for archive in (
+        visual_repair_reference_archive_path(legacy_reference, first),
+        _legacy_visual_repair_reference_archive_path(legacy_reference, first),
+    ):
+        if archive.is_file() and sha256_bytes(archive.read_bytes()) == expected_hash:
+            return archive
     raise CompilerWorkerV2Error("visual repair original image bytes are not preserved")
-
-
-def visual_repair_reference_archive_path(reference: Path, first: dict[str, Any]) -> Path:
-    """Keep the rejected original byte-stable while its output path is replaced."""
-    attempt_number = int(first.get("attempt_number") or 1)
-    return reference.with_name(f"{reference.stem}.attempt-{attempt_number}-reference{reference.suffix}")
 
 
 def preserve_visual_repair_reference(package: Path, reference: Path, first: dict[str, Any], authorization: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     """Archive the rejected original before an edit can replace its asset path."""
-    archive = visual_repair_reference_archive_path(reference, first)
+
     expected_hash = first["png_sha256"]
+    legacy_archive = _legacy_visual_repair_reference_archive_path(reference, first)
+    if legacy_archive.is_file() and sha256_bytes(legacy_archive.read_bytes()) == expected_hash:
+        archive = legacy_archive
+    else:
+        archive = visual_repair_reference_archive_path(reference, first)
+        try:
+            assert_generated_path(archive, label="visual repair reference archive")
+        except PathBudgetError as exc:
+            raise CompilerWorkerV2Error(str(exc)) from exc
     if archive.exists():
         if not archive.is_file() or sha256_bytes(archive.read_bytes()) != expected_hash:
             raise CompilerWorkerV2Error("visual repair reference archive is invalid")
@@ -6852,14 +9539,82 @@ def validate_blocking_repair_dispatch(root, action, response):
 
 
 def footer_variance_binding_errors(readback, kp, page_id, action_identity):
-    auth = readback.get("user_approved_footer_variance") if isinstance(readback, dict) else None
-    if auth is None:
-        return []
-    expected = {"job_id": kp.get("job_id"), "source_identity": kp.get("source", {}).get("source_identity"),
-                "page_id": page_id, "action_identity": action_identity}
-    if not isinstance(auth, dict) or any(auth.get(k) != v for k, v in expected.items()):
-        return ["footer separator acceptance is bound to another job or image action"]
+    # Historical separator acceptance remains trace data only. Source/date
+    # fidelity is checked from the bound PNG readback; a presentation variance
+    # must never block the image path.
     return []
+
+
+_FAILURE_EVIDENCE_TEXT_FIELDS = ("expected_locked_text", "observed_problem", "reader_impact")
+
+
+def failure_evidence_needs_supplement(readback: object, failure_code: str) -> bool:
+    """Identify the narrow legacy gap that can be repaired without a new PNG."""
+
+    if not isinstance(readback, dict) or readback.get("failure_code") != failure_code:
+        return True
+    evidence = readback.get("content_failure_evidence")
+    if not isinstance(evidence, dict) or evidence.get("failure_code") != failure_code:
+        return True
+    return any(not str(evidence.get(key) or "").strip() for key in _FAILURE_EVIDENCE_TEXT_FIELDS)
+
+
+def _empty_supplement_value(value: object) -> bool:
+    return value in (None, "", [], {})
+
+
+def merge_missing_failure_evidence(
+    existing: object,
+    incoming: object,
+    *,
+    png_sha256: str,
+    prompt: str,
+    failure_code: str,
+) -> tuple[dict[str, Any], bool]:
+    """Append only missing severe-failure proof to the same completed attempt."""
+
+    if not isinstance(existing, dict) or not isinstance(incoming, dict):
+        raise CompilerWorkerV2Error("failure evidence supplement requires the original and replacement readbacks")
+    allowed = {"failure_code", "content_failure_evidence"}
+    for key in set(existing) | set(incoming):
+        if key in allowed:
+            continue
+        prior = existing.get(key)
+        proposed = incoming.get(key)
+        if prior != proposed and not (_empty_supplement_value(prior) and _empty_supplement_value(proposed)):
+            raise CompilerWorkerV2Error("failure evidence supplement may not replace existing image review evidence")
+    prior_code = existing.get("failure_code")
+    proposed_code = incoming.get("failure_code")
+    if prior_code not in (None, "", failure_code) or proposed_code != failure_code:
+        raise CompilerWorkerV2Error("failure evidence supplement must retain the recorded failure code")
+    prior_evidence = existing.get("content_failure_evidence")
+    if prior_evidence is not None and not isinstance(prior_evidence, dict):
+        raise CompilerWorkerV2Error("failure evidence supplement cannot replace a malformed recorded evidence value")
+    proposed_evidence = incoming.get("content_failure_evidence")
+    if not isinstance(proposed_evidence, dict) or proposed_evidence.get("failure_code") != failure_code:
+        raise CompilerWorkerV2Error("failure evidence supplement needs the same structured failure code")
+    merged = dict(existing)
+    merged["failure_code"] = failure_code
+    merged_evidence = dict(prior_evidence or {})
+    for key in ("failure_code", *_FAILURE_EVIDENCE_TEXT_FIELDS):
+        prior = merged_evidence.get(key)
+        proposed = proposed_evidence.get(key)
+        if _empty_supplement_value(prior):
+            if _empty_supplement_value(proposed):
+                raise CompilerWorkerV2Error("failure evidence supplement leaves a required field empty: " + key)
+            merged_evidence[key] = proposed
+        elif prior != proposed:
+            raise CompilerWorkerV2Error("failure evidence supplement may not alter existing evidence: " + key)
+    merged["content_failure_evidence"] = merged_evidence
+    errors = image_severe_failure_readback_errors(
+        merged,
+        png_sha256=png_sha256,
+        prompt=prompt,
+        failure_code=failure_code,
+    )
+    if errors:
+        raise CompilerWorkerV2Error("failure evidence supplement is not sufficient: " + "; ".join(errors))
+    return merged, merged != existing
 
 
 def footer_exception_text(authorization, prompt):
@@ -7120,6 +9875,8 @@ def command_imagegen_authorize(args: argparse.Namespace) -> int:
             "runtime_tool": "must identify Codex imagegen as the producing tool",
             "asset_path": "must equal expected_asset",
             "png_sha256": "must equal the read-back PNG SHA-256",
+            "page_number_readback": "must record the exact visible page-number text read from the PNG",
+            "footer_text_readback": "must record the exact visible source/date footer text read from the PNG",
             "outcome": "accepted or blocking_failure",
             "semantic_readback": (
                 "required for accepted current-contract images; must bind the PNG and "
@@ -7318,9 +10075,6 @@ def command_imagegen_complete(args: argparse.Namespace) -> int:
     latest = attempts[-1] if isinstance(attempts, list) and attempts else None
     if not isinstance(record, dict) or not isinstance(latest, dict):
         raise CompilerWorkerV2Error("image response has no matching attempt record")
-    binding_errors = footer_variance_binding_errors(semantic_readback, kp, page_id, action.get("action_identity"))
-    if binding_errors:
-        raise CompilerWorkerV2Error("; ".join(binding_errors))
     if action.get("attempt_kind") == "blocking_repair":
         saved = latest.get("repair_dispatch_contract")
         correction = latest.get("dispatch_correction_authorization")
@@ -7344,11 +10098,77 @@ def command_imagegen_complete(args: argparse.Namespace) -> int:
         or latest.get("action_identity") != action.get("action_identity")
     ):
         raise CompilerWorkerV2Error("image response attempt is not the latest authorized action")
+    if (
+        latest.get("status") == "blocking_failure"
+        and latest.get("failure_code") in IMAGEGEN_REPAIRABLE_FAILURES
+        and response.get("outcome") == "blocking_failure"
+    ):
+        if response.get("outcome") != "blocking_failure" or response.get("failure_code") != latest.get("failure_code"):
+            raise CompilerWorkerV2Error("completed failed image result cannot change its outcome or failure code")
+        for response_key, record_key in (
+            ("semantic_evidence", "semantic_evidence"),
+            ("imagegen_dispatch_evidence", "dispatch_evidence"),
+            ("page_number_readback", "page_number_readback"),
+            ("footer_text_readback", "footer_text_readback"),
+        ):
+            if response.get(response_key) != latest.get(record_key):
+                raise CompilerWorkerV2Error("completed failed image result cannot replace " + response_key)
+        merged_readback, supplemented = merge_missing_failure_evidence(
+            latest.get("semantic_readback"),
+            semantic_readback,
+            png_sha256=png_hash,
+            prompt=locked_prompt,
+            failure_code=str(latest["failure_code"]),
+        )
+        if not supplemented:
+            print(json.dumps({
+                "status": "needs_review", "page_id": page_id,
+                "attempt_number": latest.get("attempt_number"),
+                "outcome": "blocking_failure", "write_performed": False,
+                "failure_evidence_supplement": "already_complete",
+            }, ensure_ascii=False))
+            return 0
+        prior_readback = latest.get("semantic_readback")
+        latest["prior_missing_failure_evidence"] = {
+            "semantic_readback_sha256": canonical_payload_sha256(prior_readback),
+            "semantic_readback": prior_readback,
+        }
+        latest["semantic_readback"] = merged_readback
+        latest["failure_evidence_supplement"] = {
+            "schema_version": "imagegen_failure_evidence_supplement_v1",
+            "action_identity": action.get("action_identity"),
+            "attempt_id": action.get("attempt_id"),
+            "page_id": page_id,
+            "png_sha256": png_hash,
+            "locked_prompt_sha256": current_lock_hash,
+            "failure_code": latest["failure_code"],
+            "prior_semantic_readback_sha256": canonical_payload_sha256(prior_readback),
+            "supplemented_at": iso_now(),
+        }
+        write_json(image_attempt_ledger_path(package), ledger)
+        apply_attempt_result_to_kp(infographic, record, latest)
+        write_json(kp_path, kp)
+        action["failure_evidence_supplement"] = latest["failure_evidence_supplement"]
+        action["payload_sha256"] = canonical_payload_sha256(action)
+        write_json(action_path, action)
+        print(json.dumps({
+            "status": "needs_review", "page_id": page_id,
+            "attempt_number": latest.get("attempt_number"),
+            "outcome": "blocking_failure", "write_performed": True,
+            "failure_evidence_supplement": "recorded_same_png",
+        }, ensure_ascii=False))
+        return 0
     reconsider_text_blocker = (
         latest.get("status") == "blocking_failure"
         and latest.get("failure_code") == "wrong_or_missing_locked_text"
         and response.get("outcome") == "accepted"
     )
+    if reconsider_text_blocker and failure_evidence_needs_supplement(
+        latest.get("semantic_readback"), str(latest.get("failure_code") or "")
+    ):
+        raise CompilerWorkerV2Error(
+            "completed failed image result requires same-PNG failure evidence supplement before an accepted re-review"
+        )
     if latest.get("status") in {"accepted", "blocking_failure"} and not reconsider_text_blocker:
         expected_infographic = dict(infographic)
         apply_attempt_result_to_kp(expected_infographic, record, latest)
@@ -7388,6 +10208,18 @@ def command_imagegen_complete(args: argparse.Namespace) -> int:
         failure_code = failure_code or visual_blocking_failure(visual)
         if failure_code not in IMAGEGEN_BLOCKING_FAILURES:
             raise CompilerWorkerV2Error("blocking image response requires a strict failure code")
+    if outcome == "blocking_failure" and failure_code in IMAGEGEN_REPAIRABLE_FAILURES:
+        evidence_errors = image_severe_failure_readback_errors(
+            semantic_readback if isinstance(semantic_readback, dict) else None,
+            png_sha256=png_hash,
+            prompt=locked_prompt,
+            failure_code=failure_code,
+        )
+        if evidence_errors:
+            raise CompilerWorkerV2Error(
+                "blocking image response lacks required failure evidence: "
+                + "; ".join(evidence_errors)
+            )
     recorded_failure_code = (
         str(latest.get("failure_code") or "")
         if outcome == "accepted" and latest.get("attempt_kind") in {"blocking_repair", "user_authorized_visual_repair"}
@@ -8376,8 +11208,25 @@ def command_project(args: argparse.Namespace) -> int:
     source = kp["source"]
     job = validate_job_package_binding(root, kp_path, kp)
     errors = validate_kp(kp, package)
-    if (package / "completion_receipt.json").exists():
-        completed = completed_receipt_readback(root, package, kp_path, kp)
+    if bound_completion_path(root, package, kp_path, kp).exists():
+        infographic_child = (
+            source.get("asset_mode", ASSET_MODE_FORMAL) == ASSET_MODE_FORMAL
+            and isinstance(kp.get("revision"), dict)
+            and kp["revision"].get("kind") == "infographic_revision"
+        )
+        # An infographic child's job completes only after the current pointer
+        # selects it; a crash in between must stay recoverable by this rerun.
+        try:
+            completed = completed_receipt_readback(
+                root, package, kp_path, kp, defer_job_completion=infographic_child,
+            )
+        except CompilerWorkerV2Error as exc:
+            # A completed source is never rewritten to repair a failed readback.
+            raise CompilerWorkerV2Error(
+                f"{exc}; completed source readback failed, no vault write was performed; "
+                "accepted content changes go through "
+                f"`python -B tools/ingest_rail.py prepare-content-revision --job-id {kp.get('job_id')}`"
+            ) from exc
         if completed:
             if errors:
                 print(json.dumps({
@@ -8398,9 +11247,58 @@ def command_project(args: argparse.Namespace) -> int:
                 "completion_receipt": str(package / "completion_receipt.json"),
                 "production_entry_ready": True,
             }
+            if infographic_child:
+                pointer = read_current_infographic_pointer(root, package, kp)
+                completion_path = bound_completion_path(root, package, kp_path, kp)
+                if pointer is None or pointer.get("current_completion_path") != completion_path.relative_to(root).as_posix():
+                    pointer = write_current_infographic_pointer(
+                        root, package, kp, completion_path, completed,
+                    )
+                pending_job = read_json(job_file(root, str(completed.get("job_id") or "")))
+                if pending_job.get("status") == "committing" and not pending_job.get("completion_receipt_path"):
+                    complete_v2_job(root, str(completed.get("job_id") or ""), completion_path)
+                # Strict proof that the pointer, the completed job and both readbacks agree.
+                completed = completed_receipt_readback(root, package, kp_path, kp)
+                completed_result["infographic_current_pointer"] = pointer
             if completed.get("superseded_by"):
                 completed_result["superseded_by"] = completed["superseded_by"]
             print(json.dumps(completed_result, ensure_ascii=False))
+            return 0
+    if args.write_vault:
+        prior = source_completion_payloads(root, str(source.get("source_id") or ""))
+        stale = (
+            current_revision_predecessor_errors(
+                root, package, kp, job, prior, uses_full_writer=not _is_knowledge_only_overlay_revision(kp),
+            ) if prior else []
+        )
+        if stale:
+            # The full writer only serves first intake and a revision still bound to the
+            # current completion; decided by state, never by a failed readback.
+            is_revision = bool((kp.get("revision") or {}).get("kind"))
+            would_erase = any(reason.startswith(ACCEPTED_NOTES_REASON_PREFIX) for reason in stale)
+            print(json.dumps({
+                "status": "blocked",
+                "stage": (
+                    ACCEPTED_NOTES_STAGE if would_erase else
+                    "stale_revision_requires_reprepare" if is_revision else "completed_source_requires_content_revision"
+                ),
+                "already_exists": True,
+                "write_performed": False,
+                "production_entry_ready": False,
+                "completion_receipts": [path for path, _ in prior],
+                "blocked_reasons": (
+                    stale if is_revision else [
+                        f"source {source.get('source_id')} already has a completion receipt; "
+                        "the full writer only serves first intake"
+                    ]
+                ),
+                "next_action": (
+                    ACCEPTED_NOTES_NEXT_ACTION if would_erase else
+                    "prepare the revision again from the current completion"
+                    if is_revision else
+                    "use python -B tools/ingest_rail.py prepare-content-revision for accepted content changes"
+                ),
+            }, ensure_ascii=False))
             return 0
     now = datetime.now(timezone.utc).isoformat()
     missing_image_receipts = [
@@ -8460,12 +11358,50 @@ def command_project(args: argparse.Namespace) -> int:
     if not args.vault:
         raise CompilerWorkerV2Error("--vault is required with --write-vault")
     vault = relative_to_root(args.vault, root, "vault")
-    if job.get("status") == "committing" and isinstance(job.get("commit_adapter"), dict):
+    completed_source_overlay = is_completed_source_infographic_revision(kp)
+    overlay_journal: dict[str, Any] | None = None
+    if completed_source_overlay:
+        # Nothing below may touch the full writer or the concept graph: a pure
+        # infographic child only overlays the journalled visual delta.
+        prior_journal = str(job.get("commit_overlay_journal") or "")
+        if prior_journal:
+            # Revalidated by the one binding validator before any state write.
+            prepared_overlay = load_prepared_completed_infographic_overlay(root, package, prior_journal, kp)
+            if job.get("status") != "committing":
+                job.update({
+                    "status": "committing",
+                    "commit_stage": "adapter_pending",
+                    "updated_at": iso_now(),
+                })
+                write_v2_job(root, job)
+        else:
+            # Build (which validates its own journal) before the job records it.
+            prepared_overlay = build_completed_infographic_overlay(
+                root=root, vault=vault, package=package, kp=kp, source_slice=source_slice,
+            )
+            job.update({
+                "status": "committing",
+                "commit_stage": "adapter_pending",
+                "commit_overlay_journal": prepared_overlay[1]["overlay_journal"],
+                "updated_at": iso_now(),
+            })
+            write_v2_job(root, job)
+        portable_adapter, overlay_journal = apply_completed_infographic_overlay(
+            root=root,
+            vault=vault,
+            package=package,
+            kp=kp,
+            source_slice=source_slice,
+            prepared=prepared_overlay,
+        )
+        adapter_result = {"source_identity": source.get("source_identity"), **portable_adapter,
+                          "verification": {"passed": True, "completed_source_overlay": True}}
+    elif job.get("status") == "committing" and isinstance(job.get("commit_adapter"), dict):
         adapter_result = write_vault_and_readback(
             root=root,
             vault=vault,
             source_slice=source_slice,
-            knowledge_point_count=len(kp.get("knowledge") or []),
+            knowledge_point_ids=knowledge_package_point_ids(kp),
             write=False,
         )
     else:
@@ -8476,47 +11412,47 @@ def command_project(args: argparse.Namespace) -> int:
                 "updated_at": iso_now(),
             })
             write_v2_job(root, job)
-        try:
-            adapter_result = write_vault_and_readback(
-                root=root,
-                vault=vault,
-                source_slice=source_slice,
-                knowledge_point_count=len(kp.get("knowledge") or []),
-                write=False,
-            )
-        except CompilerWorkerV2Error:
-            adapter_result = write_vault_and_readback(
-                root=root,
-                vault=vault,
-                source_slice=source_slice,
-                knowledge_point_count=len(kp.get("knowledge") or []),
-                write=True,
-            )
+        # Reached only by first intake (a rerun after a crash included) or a sanctioned
+        # revision: the early gate stops every other completed source.
+        adapter_result = write_vault_and_readback(
+            root=root,
+            vault=vault,
+            source_slice=source_slice,
+            knowledge_point_ids=knowledge_package_point_ids(kp),
+            write=True,
+        )
     if adapter_result.get("source_identity") != source.get("source_identity"):
         raise CompilerWorkerV2Error("Obsidian readback source identity mismatch")
-    concept_graph = project_concept_graph_for_sources(vault, {str(source["source_id"])})
-    if concept_graph.get("status") != "ready":
-        failed = [
-            key for key, value in dict(concept_graph.get("verification") or {}).items()
-            if key != "passed" and value is False
-        ]
-        raise CompilerWorkerV2Error(
-            "concept graph projection did not pass readback"
-            + (f": {', '.join(failed)}" if failed else "")
+    if completed_source_overlay:
+        concept_graph = {"status": "preserved", "write_performed": False}
+        portable_adapter = {
+            key: value for key, value in adapter_result.items()
+            if key not in {"verification", "source_identity"}
+        }
+    else:
+        concept_graph = project_concept_graph_for_sources(vault, {str(source["source_id"])})
+        if concept_graph.get("status") != "ready":
+            failed = [
+                key for key, value in dict(concept_graph.get("verification") or {}).items()
+                if key != "passed" and value is False
+            ]
+            raise CompilerWorkerV2Error(
+                "concept graph projection did not pass readback"
+                + (f": {', '.join(failed)}" if failed else "")
+            )
+        portable_adapter = portable_tool_result(
+            adapter_result,
+            root=root,
+            scalar_path_fields=(
+                "registry",
+                "knowledge_point_registry",
+                "relation_registry",
+                "source_note",
+                "application_note",
+                "asset",
+            ),
+            list_path_fields=("knowledge_points", "concepts", "assets", "bases"),
         )
-    portable_adapter = portable_tool_result(
-        adapter_result,
-        root=root,
-        scalar_path_fields=(
-            "registry",
-            "knowledge_point_registry",
-            "relation_registry",
-            "source_note",
-            "application_note",
-            "asset",
-        ),
-        list_path_fields=("knowledge_points", "concepts", "assets", "bases"),
-    )
     # Preserve the previous checkpoint long enough to distinguish a normal
     # outcome projection from a retry after that projection failed its reader
     # quality audit.  Updating it first would turn reader_quality_pending into
@@ -8532,7 +11468,32 @@ def command_project(args: argparse.Namespace) -> int:
         "updated_at": iso_now(),
     })
     write_v2_job(root, job)
-    if isinstance(job.get("commit_outcome"), dict) and not retry_reader_quality:
+    if completed_source_overlay:
+        # The parent's outcome page is derived and was rebuilt after the overlay.
+        # A recorded outcome is reused only while the live page is exactly the
+        # bytes the journal holds; anything else is rebuilt by its owner and
+        # hashed into the journal before any later step may bind it.
+        overlay_outcome = overlay_journal["outcome"]
+        overlay_page = relative_to_root(root / str(overlay_outcome["path"]), root, "infographic overlay outcome page")
+        recorded_outcome = job.get("commit_outcome")
+        if (
+            not retry_reader_quality
+            and overlay_journal["state"] == "outcome_projected"
+            and isinstance(recorded_outcome, dict)
+            and overlay_page.is_file()
+            and sha256_bytes(overlay_page.read_bytes()) == overlay_outcome["after_sha256"]
+            and recorded_outcome.get("current_page") == overlay_outcome["path"]
+        ):
+            outcome = dict(recorded_outcome)
+        else:
+            job.update({
+                "status": "committing",
+                "commit_stage": "outcome_running",
+                "updated_at": iso_now(),
+            })
+            write_v2_job(root, job)
+            outcome = generate_incremental_outcome(root, vault, str(source["source_id"]))
+    elif isinstance(job.get("commit_outcome"), dict) and not retry_reader_quality:
         outcome = dict(job["commit_outcome"])
     else:
         checkpoint = (
@@ -8560,6 +11521,13 @@ def command_project(args: argparse.Namespace) -> int:
         scalar_path_fields=("output_dir", "html_index", "obsidian_portal", "current_page"),
         list_path_fields=("index_pages", "pages"),
     )
+    if completed_source_overlay:
+        overlay_page = relative_to_root(root / str(overlay_journal["outcome"]["path"]), root, "infographic overlay outcome page")
+        if portable_outcome.get("current_page") != overlay_journal["outcome"]["path"] or not overlay_page.is_file():
+            raise CompilerWorkerV2Error("infographic overlay outcome page is not the parent's outcome page")
+        overlay_journal = record_completed_infographic_overlay_outcome(
+            root, package, kp, portable_adapter["overlay_journal"], sha256_bytes(overlay_page.read_bytes()),
+        )
     job.update({
         "status": "committing",
         "commit_stage": "reader_quality_pending",
@@ -8639,6 +11607,18 @@ def command_project(args: argparse.Namespace) -> int:
         artifact_paths.append(package_relative_path(package, item["capture_path"], "supporting source capture"))
     if (package / "application_amendment.json").is_file():
         artifact_paths.append(package / "application_amendment.json")
+    if completed_source_overlay:
+        # Re-bind every journalled target at the moment its bytes enter the manifest.
+        overlay_journal = load_prepared_completed_infographic_overlay(
+            root, package, portable_adapter["overlay_journal"], kp,
+        )[2]
+        final_page = relative_to_root(root / str(overlay_journal["outcome"]["path"]), root, "infographic overlay outcome page")
+        if (
+            overlay_journal["state"] != "outcome_projected"
+            or not final_page.is_file()
+            or sha256_bytes(final_page.read_bytes()) != overlay_journal["outcome"]["after_sha256"]
+        ):
+            raise CompilerWorkerV2Error("infographic overlay outcome page changed before the completion receipt")
     manifest = artifact_manifest(artifact_paths, root)
     job_id = str(kp.get("job_id") or "")
     completion_path = package / "completion_receipt.json"
@@ -8654,6 +11634,7 @@ def command_project(args: argparse.Namespace) -> int:
         "first_accepted_at": job.get("first_accepted_at"),
         "completed_at": completed_at,
         "execution": ingest_execution_summary(job, completed_at=completed_at),
+        "prior_knowledge_effect": prior_knowledge_effect_receipt(job, kp),
         "knowledge_package_path": kp_path.relative_to(root).as_posix(),
         "knowledge_package_sha256": sha256_bytes(kp_path.read_bytes()),
         "source_slice_path": source_slice.relative_to(root).as_posix(),
@@ -8675,6 +11656,11 @@ def command_project(args: argparse.Namespace) -> int:
         "coverage_audit": coverage_audit,
         "artifact_manifest": manifest,
     }
+    if source.get("retention_mode") == TRANSCRIPT_ARCHIVE_MODE or source.get("source_retention_mode") == TRANSCRIPT_ARCHIVE_MODE:
+        adapter_archive = (adapter_result.get("verification") or {}).get("transcript_archive_evidence") or {}
+        if adapter_archive.get("verified") is not True:
+            raise CompilerWorkerV2Error("Obsidian readback did not verify the transcript archive")
+        completion["transcript_archive"] = transcript_archive_receipt(root, package)
     if case_manifest is not None:
         completion["case_evidence"] = {
             "asset_mode": ASSET_MODE_CASE,
@@ -8690,6 +11676,13 @@ def command_project(args: argparse.Namespace) -> int:
         }
     if isinstance(kp.get("revision"), dict):
         completion["revision"] = kp["revision"]
+    if overlay_journal is not None:
+        completion["completed_source_infographic_overlay"] = {
+            "journal_path": portable_adapter["overlay_journal"],
+            "journal_sha256": sha256_bytes((root / portable_adapter["overlay_journal"]).read_bytes()),
+            "payload_sha256": overlay_journal["payload_sha256"],
+            "parent_completion_payload_sha256": overlay_journal["parent_completion_payload_sha256"],
+        }
     if candidate_path:
         completion["idea_candidates"] = {"path": candidate_path.relative_to(root).as_posix(),
                                          "status": candidates["status"], "formal_links_created": False}
@@ -8722,6 +11715,7 @@ def command_project(args: argparse.Namespace) -> int:
         "write_vault_attempted": True,
         "completion_receipt": str(completion_path),
         "execution": completion["execution"],
+        "prior_knowledge_effect": completion["prior_knowledge_effect"],
         "coverage_audit": coverage_audit,
         "reader_quality_audit": reader_quality,
         "adapter": adapter_result,
@@ -8803,6 +11797,7 @@ def main() -> int:
     accept.add_argument("--slug")
     accept.add_argument("--title")
     accept.add_argument("--profile", choices=("article", "paper", "full_body"), default="article")
+    accept.add_argument("--asset-mode", choices=(ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE), default=ASSET_MODE_KNOWLEDGE)
     accept.add_argument("--case-evidence-file", type=Path)
     accept.add_argument("--capture-mode", choices=(URL_CAPTURE_API_FIRST, URL_CAPTURE_DIRECT_HTML_ONLY), default=URL_CAPTURE_API_FIRST)
     accept.add_argument("--timeout-seconds", type=int, default=30)
@@ -8815,6 +11810,7 @@ def main() -> int:
     accept_text.add_argument("--slug")
     accept_text.add_argument("--title")
     accept_text.add_argument("--profile", choices=("article", "paper", "full_body"), default="article")
+    accept_text.add_argument("--asset-mode", choices=(ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE), default=ASSET_MODE_KNOWLEDGE)
     accept_text.set_defaults(func=command_accept_text)
 
     accept_image = subparsers.add_parser("accept-image")
@@ -8825,6 +11821,7 @@ def main() -> int:
     accept_image.add_argument("--slug")
     accept_image.add_argument("--title")
     accept_image.add_argument("--profile", choices=("article", "paper", "full_body"), default="article")
+    accept_image.add_argument("--asset-mode", choices=(ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE), default=ASSET_MODE_KNOWLEDGE)
     accept_image.set_defaults(func=command_accept_image)
 
     prepare_revision = subparsers.add_parser("prepare-infographic-revision")

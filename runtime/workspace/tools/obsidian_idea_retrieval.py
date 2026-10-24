@@ -9,12 +9,20 @@ from __future__ import annotations
 import os
 
 import argparse
+import hashlib
 import json
+import math
 import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+try:
+    from .obsidian_vault_adapter import concept_is_active, frontmatter_fields_from_text
+except ImportError:
+    from obsidian_vault_adapter import concept_is_active, frontmatter_fields_from_text
 
 
 SCHEMA_VERSION = "obsidian_idea_retrieval_receipt_v1"
@@ -223,6 +231,8 @@ def load_concept_notes(vault: Path) -> dict[str, ConceptNote]:
         return notes
     for path in sorted(concept_dir.glob("*.md")):
         fields, body = read_markdown(path)
+        if not concept_is_active(fields):
+            continue
         title = str(fields.get("title") or fields.get("concept") or path.stem).strip()
         if not title:
             continue
@@ -471,26 +481,310 @@ def must_read_notes(selected_notes: list[ConceptNote], record_paths: list[dict[s
     return unique_preserve(paths)
 
 
+def prepare_note_for_score(note: ConceptNote) -> tuple[str, str, bool]:
+    note_text = " ".join([note.title, note.one_liner, note.graph_role, note.graph_question, note.body])
+    return normalize_text(note.title), normalize_text(note_text), note.idea_type in IDEA_TYPES
+
+
+def prepare_query_for_score(query: str) -> tuple[str, list[str]]:
+    return normalize_text(query), [normalize_text(term) for term in query_terms(query)]
+
+
+def score_prepared(note: tuple[str, str, bool], query: tuple[str, list[str]]) -> int:
+    normalized_title, normalized_note_text, is_idea = note
+    normalized_query, terms = query
+    score = 0
+    if normalized_title and (normalized_title in normalized_query or normalized_query in normalized_title):
+        score += 100
+    score += 8 * sum(1 for term in terms if term in normalized_title)
+    score += 2 * sum(1 for term in terms if term in normalized_note_text)
+    if is_idea:
+        score += 5
+    return score
+
+
+def score_concept_note(note: ConceptNote, query: str) -> int:
+    """Sole lexical scoring rule for a concept note against one query."""
+    return score_prepared(prepare_note_for_score(note), prepare_query_for_score(query))
+
+
 def best_note_for_query(notes: dict[str, ConceptNote], query: str) -> ConceptNote | None:
-    terms = query_terms(query)
     scored: list[tuple[int, str, ConceptNote]] = []
-    normalized_query = normalize_text(query)
     for note in unique_notes(notes):
-        note_text = " ".join([note.title, note.one_liner, note.graph_role, note.graph_question, note.body])
-        normalized_title = normalize_text(note.title)
-        score = 0
-        if normalized_title and (normalized_title in normalized_query or normalized_query in normalized_title):
-            score += 100
-        score += 8 * sum(1 for term in terms if normalize_text(term) in normalize_text(note.title))
-        score += 2 * sum(1 for term in terms if normalize_text(term) in normalize_text(note_text))
-        if note.idea_type in IDEA_TYPES:
-            score += 5
+        score = score_concept_note(note, query)
         if score > 0:
             scored.append((score, note.title, note))
     if not scored:
         return None
     scored.sort(key=lambda item: (-item[0], item[1]))
     return scored[0][2]
+
+
+# ---------------------------------------------------------------------------
+# Older-knowledge candidates (concept compounding).  `related_prior_candidates` scores with its own
+# rule below; `best_note_for_query` / `score_concept_note` above stay untouched for think and the
+# nebula.  Meaning and calibration basis: docs/Obsidian語義索引與關聯圖落地方案.md, section 2
+# "舊知識候選的評分"; candidate rules: Compiler spec section 7.2.
+# ---------------------------------------------------------------------------
+PRIOR_STOPWORDS = frozenset({
+    "研究", "支持", "可能", "部分", "方法", "原文", "可以", "需要", "透過", "以及",
+    "the", "and", "of", "to", "a", "in", "is", "for",
+})
+PRIOR_BM25_K1 = 1.2  # term-frequency saturation of the BM25-lite score
+PRIOR_BM25_B = 0.75  # length normalisation of the BM25-lite score
+PRIOR_NAME_WEIGHT = 2  # a concept-name token counts this many times in the concept's text
+# A query's score is divided by its own idf mass, but clamped to [FLOOR, CAP] "rare tokens" (the idf of
+# a token found in one concept).  The floor stops a one-word heading from scoring high alone; the cap stops
+# a long claim from being diluted by the many ordinary words it contains.
+PRIOR_QUERY_MASS_FLOOR = 3.0
+PRIOR_QUERY_MASS_CAP = 8.0
+PRIOR_SCORE_DIGITS = 3
+# Normalised score (0-1) that marks a candidate ABOVE THRESHOLD.  The threshold is a strength label only: every
+# listed candidate must be answered (ingest_rail owns that rule), because the lexical score cannot reliably rank the
+# truly related candidates first (three bench rounds: the link count rose and fell with the number of candidates
+# that had to be answered).  The threshold never decides whether a candidate is listed or answered.  Basis: the
+# offline replay on the four bench-cmp-20261015 seed vaults, table in the semantic-index spec section 2 "舊知識候選的評分".
+PRIOR_LINK_MIN_SCORE = 0.25
+PRIOR_KPS_PER_CANDIDATE = 2
+# Loose knowledge points (kind kp) get their own slots, so they add to the concept list rather than
+# displacing concepts a source actually links to (Round 2b calibration).
+PRIOR_KP_PER_QUERY = 2
+PRIOR_KP_CANDIDATE_TOTAL = 4
+PRIOR_REGISTRY_FILES = ("knowledge_points.jsonl", "sources.jsonl")  # the registry files the candidate search reads
+_PRIOR_LINK_TARGET_RE = re.compile(r"\]\(\s*https?://[^)\s]*\)")
+_PRIOR_URL_RE = re.compile(r"https?://\S+")
+_PRIOR_TOKEN_RE = re.compile(r"[a-z0-9]+|[一-鿿]+")
+
+
+def prior_tokens(text: str) -> list[str]:
+    """Chinese character bigrams and lower-case English words (two or more characters), without stop words or URLs."""
+    text = unicodedata.normalize("NFKC", str(text or "")).casefold()
+    text = _PRIOR_URL_RE.sub(" ", _PRIOR_LINK_TARGET_RE.sub("]", text))
+    tokens: list[str] = []
+    for run in _PRIOR_TOKEN_RE.findall(text):
+        if run[0].isascii():
+            if len(run) >= 2:
+                tokens.append(run)
+        else:
+            tokens.extend(run[index : index + 2] for index in range(len(run) - 1))
+    return [token for token in tokens if token not in PRIOR_STOPWORDS]
+
+
+class PriorIndex:
+    """BM25-lite statistics over the text of the eligible concepts (name, one-liner, linked prior knowledge points)."""
+
+    def __init__(self, documents: list[tuple[str, list[str]]]):
+        self.size = len(documents)
+        self.postings: dict[str, list[tuple[int, int]]] = {}
+        self.lengths: list[int] = []
+        for index, (name, texts) in enumerate(documents):
+            counts: dict[str, int] = {}
+            for token in prior_tokens(name):
+                counts[token] = counts.get(token, 0) + PRIOR_NAME_WEIGHT
+            for text in texts:
+                for token in prior_tokens(text):
+                    counts[token] = counts.get(token, 0) + 1
+            self.lengths.append(sum(counts.values()))
+            for token, count in counts.items():
+                self.postings.setdefault(token, []).append((index, count))
+        self.average_length = (sum(self.lengths) / self.size) if self.size else 0.0
+
+    def idf(self, token: str) -> float:
+        frequency = max(len(self.postings.get(token, ())), 1)  # an unseen token weighs as much as the rarest seen one
+        return math.log(1 + (self.size - frequency + 0.5) / (frequency + 0.5))
+
+    def scores(self, query: str) -> list[float]:
+        """Normalised 0-1 relevance of every concept to one query (see PRIOR_QUERY_MASS_FLOOR/CAP)."""
+        tokens = set(prior_tokens(query))
+        result = [0.0] * self.size
+        if not tokens or not self.size:
+            return result
+        scale = PRIOR_BM25_K1 + 1
+        rare = math.log(1 + (self.size - 0.5) / 1.5) * scale  # the weight of one token found in a single concept
+        mass = sum(self.idf(token) for token in tokens) * scale
+        denominator = min(max(mass, PRIOR_QUERY_MASS_FLOOR * rare), PRIOR_QUERY_MASS_CAP * rare)
+        for token in tokens:
+            weight = self.idf(token) * scale
+            for index, count in self.postings.get(token, ()):
+                length_part = 1 - PRIOR_BM25_B + PRIOR_BM25_B * self.lengths[index] / self.average_length
+                result[index] += weight * count / (count + PRIOR_BM25_K1 * length_part)
+        return [min(1.0, value / denominator) for value in result]
+
+
+def prior_registry_fingerprint(vault: Path) -> str:
+    """sha256 over the registry files the candidate search reads; stored with a candidate list as audit evidence."""
+    digest = hashlib.sha256()
+    for name in PRIOR_REGISTRY_FILES:
+        try:
+            data = (vault / "_registry" / name).read_bytes()
+        except OSError:
+            data = b""
+        digest.update(name.encode("utf-8") + b"\0" + hashlib.sha256(data).hexdigest().encode("ascii") + b"\n")
+    return digest.hexdigest()
+
+
+def prior_source_titles(vault: Path, source_ids: set[str]) -> dict[str, str]:
+    """Title of each of these sources, read from its source note (path in sources.jsonl); an unreadable one is left out."""
+    base = vault.resolve()
+    titles: dict[str, str] = {}
+    for row in read_jsonl(vault / "_registry" / "sources.jsonl"):
+        source_id, rel_path = str(row.get("source_id") or "").strip(), str(row.get("source_note_path") or "").strip()
+        if source_id not in source_ids or source_id in titles or not rel_path:
+            continue
+        path = (vault / rel_path).resolve()
+        if not path.is_relative_to(base):
+            continue
+        try:
+            fields, _ = read_markdown(path)
+        except (OSError, UnicodeDecodeError):
+            continue
+        title = str(fields.get("title") or "").strip()
+        if title:
+            titles[source_id] = title
+    return titles
+
+
+def related_prior_candidates(
+    vault: Path,
+    queries: list[str],
+    *,
+    exclude_source_id: str,
+    per_query: int = 3,
+    total: int = 8,
+    kp_per_query: int = PRIOR_KP_PER_QUERY,
+    kp_total: int = PRIOR_KP_CANDIDATE_TOTAL,
+    min_score: float = PRIOR_LINK_MIN_SCORE,
+    id_prefix: str = "RC",
+    exclude_paths: frozenset[str] | set[str] = frozenset(),
+    exclude_kp_uids: frozenset[str] | set[str] = frozenset(),
+) -> list[dict[str, Any]]:
+    """Top-K older candidates for these queries: ``kind`` concept (with up to two linked knowledge points) or kp.
+
+    Read-only and deterministic for one vault state.  A ``concept`` candidate is an active concept that still
+    holds at least one linked knowledge point from a source other than ``exclude_source_id``.  A ``kp``
+    candidate is one linked knowledge point of another source that no active concept note records (empty
+    ``concept_name`` and ``concept_path``; ``prior_kps`` is that point alone), so it is never offered twice.
+    The score is the normalised BM25-lite relevance of one query to the document: the concept's name, one-liner
+    and linked prior claims, or the point's claim and its source title; a candidate keeps its best query score.
+    ``exclude_paths`` (concept paths) and ``exclude_kp_uids`` leave candidates out of the pool, and ``id_prefix``
+    names the candidate ids, so a second list can extend a first without renumbering it.
+    """
+    notes = unique_notes(load_concept_notes(vault))
+    linked_by_kp_id = linked_kps_by_kp_id(vault)
+    pool: list[tuple[str, str, str, list[dict[str, str]]]] = []  # (kind, name, key, prior_kps); key = concept path or kp_uid
+    documents: list[tuple[str, list[str]]] = []
+    absorbed: set[str] = set()  # every linked kp_uid some active concept note records, whatever its source
+    for note in sorted(notes, key=lambda item: item.rel_path):
+        recorded = prior_kps_for_note(note, linked_by_kp_id, None, limit=None)
+        absorbed.update(row["kp_uid"] for row in recorded)
+        all_prior = [row for row in recorded if row["source_id"] != exclude_source_id]
+        if all_prior:
+            pool.append(("concept", concept_name_of(note), note.rel_path, all_prior[:PRIOR_KPS_PER_CANDIDATE]))
+            documents.append((concept_name_of(note), [note.one_liner, *[row["claim"] for row in all_prior]]))
+    loose: dict[str, dict[str, str]] = {}
+    for rows in linked_by_kp_id.values():
+        for row in rows:
+            kp_uid, source_id, claim = str(row["kp_uid"]), str(row.get("source_id") or ""), str(row.get("knowledge_point") or "")
+            if kp_uid not in absorbed and source_id != exclude_source_id and claim.strip() and kp_uid not in loose:
+                loose[kp_uid] = {"kp_uid": kp_uid, "claim": claim, "source_id": source_id}
+    titles = prior_source_titles(vault, {row["source_id"] for row in loose.values()})
+    for kp_uid in sorted(loose):
+        pool.append(("kp", "", kp_uid, [loose[kp_uid]]))
+        documents.append(("", [loose[kp_uid]["claim"], titles.get(loose[kp_uid]["source_id"], "")]))
+    if not pool:
+        return []
+    index = PriorIndex(documents)
+    best: dict[tuple[str, str], tuple[float, str, list[dict[str, str]]]] = {}
+    seen_queries: set[str] = set()
+    for query in queries:
+        query = str(query or "").strip()
+        if not normalize_text(query) or query in seen_queries:
+            continue
+        seen_queries.add(query)
+        scored = []
+        for (kind, name, key, prior_kps), score in zip(pool, index.scores(query)):
+            score = round(score, PRIOR_SCORE_DIGITS)
+            if score > 0 and key not in (exclude_paths if kind == "concept" else exclude_kp_uids):
+                scored.append((-score, kind != "concept", name, key, kind, prior_kps))
+        scored.sort(key=lambda item: item[:4])
+        # Concepts and loose points never compete for the same per-query slots.
+        picked = [item for item in scored if item[4] == "concept"][:per_query] + [item for item in scored if item[4] == "kp"][:kp_per_query]
+        for negative, _, name, key, kind, prior_kps in picked:
+            if (kind, key) not in best or -negative > best[(kind, key)][0]:
+                best[(kind, key)] = (-negative, name, prior_kps)
+    rank = lambda item: (-item[1][0], item[0][0] != "concept", item[1][1], item[0][1])
+    ordered = sorted(
+        sorted((item for item in best.items() if item[0][0] == "concept"), key=rank)[:total]
+        + sorted((item for item in best.items() if item[0][0] == "kp"), key=rank)[:kp_total],
+        key=rank,
+    )
+    return [
+        {
+            "candidate_id": f"{id_prefix}-{position:02d}",
+            "kind": kind,
+            "concept_name": name,
+            "concept_path": key if kind == "concept" else "",
+            "score": score,
+            "above_threshold": score >= min_score,
+            "prior_kps": prior_kps,
+        }
+        for position, ((kind, key), (score, name, prior_kps)) in enumerate(ordered, start=1)
+    ]
+
+
+def concept_name_of(note: ConceptNote) -> str:
+    return str(note.fields.get("concept") or note.title).strip()
+
+
+def linked_kps_by_kp_id(vault: Path) -> dict[str, list[dict[str, Any]]]:
+    """The registry's linked knowledge-point rows that carry a kp_uid, grouped by kp_id."""
+    linked_by_kp_id: dict[str, list[dict[str, Any]]] = {}
+    for row in read_jsonl(vault / "_registry" / "knowledge_points.jsonl"):
+        kp_id = str(row.get("kp_id") or "").strip()
+        if kp_id and str(row.get("status") or "").strip() == "linked" and str(row.get("kp_uid") or "").strip():
+            linked_by_kp_id.setdefault(kp_id, []).append(row)
+    return linked_by_kp_id
+
+
+def concept_notes_with_kp_uids(vault: Path) -> list[tuple[ConceptNote, list[str]]]:
+    """Every active concept note (by path) with the linked kp_uids it records: the one kp_uid-to-concept-page map.
+
+    A note records the knowledge points named by its frontmatter ``knowledge_point_records`` (``prior_kps_for_note``),
+    generated and handwritten pages alike; the concept-page projection of the vault adapter reads this same map."""
+    linked_by_kp_id = linked_kps_by_kp_id(vault)
+    return [(note, [row["kp_uid"] for row in prior_kps_for_note(note, linked_by_kp_id, None, limit=None)])
+            for note in sorted(unique_notes(load_concept_notes(vault)), key=lambda item: item.rel_path)]
+
+
+def existing_concept_names(vault: Path) -> set[str]:
+    """Names of every active concept note, as written in the note's `concept` field."""
+    return {concept_name_of(note) for note in unique_notes(load_concept_notes(vault))}
+
+
+def prior_kps_for_note(
+    note: ConceptNote,
+    linked_by_kp_id: dict[str, list[dict[str, Any]]],
+    exclude_source_id: str | None,
+    *,
+    limit: int | None = PRIOR_KPS_PER_CANDIDATE,
+) -> list[dict[str, str]]:
+    """The linked, other-source knowledge points a concept note records (first ``limit``; all when None).
+
+    ``exclude_source_id`` None lists every source."""
+    source_bases = {source_base_id(record) for record in note.source_records}
+    picked: list[dict[str, str]] = []
+    for kp_id in note.knowledge_point_records:
+        rows = linked_by_kp_id.get(kp_id, [])
+        matching = [row for row in rows if str(row.get("source_id") or "") in source_bases]
+        for row in matching or rows:
+            source_id = str(row.get("source_id") or "")
+            kp_uid = str(row.get("kp_uid") or "")
+            if (exclude_source_id is not None and source_id == exclude_source_id) or any(item["kp_uid"] == kp_uid for item in picked):
+                continue
+            picked.append({"kp_uid": kp_uid, "claim": str(row.get("knowledge_point") or ""), "source_id": source_id})
+        if limit is not None and len(picked) >= limit:
+            break
+    return picked if limit is None else picked[:limit]
 
 
 def seed_for_query(query: str) -> str:
@@ -511,36 +805,8 @@ def read_markdown(path: Path) -> tuple[dict[str, Any], str]:
 
 
 def parse_frontmatter(text: str) -> dict[str, Any]:
-    fields: dict[str, Any] = {}
-    current_key = ""
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        if not line.strip():
-            continue
-        if line.startswith("  - ") and current_key:
-            value = parse_scalar(line[4:].strip())
-            if not isinstance(fields.get(current_key), list):
-                fields[current_key] = []
-            fields[current_key].append(value)
-            continue
-        if ":" not in line:
-            continue
-        key, raw_value = line.split(":", 1)
-        current_key = key.strip()
-        value = raw_value.strip()
-        fields[current_key] = [] if not value else parse_scalar(value)
-    return fields
-
-
-def parse_scalar(value: str) -> str:
-    value = value.strip()
-    if not value:
-        return ""
-    try:
-        decoded = json.loads(value)
-        return str(decoded)
-    except json.JSONDecodeError:
-        return value.strip("\"'")
+    """A frontmatter block (without its --- fences), read by the one shared vault reader."""
+    return frontmatter_fields_from_text("---\n" + text + "\n---\n")
 
 
 def parse_links_by_section(body: str) -> dict[str, list[str]]:

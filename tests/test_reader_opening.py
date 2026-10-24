@@ -19,6 +19,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sys.executable
 LOGO_SHA256 = "961ea9c3a7dc7af9c3311a100995a7ad2aaa060232908e2195b4db27c60abeb9"
+CURRENT_GENERATION = re.search(r"knowledge-nebula-server-v[1-9]\d*", (ROOT / "scripts" / "brain.py").read_text(encoding="utf-8")).group(0)
 
 
 def run(*items: str, cwd: Path, environment: dict[str, str] | None = None) -> dict:
@@ -50,6 +51,70 @@ def run_parallel(items: list[tuple[str, ...]], *, cwd: Path, environment: dict[s
 
 def fetch(url: str) -> bytes:
     return build_opener(ProxyHandler({})).open(url, timeout=5).read()
+
+
+def status_at(origin: str) -> dict:
+    return json.loads(fetch(origin + "/api/status").decode("utf-8"))
+
+
+def generation_of(brain: Path) -> str:
+    match = re.search(r"knowledge-nebula-server-v[1-9]\d*", brain.read_text(encoding="utf-8"))
+    if match is None:
+        raise AssertionError(f"reader generation is missing from {brain}")
+    return match.group(0)
+
+
+def assert_handoff_race(package: Path, legacy_package: Path, work: Path) -> None:
+    """A managed 1.9.18-to-current update leaves its live v6 reader for two real v7 openers to take over.
+
+    No installed byte or managed hash is edited by this fixture.  The old
+    server remains the actual v6 process from the formal legacy setup until
+    the candidate update's authenticated handoff retires it.
+    """
+    workspace = work / "workspace"
+    environment = {"CREATIVE_SECOND_BRAIN_READER_IDLE_SECONDS": "30"}
+    run(str(legacy_package / "scripts" / "setup_workspace.py"), "--profile", "public-portable",
+        "--workspace", str(workspace), "--vault", "Notes/My Vault", "--display-name", "Reader handoff race", cwd=work)
+    old_brain = workspace / "tools" / "brain.py"
+    legacy_server = workspace / "tools" / "knowledge_nebula_server.py"
+    legacy_generation = generation_of(legacy_package / "runtime" / "workspace" / "tools" / "knowledge_nebula_server.py")
+    if legacy_generation >= CURRENT_GENERATION:
+        raise AssertionError(f"legacy package must precede {CURRENT_GENERATION}, got {legacy_generation}")
+    old_home = run(str(old_brain), "open-home", cwd=workspace, environment=environment)
+    old_origin = old_home["url"].split("/index.html", 1)[0]
+    old_state = status_at(old_origin)
+    assert old_state["generation"] == legacy_generation and not old_state.get("retiring")
+    old_identity = old_state["identity"]
+    before = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (old_brain, legacy_server)}
+    updater = package / "runtime" / "workspace" / "tools" / "brain_update.py"
+    checked = run(str(updater), "--workspace", str(workspace), "--package", str(package), "--check", cwd=work)
+    assert checked["status"] == "checked", checked
+    applied = run(str(updater), "--workspace", str(workspace), "--package", str(package), "--apply", cwd=work)
+    assert applied["status"] == "updated" and applied.get("doctor") == "ready", applied
+    # The process was started from the formal v6 package and still proves the
+    # pre-handoff state after the managed files are replaced on disk.
+    live_old = status_at(old_origin)
+    assert live_old["generation"] == legacy_generation and live_old["identity"] == old_identity and not live_old.get("retiring")
+    current_brain = workspace / "tools" / "brain.py"
+    assert generation_of(current_brain) == CURRENT_GENERATION
+    after = {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in (current_brain, workspace / "tools" / "knowledge_nebula_server.py")}
+    assert before != after
+    # Popen all successor entrypoints before either is awaited, so the lease
+    # and authenticated handoff decide the sole successor under a real race.
+    first, second = run_parallel([(str(current_brain), "open-home"), (str(current_brain), "open-home")], cwd=workspace, environment=environment)
+    assert first["status"] == second["status"] == "ready"
+    assert sorted((first["service"], second["service"])) == ["reused", "started"]
+    successor_origin = first["url"].split("/index.html", 1)[0]
+    assert second["url"].split("/index.html", 1)[0] == successor_origin
+    successor = status_at(successor_origin)
+    assert successor["generation"] == CURRENT_GENERATION and successor["identity"] == old_identity and not successor.get("retiring")
+    nebula = run(str(current_brain), "nebula", cwd=workspace, environment=environment)
+    assert nebula["service"] == "reused" and nebula["url"].startswith(successor_origin + "/")
+    report = {"status": "passed", "legacy_generation": legacy_generation, "successor_generation": CURRENT_GENERATION,
+              "identity": old_identity, "legacy_origin": old_origin, "successor_origin": successor_origin,
+              "services": sorted((first["service"], second["service"])), "update": applied,
+              "managed_runtime_sha256": {"before": before, "after": after}}
+    (work / "handoff-race-result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def load_brain(path: Path):
@@ -209,7 +274,7 @@ def assert_port_policy(path: Path) -> None:
             time.sleep(timeout)
             return None
         time.sleep(.02)
-        return {"app": "knowledge-nebula", "identity": identity, "generation": "knowledge-nebula-server-v6"}
+        return {"app": "knowledge-nebula", "identity": identity, "generation": CURRENT_GENERATION}
 
     started = time.monotonic()
     with patch.object(policy, "candidate_ports", return_value=selected_ports):
@@ -224,7 +289,7 @@ def assert_port_policy(path: Path) -> None:
             generation = "knowledge-nebula-server-v5"
         else:
             time.sleep(.01)
-            generation = "knowledge-nebula-server-v6"
+            generation = CURRENT_GENERATION
         return {"app": "knowledge-nebula", "identity": identity, "generation": generation}
 
     with patch.object(policy, "candidate_ports", return_value=selected_ports[:2]):
@@ -276,13 +341,34 @@ def assert_generation_upgrade(package: Path, work: Path, environment: dict[str, 
     assert upgraded_first["url"].endswith("/index.html#prompts")
 
 
+def assert_generation_contract(package: Path) -> None:
+    """Reader generation is package-owned; managed upgrade is tested by the real upgrade acceptance."""
+    brain = (package / "scripts" / "brain.py").read_text(encoding="utf-8")
+    server = (package / "runtime" / "workspace" / "tools" / "knowledge_nebula_server.py").read_text(encoding="utf-8")
+    assert CURRENT_GENERATION in brain and CURRENT_GENERATION in server
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-root", required=True, type=Path)
     parser.add_argument("--package", type=Path)
+    parser.add_argument("--legacy-package", type=Path)
     parser.add_argument("--upgrade-only", action="store_true")
+    parser.add_argument("--handoff-race-only", action="store_true")
     args = parser.parse_args()
     work = args.work_root.resolve()
+    if args.handoff_race_only:
+        if not args.package or not args.legacy_package:
+            raise SystemExit("--handoff-race-only requires --package and --legacy-package")
+        package, legacy = args.package.resolve(), args.legacy_package.resolve()
+        if not package.is_dir() or not legacy.is_dir():
+            raise SystemExit("handoff race package is missing")
+        if work.exists() and any(work.iterdir()):
+            raise SystemExit("handoff race work root must be new or empty; existing evidence is preserved")
+        work.mkdir(parents=True, exist_ok=True)
+        assert_handoff_race(package, legacy, work)
+        print(json.dumps({"status": "passed", "checks": ["real v6 service handoff and concurrent v7 opener successor"]}, ensure_ascii=False))
+        return 0
     if args.upgrade_only:
         if not args.package:
             raise SystemExit("--upgrade-only requires the already-built package path")
@@ -293,8 +379,8 @@ def main() -> int:
             raise SystemExit("upgrade work root must be new or empty; existing evidence is preserved")
         work.mkdir(parents=True, exist_ok=True)
         environment = {"CREATIVE_SECOND_BRAIN_READER_IDLE_SECONDS": "15"}
-        assert_generation_upgrade(package, work, environment, "upgrade-only")
-        report = {"status": "passed", "checks": ["two real newer brain openers safely hand off one older same-root reader and reuse one successor URL"]}
+        assert_generation_contract(package)
+        report = {"status": "passed", "checks": ["opener and server share the package current generation"]}
         (work / "upgrade-only-result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report, ensure_ascii=False))
         return 0
@@ -322,7 +408,7 @@ def main() -> int:
     home_cold, home_parallel = run_parallel([(str(brain), "open-home"), (str(brain), "open-home")], cwd=workspace, environment=environment)
     server = workspace / "tools" / "knowledge_nebula_server.py"
     server_repeat = run(str(server), "--root", str(workspace), "--no-browser", "--page", "nebula",
-                        "--require-generation", "knowledge-nebula-server-v6", cwd=workspace, environment=environment)
+                        "--require-generation", CURRENT_GENERATION, cwd=workspace, environment=environment)
     nebula_repeat = run(str(brain), "nebula", cwd=workspace, environment=environment)
     home_repeat = run(str(brain), "open-home", cwd=workspace, environment=environment)
     assert home_cold["status"] == "ready" and home_parallel["status"] == "ready"
@@ -345,10 +431,10 @@ def main() -> int:
     assert home_page.count("創造型第二大腦 | Adam Chan") == 1
     assert nebula_page.decode("utf-8").count("創造型第二大腦 | Adam Chan") == 1
     assert b"knowledge-nebula" in nebula_page
-    # A real supported upgrade first opens v5, then two newer brain entry
-    # processes race to take over the same workspace.  The service lease and
-    # authenticated handoff must yield one successor URL, never a fallback.
-    assert_generation_upgrade(package, work, environment, "upgrade brain")
+    # Package-owned generation labels must agree.  The separate real 1.9.18
+    # managed-update acceptance covers v6-to-v7 handoff; this fixture does not
+    # rewrite managed files or claim that upgrade result.
+    assert_generation_contract(package)
     origin = home_cold["url"].split("/index.html", 1)[0]
     time.sleep(17)
     try:
@@ -364,7 +450,7 @@ def main() -> int:
         "startup deadline emits no unverified URL",
         "busy reuse waits once and retry remains bounded",
         "shared reader port policy preserves primary ports and adds bounded deterministic fallbacks",
-        "two real newer brain openers safely hand off one older same-root reader and reuse one successor URL",
+        "package opener and server declare the same current reader generation",
         "repeat home returns verified #prompts URL", "canonical think command and its legacy-only alias are visible", "fresh installed nebula logo hash and home path",
         "task-owned short-lived service closes",
     ]}

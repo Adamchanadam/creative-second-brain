@@ -145,7 +145,7 @@ def main() -> None:
     initialized = run(python, str(extracted / "scripts" / "setup_workspace.py"), "--profile", "public-portable",
                       "--workspace", str(workspace), "--vault", "Empty Notes", "--display-name", "Empty User", cwd=work)
     assert initialized["status"] == "initialized"
-    canonical = ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update"]
+    canonical = ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update", "infographic"]
     for name in canonical:
         assert (workspace / ".agents" / "skills" / ("brain-" + name) / "agents" / "openai.yaml").is_file(), name
     assert (workspace / ".agents" / "skills" / "brain-ask" / "agents" / "openai.yaml").is_file()
@@ -162,13 +162,13 @@ def main() -> None:
     entries = registry["commands"]
     names = [name for name, entry in sorted(entries.items(), key=lambda item: item[1].get("menu_order", 999))
              if "menu_order" in entry and not entry.get("alias_for")]
-    assert names == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update"]
+    assert names == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update", "infographic"]
     assert entries["ask"].get("alias_for") == "think"
     capture = (extracted / "runtime" / "workspace" / "tools" / "case_reproduction_capture.js").read_text(encoding="utf-8")
     assert "lockedPlaywrightForCheck" in capture and "workspace-locked-chromium" in capture
     assert "Microsoft\\\\Edge\\\\Application" not in capture
     assert "global_playwright" not in capture[capture.index("async function check()"):]
-    report = {"status": "passed", "coverage": ["delivery and ZIP-only verification", "candidate contains no machine-local paths", "known external mismatch blocks install", "version mismatch blocks delivery", "real venv direct requirements", "basic versus complete status", "empty workspace 14 metadata", "actual home and nebula routes", "canonical registry", "workspace-local Chromium check"],
+    report = {"status": "passed", "coverage": ["delivery and ZIP-only verification", "candidate contains no machine-local paths", "known external mismatch blocks install", "version mismatch blocks delivery", "real venv direct requirements", "basic versus complete status", "empty workspace 15 metadata", "actual home and nebula routes", "canonical registry", "workspace-local Chromium check"],
               "not_proven": ["host slash recognition", "native Obsidian", "ImageGen generation", "browser setup when Chromium was not installed"]}
     (work / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))

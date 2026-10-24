@@ -20,8 +20,9 @@ const DAILY_PROMPTS = {
   nebula: '$brain-nebula',
   check: '$brain-check [來源或工作編號]',
   resume: '$brain-resume [來源或工作編號]',
-  fix: '$brain-fix [哪裏有甚麼問題]',
+  fix: '$brain-fix [來源或問題描述]',
   update: '$brain-update',
+  infographic: '$brain-infographic <知識頁ID>',
 };
 
 function argument(name) {
@@ -94,7 +95,7 @@ async function main() {
     const response = await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 });
     if (!response || response.status() !== 200 || page.url() !== url) throw new Error('root guide did not load at its localhost URL');
     const visible = await page.locator('body').innerText();
-    for (const phrase of ['你的材料，', '完整安裝包：', '保存、提問、創作、整理與接續', '全部日常入口']) {
+    for (const phrase of ['你的材料，', '完整安裝包：', '保存、提問、創作、整理與接續', '03 / 15 個日常入口']) {
       if (!visible.includes(phrase)) throw new Error(`required visible text missing: ${phrase}`);
     }
     if (visible.includes('開始前可能想知道') || await page.locator('#limits, a[href="#limits"]').count()) {
@@ -104,9 +105,8 @@ async function main() {
       throw new Error('support section number or title is incorrect');
     }
     const footer = page.locator('footer');
-    if (!(await footer.innerText()).includes('AI 生活策展人 Adam Chan') ||
-        !(await footer.locator('a[href="https://www.facebook.com/chan.adam"]').count())) {
-      throw new Error('footer attribution or Facebook link is missing');
+    if ((await footer.innerText()).trim() !== '創造型第二大腦 | Adam Chan' || await footer.locator('a').count()) {
+      throw new Error('product footer is not the single plain attribution line');
     }
     if (await page.locator('button.copy').count() !== Object.keys(DAILY_PROMPTS).length + 1) throw new Error('installation plus every daily copy control are required');
     if (!(await page.locator(`a[href="${archiveHref}"]`).count())) throw new Error('versioned ZIP link missing');
@@ -173,7 +173,7 @@ async function main() {
     const narrowOverflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     if (narrowOverflow) throw new Error('320px mobile layout has horizontal overflow');
     if (consoleMessages.length) throw new Error('browser console not clean: ' + consoleMessages.join(' | '));
-    const report = { status: 'passed', url, visible: ['你的材料，', '完整安裝包：', '14 daily entries'],
+    const report = { status: 'passed', url, visible: ['你的材料，', '完整安裝包：', '15 daily entries'],
       daily_prompts: Object.keys(DAILY_PROMPTS), copy_controls: expectedCopies.length,
       console: { warning: 0, error: 0 }, screenshots: {
         desktop: { relative: path.join(evidenceRelative, 'delivery-desktop.png'), bytes: fs.statSync(desktop).size },
