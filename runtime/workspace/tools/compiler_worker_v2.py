@@ -7804,6 +7804,7 @@ def verified_completed_infographic_overlay(
         except ImportError:
             from completion_revisions import read_current
         accepted = read_current(root, package, completion, include_record=True, verify=False)
+        child_current = read_current(root, child_kp_path.parent, child_completion, include_record=True)
     except (OSError, ValueError, KeyError) as exc:
         raise CompilerWorkerV2Error(str(exc)) from exc
     parent_changes = {item.get("original_path"): item for item in accepted.get("changes", []) if isinstance(item, dict)}
@@ -7811,6 +7812,20 @@ def verified_completed_infographic_overlay(
     source_path = str((parent_changes.get(parent_adapter.get("source_note")) or {}).get("current_path") or parent_adapter.get("source_note") or "")
     application_path = str((parent_changes.get(parent_adapter.get("application_note")) or {}).get("current_path") or parent_adapter.get("application_note") or "")
     expected_paths = {source_path: "infographic_source_note", application_path: "infographic_application_note"}
+    child_adapter = child_completion.get("adapter") if isinstance(child_completion.get("adapter"), dict) else {}
+    child_source_path = str(child_adapter.get("source_note") or "")
+    child_changes = {
+        str(item.get("original_path") or ""): item
+        for item in child_current.get("changes", []) if isinstance(item, dict)
+    }
+    child_source_change = child_changes.get(child_source_path) or {}
+    post_overlay_source_sha = (
+        str(child_source_change.get("sha256") or "")
+        if child_current.get("source_attachments") and child_source_path == source_path
+        else ""
+    )
+    if post_overlay_source_sha and not re.fullmatch(r"[0-9a-f]{64}", post_overlay_source_sha):
+        raise CompilerWorkerV2Error("current source attachment revision is invalid")
     items = journal.get("items") if isinstance(journal.get("items"), list) else []
     child_manifest: dict[str, str] = {}
     for manifest_item in child_completion.get("artifact_manifest") or []:
@@ -7847,14 +7862,14 @@ def verified_completed_infographic_overlay(
         else:
             raise CompilerWorkerV2Error("infographic overlay includes a non-visual target")
         current = relative_to_root(root / path, root, "infographic overlay current target")
-        if not current.is_file() or sha256_bytes(current.read_bytes()) != after:
+        expected_current = post_overlay_source_sha if path == source_path and post_overlay_source_sha else after
+        if not current.is_file() or sha256_bytes(current.read_bytes()) != expected_current:
             raise CompilerWorkerV2Error("infographic overlay target drifted")
         if child_manifest.get(path) != after:
             raise CompilerWorkerV2Error("infographic overlay child manifest does not bind its target")
         after_by_path[path] = after
     if set(expected_paths) - set(after_by_path) or not asset_paths:
         raise CompilerWorkerV2Error("infographic overlay journal is incomplete")
-    child_adapter = child_completion.get("adapter") if isinstance(child_completion.get("adapter"), dict) else {}
     if set(str(path) for path in child_adapter.get("assets") or []) != asset_paths:
         raise CompilerWorkerV2Error("infographic overlay assets do not match child receipt")
     verify_overlay_journal_content(root, child_kp_path.parent, child_kp, journal_path, journal)
@@ -7870,15 +7885,17 @@ def verified_completed_infographic_overlay(
     if str(outcome.get("current_page") or "") != outcome_path:
         raise CompilerWorkerV2Error("infographic overlay child outcome path is invalid")
     outcome_hash = child_manifest.get(outcome_path, "")
+    current_outcome_hash = outcome_revision_hash(root, child_kp_path.parent, child_completion, outcome_path) or outcome_hash
     outcome_target = relative_to_root(root / outcome_path, root, "infographic overlay child outcome")
     if (
-        not re.fullmatch(r"[0-9a-f]{64}", outcome_hash)
+        not re.fullmatch(r"[0-9a-f]{64}", current_outcome_hash)
         or not outcome_target.is_file()
-        or sha256_bytes(outcome_target.read_bytes()) != outcome_hash
+        or sha256_bytes(outcome_target.read_bytes()) != current_outcome_hash
     ):
         raise CompilerWorkerV2Error("infographic overlay child outcome readback mismatch")
     journal_outcome = journal.get("outcome") if isinstance(journal.get("outcome"), dict) else {}
-    if journal_outcome.get("path") != outcome_path or journal_outcome.get("after_sha256") != outcome_hash:
+    if (journal_outcome.get("path") != outcome_path
+            or (current_outcome_hash == outcome_hash and journal_outcome.get("after_sha256") != outcome_hash)):
         raise CompilerWorkerV2Error("infographic overlay journal does not bind the child outcome page")
     # An accepted revision of the parent's source or application note stays valid
     # beside the overlay: the note may be at its accepted bytes or the overlay's.
@@ -7887,8 +7904,12 @@ def verified_completed_infographic_overlay(
         note_change = parent_changes.get(parent_adapter.get(note_field)) or {}
         if note_change:
             allowed_current[note_path] = {str(note_change.get("sha256") or ""), after_by_path[note_path]}
+    if post_overlay_source_sha:
+        allowed_current.setdefault(source_path, {after_by_path[source_path]}).add(post_overlay_source_sha)
     artifact_hashes = {path: {hash_} for path, hash_ in after_by_path.items()}
-    artifact_hashes[outcome_path] = {outcome_hash}
+    if post_overlay_source_sha:
+        artifact_hashes[source_path].add(post_overlay_source_sha)
+    artifact_hashes[outcome_path] = {current_outcome_hash}
     return {"current": allowed_current, "artifacts": artifact_hashes}
 
 
@@ -11700,6 +11721,21 @@ def command_project(args: argparse.Namespace) -> int:
             completion,
         )
     complete_v2_job(root, job_id, completion_path)
+    if completed_source_overlay:
+        source_note_for_refresh = relative_to_root(
+            root / str(portable_adapter.get("source_note") or ""), root,
+            "completed infographic overlay source note",
+        )
+        source_attachment_paths = _overlay_adapter_module().frontmatter_fields_from_text(
+            source_note_for_refresh.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+        ).get("source_attachments")
+        if source_attachment_paths:
+            # The initial child projection is produced before its current
+            # pointer exists, so it cannot yet traverse back to a parent
+            # attachment ledger.  Rebuild once the pointer is live through
+            # the normal receipt-bound outcome revision owner.
+            refresh_completed_outcome(root, kp_path)
+            completed_receipt_readback(root, package, kp_path, kp)
     write_json(package / "receipt.json", {
         **receipt,
         "status": "completed",

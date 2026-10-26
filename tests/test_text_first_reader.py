@@ -54,6 +54,7 @@ def main() -> int:
         asset_srcs=[],
         supplementary_asset_srcs=[],
         source_original_image_src="",
+        source_attachment_entries=[],
         case_evidence_reproduction_url="",
         url_overview="完整來源已保存，現在可先閱讀與核對。",
         relationship="它讓閱讀與補圖成為先後分開的工作。",

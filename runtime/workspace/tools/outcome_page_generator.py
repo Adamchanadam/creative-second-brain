@@ -498,6 +498,7 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
         if not original_rel or not original_path or not original_path.exists() or vault not in original_path.parents:
             raise SystemExit(f"Missing retained original image evidence for {source_id}")
         source_original_image_src = relative_url(original_path, output.parent)
+    source_attachment_entries = source_attachment_entries_for_reader(vault, source_id, source_fields, root=root)
 
     sections = {
         "relationship": section_after_heading(app_body, "### 關係"),
@@ -565,6 +566,13 @@ def generate_outcome_page(source_id: str, vault: Path, output: Path | None = Non
             for asset_path in supplementary_asset_paths
         ],
         source_original_image_src=source_original_image_src,
+        source_attachment_entries=[
+            {
+                **entry,
+                "src": relative_url(Path(root).resolve() / str(entry["asset_path"]), output.parent),
+            }
+            for entry in source_attachment_entries
+        ],
         case_evidence_reproduction_url=(
             relative_url(reproduction_entrypoint, output.parent)
             if reproduction_entrypoint is not None
@@ -835,13 +843,11 @@ def outcome_index_entry(source_id: str, vault: Path, page_path: Path) -> dict[st
     source_fields, source_body = read_markdown_record(source_note)
     source_fields = with_source_citation_evidence(source_fields, source_body)
     app_fields, _ = read_markdown_record(app_note)
-    asset_mode = str(source_fields.get("asset_mode") or "formal_infographic")
-    asset_rel = (
-        first_list_value(source_fields.get("evidence_screenshots"))
-        if asset_mode == "case_evidence"
-        else first_list_value(source_fields.get("infographics")) or str(app_fields.get("PNG") or "")
-    )
-    asset_path = (vault / asset_rel).resolve() if asset_rel else None
+    try:
+        from tools.source_preview import first_source_preview
+    except ModuleNotFoundError:
+        from source_preview import first_source_preview
+    asset_path = first_source_preview(vault, source_fields, app_fields)
     direct_source_url = str(source_fields.get("source_url") or "")
     original_source_url = str(source_fields.get("_original_source_url") or "")
     return {
@@ -1338,6 +1344,7 @@ def render_html(
     asset_srcs: list[str],
     supplementary_asset_srcs: list[str],
     source_original_image_src: str,
+    source_attachment_entries: list[dict[str, object]],
     case_evidence_reproduction_url: str,
     url_overview: str,
     relationship: str,
@@ -1636,6 +1643,8 @@ def render_html(
   {infographic_action}
 
   {source_image_evidence_block(source_original_image_src, title)}
+
+  {source_attachment_block(source_attachment_entries, title, knowledge_points)}
 
   {coverage_audit_block(source_fields, len(asset_srcs), len(knowledge_points), case_evidence_reproduction_url, method_verification)}
 
@@ -2107,6 +2116,146 @@ def source_image_evidence_block(source_original_image_src: str, title: str) -> s
     )
 
 
+def source_attachment_entries_for_reader(
+    vault: Path,
+    source_id: str,
+    source_fields: dict[str, object],
+    *,
+    root: Path = REPO_ROOT,
+) -> list[dict[str, object]]:
+    """Read accepted attachment metadata from the current completion revision.
+
+    The source note intentionally stores only attachment paths.  Reader-facing
+    text and mappings stay in the immutable package evidence referenced by the
+    current accepted revision.
+    """
+    declared = list_value(source_fields.get("source_attachments"))
+    if not declared:
+        return []
+    root = Path(root).resolve()
+    try:
+        vault_rel = vault.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return []
+    standard = vault / "outcome-pages" / f"{source_id}_outcome.html"
+    try:
+        kp_path = completed_v2_package_for_standard_outcome(vault, source_id, standard, root=root)
+        if kp_path is None:
+            return []
+        try:
+            from tools import compiler_worker_v2 as worker
+            from tools import completion_revisions
+        except ModuleNotFoundError:
+            import compiler_worker_v2 as worker  # type: ignore
+            import completion_revisions  # type: ignore
+        kp = worker.read_json(kp_path)
+        package = kp_path.parent
+        completion = worker.read_json(worker.bound_completion_path(root, package, kp_path, kp))
+        current = completion_revisions.read_current(root, package, completion, include_record=True)
+        rows = current.get("source_attachments") if isinstance(current, dict) else []
+        # An infographic child becomes the current package but does not rewrite
+        # a parent attachment revision.  Follow only the verified predecessor
+        # chain until the first accepted attachment ledger is found.
+        while not rows:
+            origin = worker.infographic_origin_package(root, package, kp)
+            if origin == package:
+                break
+            package = origin
+            parent_kp_path = package / "knowledge_package.json"
+            if not parent_kp_path.is_file():
+                break
+            kp = worker.read_json(parent_kp_path)
+            completion = worker.read_json(worker.bound_completion_path(root, package, parent_kp_path, kp))
+            # The parent note can legitimately be at its infographic-overlay
+            # bytes.  Its receipt readback supplies that narrow allowance;
+            # then read the immutable parent ledger without treating the
+            # overlay itself as a second attachment revision.
+            worker.completed_receipt_readback(root, package, parent_kp_path, kp)
+            current = completion_revisions.read_current(root, package, completion, include_record=True, verify=False)
+            rows = current.get("source_attachments") if isinstance(current, dict) else []
+    except (OSError, ValueError, KeyError, SystemExit):
+        return []
+    if not isinstance(rows, list):
+        return []
+    entries: list[dict[str, object]] = []
+    rows_by_path = {
+        str(row.get("asset_path") or ""): row
+        for row in rows if isinstance(row, dict)
+    }
+    for source_note_path in declared:
+        row = rows_by_path.get(f"{vault_rel}/{source_note_path}")
+        if not isinstance(row, dict):
+            continue
+        asset_path = str(row.get("asset_path") or "")
+        try:
+            source_note_path = Path(asset_path).relative_to(vault_rel).as_posix()
+        except ValueError:
+            continue
+        asset = (root / asset_path).resolve()
+        if asset == vault.resolve() or vault.resolve() not in asset.parents or not asset.is_file():
+            continue
+        title = str(row.get("title") or "").strip()
+        summary = str(row.get("summary") or "").strip()
+        mappings = row.get("kp_mapping") if isinstance(row.get("kp_mapping"), list) else []
+        kp_ids = [
+            str(kp_id)
+            for mapping in mappings if isinstance(mapping, dict)
+            for kp_id in (mapping.get("kp_ids") if isinstance(mapping.get("kp_ids"), list) else [])
+            if isinstance(kp_id, str) and kp_id.strip()
+        ]
+        if title and summary:
+            entries.append({
+                "asset_path": asset_path,
+                "title": title,
+                "summary": summary,
+                "kp_ids": list(dict.fromkeys(kp_ids)),
+            })
+    return entries
+
+
+ATTACHMENT_KP_LABEL_LIMIT = 24
+
+
+def kp_fragment_id(value: object) -> str:
+    text = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value)).strip("-")
+    return "kp-" + (text or "item")
+
+
+def source_attachment_block(
+    entries: list[dict[str, object]],
+    title: str,
+    knowledge_points: list[dict[str, object]],
+) -> str:
+    if not entries:
+        return ""
+    titles = {
+        str(point.get("kp_id") or point.get("kp_uid") or ""): str(
+            point.get("knowledge_point") or point.get("definition") or point.get("kp_id") or point.get("kp_uid") or ""
+        )
+        for point in knowledge_points
+    }
+    # Link text stays short: the full KP title is already the heading of the
+    # linked card, and repeating a long title would be duplicate reader text.
+    def link_label(kp_id: str) -> str:
+        label = titles.get(kp_id) or kp_id
+        return label if len(label) <= ATTACHMENT_KP_LABEL_LIMIT else label[:ATTACHMENT_KP_LABEL_LIMIT].rstrip() + "…"
+
+    figures = []
+    for entry in entries:
+        links = "".join(
+            f'<li><a href="#{escape(kp_fragment_id(kp_id))}">{escape(link_label(kp_id))}</a></li>'
+            for kp_id in entry.get("kp_ids", []) if isinstance(kp_id, str)
+        )
+        support = f'<h3>支持的知識點</h3><ul>{links}</ul>' if links else ""
+        figures.append(
+            '<article class="panel source-attachment">'
+            f'<h3>{escape(entry["title"])}</h3>'
+            f'<figure class="image-wrap"><img src="{escape(entry["src"])}" alt="{escape(title)} {escape(entry["title"])}"></figure>'
+            f'<p>{escape(entry["summary"])}</p>{support}</article>'
+        )
+    return '<section class="source-attachments"><h2>附圖</h2>' + "".join(figures) + "</section>"
+
+
 def case_method_learning_block(source_fields: dict[str, object], method_verification: dict[str, str] | None = None) -> str:
     body = str(source_fields.get("_case_method_body") or "").strip()
     if str(source_fields.get("asset_mode") or "") != "case_evidence" or not body:
@@ -2474,6 +2623,7 @@ def knowledge_point_cards(points: list[dict[str, object]]) -> str:
     seen_anchors: set[str] = set()
     for point in points:
         title = point.get("knowledge_point") or point.get("definition") or point.get("kp_id") or "未命名知識點"
+        kp_id = point.get("kp_id") or point.get("kp_uid") or title
         kind = point.get("knowledge_type") or ""
         confidence = point.get("confidence") or ""
         anchor = point.get("source_anchor") or ""
@@ -2485,7 +2635,7 @@ def knowledge_point_cards(points: list[dict[str, object]]) -> str:
             if normalized_anchor:
                 seen_anchors.add(normalized_anchor)
         cards.append(
-            '<div class="panel kp">'
+            f'<div class="panel kp" id="{escape(kp_fragment_id(kp_id))}">'
             f"<h3>{escape(title)}</h3>"
             f'<p class="small kp-meta"><span>{escape(kind)}</span><span>信心 {escape(confidence)}</span></p>'
             + (

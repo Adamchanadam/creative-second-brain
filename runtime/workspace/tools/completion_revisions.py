@@ -19,6 +19,7 @@ except ImportError:
 
 SCHEMA = "completed_source_revision_v1"
 CONTENT_REVISION_PROJECTION_VERSION = "completed_content_revision_projection_v4"
+SOURCE_ATTACHMENT_REVISION_KIND = "source_attachment"
 EVIDENCE_FOLDER_ID_CHARS = 12
 _EVIDENCE_REQUEST_SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -191,6 +192,16 @@ def current_source_review(root, record, completion, changes, virtual=None):
         raise ValueError('incomplete independent current-source review')
     reviewed = {row['path']:row['sha256'] for row in review['reviewed_files']}
     for row in changes:
+        # A later attachment changes only the source-note frontmatter.  Its
+        # image-specific evidence is checked by validate_source_attachments;
+        # it must not invalidate an earlier independent review of the actual
+        # content revision that this record carries forward.
+        if (
+            record.get("revision_kind") == SOURCE_ATTACHMENT_REVISION_KIND
+            and row.get("original_path") == (completion.get("adapter") or {}).get("source_note")
+            and row.get("reason") == "Attach user-provided visual evidence to the completed source."
+        ):
+            continue
         if reviewed.get(row['current_path']) != row['sha256']:
             raise ValueError('current change was not independently reviewed')
     package = inside(root, completion['knowledge_package_path']).parent
@@ -303,6 +314,7 @@ def validate(root, record, completion, *, allowed_current_hashes=None, virtual=N
             if data is None and p.is_file(): data = p.read_bytes()
             if data is None or sha(data) != proof['sha256'] or not proof.get('supports'):
                 raise ValueError('revision supporting evidence changed')
+    validate_source_attachments(root, record, completion, virtual=virtual)
     # Even ordinary source-note metadata amendments cannot alter original prose.
     kp = knowledge_package_for_validation(root, completion, virtual)
     try:
@@ -328,6 +340,99 @@ def validate(root, record, completion, *, allowed_current_hashes=None, virtual=N
         if not p.is_file() or not artifact_matches(p, protected['sha256']):
             raise ValueError('revision protected original input changed')
     return {item['original_path']:item for item in changes}
+
+
+def validate_source_attachments(root, record, completion, *, virtual=None):
+    """Validate the distinct, append-only attachment revision kind."""
+    kind = record.get("revision_kind")
+    rows = record.get("source_attachments")
+    if rows is None:
+        return
+    # A content revision may carry already accepted attachment evidence forward
+    # unchanged.  Only a source_attachment revision may introduce a new row;
+    # either form is held to the same immutable image/evidence readback below.
+    if kind != SOURCE_ATTACHMENT_REVISION_KIND and not record.get("current_source_review"):
+        raise ValueError("source attachments require an accepted attachment or content revision")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("source attachment revision has no attachments")
+    adapter = completion.get("adapter") or {}
+    source_note = str(adapter.get("source_note") or "")
+    if not source_note:
+        raise ValueError("source attachment completion lacks a source note")
+    changes = {str(item.get("original_path") or ""): item for item in record.get("changes", []) if isinstance(item, dict)}
+    if source_note not in changes:
+        raise ValueError("source attachment revision does not register its source-note change")
+    try:
+        from .obsidian_vault_adapter import frontmatter_fields_from_text
+        from .image_source_contract import inspect_image
+    except ImportError:
+        from obsidian_vault_adapter import frontmatter_fields_from_text
+        from image_source_contract import inspect_image
+    source_bytes = (virtual or {}).get(source_note)
+    if source_bytes is None:
+        source_bytes = inside(root, source_note).read_bytes()
+    fields = frontmatter_fields_from_text(source_bytes.decode("utf-8-sig").replace("\r\n", "\n"))
+    declared = fields.get("source_attachments")
+    if not isinstance(declared, list):
+        raise ValueError("source attachment source note has no readable source_attachments list")
+    seen_hashes, expected_paths = set(), []
+    # The vault may be nested: take its workspace-relative path from the registry
+    # (<vault>/_registry/sources.jsonl) or, for receipts without one, the source note.
+    registry = str(adapter.get("registry") or "")
+    if registry.endswith("/_registry/sources.jsonl"):
+        vault_name = Path(registry).parent.parent.as_posix()
+    elif "/sources/" in source_note:
+        vault_name = source_note.rpartition("/sources/")[0]
+    else:
+        raise ValueError("source attachment completion does not locate its vault")
+    prefix = f"{vault_name}/assets/{str(completion.get('source_id') or '').lower()}/attachments/"
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("source attachment revision entry is invalid")
+        asset_path = str(row.get("asset_path") or "")
+        image_sha256 = str(row.get("sha256") or "")
+        record_path = str(row.get("record_path") or "")
+        record_sha256 = str(row.get("record_sha256") or "")
+        if (not asset_path.startswith(prefix) or not re.fullmatch(r"[0-9a-f]{12}\.(?:png|jpe?g|webp)", Path(asset_path).name)
+                or not re.fullmatch(r"[0-9a-f]{64}", image_sha256) or image_sha256 in seen_hashes):
+            raise ValueError("source attachment asset binding is invalid")
+        seen_hashes.add(image_sha256)
+        asset = inside(root, asset_path)
+        if not asset.is_file() or sha(asset.read_bytes()) != image_sha256:
+            raise ValueError("source attachment image bytes changed")
+        inspection = inspect_image(asset)
+        dimensions = row.get("dimensions")
+        if (inspection.sha256 != image_sha256 or row.get("mime_type") != inspection.mime_type
+                or not isinstance(dimensions, dict) or dimensions.get("width") != inspection.width
+                or dimensions.get("height") != inspection.height):
+            raise ValueError("source attachment image identity or dimensions changed")
+        evidence = inside(root, record_path)
+        if not evidence.is_file() or sha(evidence.read_bytes()) != record_sha256:
+            raise ValueError("source attachment immutable record changed")
+        try:
+            evidence_value = json.loads(evidence.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ValueError("source attachment immutable record is unreadable") from exc
+        expected_attachment = {
+            "asset_path": asset_path, "sha256": image_sha256,
+            "mime_type": inspection.mime_type, "dimensions": dimensions,
+            "title": row.get("title"), "summary": row.get("summary"),
+            "kp_mapping": row.get("kp_mapping"),
+        }
+        if (evidence_value.get("payload_sha256") != digest(evidence_value)
+                or evidence_value.get("source_id") != completion.get("source_id")
+                or evidence_value.get("source_identity") != completion.get("source_identity")
+                or evidence_value.get("attachment") != expected_attachment):
+            raise ValueError("source attachment immutable record does not bind the accepted attachment")
+        # Package evidence is rooted at the workspace, while source-note media
+        # uses the vault-relative convention of source_assets/infographics.
+        expected_paths.append(Path(asset_path).relative_to(vault_name).as_posix())
+    # When this record owns the current note bytes its list must match exactly.
+    # Otherwise validate() has already admitted the bytes as a later accepted
+    # overlay (an infographic child), whose own record checks the appended rest.
+    owns_note = sha(source_bytes) == changes[source_note].get("sha256")
+    if (declared != expected_paths) if owns_note else (declared[:len(expected_paths)] != expected_paths):
+        raise ValueError("source attachment source-note list does not match the accepted attachment order")
 
 
 def read_current(root, package, completion, *, include_record=False, verify=True, allowed_current_hashes=None):
@@ -436,6 +541,151 @@ def accept(root, package, completion, record):
         finally:
             owned_lock.close()
             lock.unlink()
+
+
+def prepare_source_attachment_revision(
+    root,
+    package,
+    completion,
+    *,
+    source_note_path,
+    attachment,
+    attachment_record,
+    authorization,
+    review_summary,
+    prior_record=None,
+):
+    """Build a write-free accepted-revision candidate for one source attachment."""
+    root, package = Path(root).resolve(), Path(package).resolve()
+    source_note_path = inside(root, source_note_path)
+    originals = original_files(completion)
+    source_note = str((completion.get("adapter") or {}).get("source_note") or "")
+    if not source_note or source_note_path.relative_to(root).as_posix() != source_note:
+        raise ValueError("source attachment target is not this completion's source note")
+    if source_note not in originals:
+        raise ValueError("source attachment source note is absent from the completion receipt")
+    prior = prior_record or {}
+    if prior and not isinstance(prior, dict):
+        raise ValueError("source attachment predecessor revision is invalid")
+    attachments = prior.get("source_attachments", []) if prior else []
+    if attachments and not isinstance(attachments, list):
+        raise ValueError("source attachment predecessor list is invalid")
+    item, evidence = dict(attachment), dict(attachment_record)
+    asset_path = str(item.get("asset_path") or "")
+    image_sha256 = str(item.get("sha256") or "")
+    evidence_path = str(evidence.get("path") or "")
+    evidence_sha256 = str(evidence.get("sha256") or "")
+    if not asset_path or not image_sha256 or not evidence_path or not evidence_sha256:
+        raise ValueError("source attachment revision lacks immutable attachment binding")
+    if any(str(row.get("sha256") or "") == image_sha256 for row in attachments if isinstance(row, dict)):
+        raise ValueError("source attachment hash is already accepted")
+    changes = {
+        str(change.get("original_path") or ""): dict(change)
+        for change in prior.get("changes", []) if isinstance(change, dict) and change.get("original_path")
+    }
+    source_bytes = source_note_path.read_bytes()
+    changes[source_note] = {
+        "original_path": source_note,
+        "original_sha256": originals[source_note],
+        "current_path": source_note,
+        "sha256": sha(source_bytes),
+        "reason": "Attach user-provided visual evidence to the completed source.",
+        "evidence": [{
+            "path": evidence_path,
+            "sha256": evidence_sha256,
+            "supports": "The immutable attachment record binds this source-note list change to the reviewed image.",
+        }],
+    }
+    adapter = completion.get("adapter") or {}
+    note_paths = {adapter.get("source_note"), adapter.get("application_note"), *(adapter.get("knowledge_points") or [])} - {None, ""}
+    protected = {
+        str(entry.get("path") or ""): str(entry.get("sha256") or "")
+        for entry in prior.get("protected_inputs", []) if isinstance(entry, dict) and entry.get("path") and entry.get("sha256")
+    }
+    for path, expected in originals.items():
+        if (path not in changes and path not in note_paths and not path.endswith(".html") and "/assets/" not in path
+                and path not in {completion["knowledge_package_path"], completion["source_slice_path"]}):
+            protected.setdefault(path, expected)
+    # Older ordinary completion receipts did not always list package inputs in
+    # artifact_manifest.  Their presence still makes them protected accepted
+    # inputs, exactly as it does for a content revision.
+    for name in ("input_bundle.json", "canonical_source.md", "source_capture.md"):
+        path = package / name
+        if path.is_file():
+            protected.setdefault(path.relative_to(root).as_posix(), sha(path.read_bytes()))
+    for path, expected in ((asset_path, image_sha256), (evidence_path, evidence_sha256)):
+        protected[path] = expected
+    pointer = package / "completion_revision_current.json"
+    record = {
+        "schema_version": SCHEMA,
+        "revision_kind": SOURCE_ATTACHMENT_REVISION_KIND,
+        "completion_path": (package / "completion_receipt.json").relative_to(root).as_posix(),
+        "completion_payload_sha256": completion["payload_sha256"],
+        "source_id": completion["source_id"],
+        "source_identity": completion["source_identity"],
+        "authorization": authorization,
+        "review_summary": review_summary,
+        "previous_pointer_sha256": sha(pointer.read_bytes()) if pointer.exists() else "",
+        "protected_inputs": [{"path": path, "sha256": value} for path, value in sorted(protected.items())],
+        "changes": list(changes.values()),
+        "source_attachments": [*attachments, item],
+    }
+    # Keep the predecessor's evidence bindings.  A source attachment does not
+    # re-open or weaken an already accepted content/historical correction.
+    for key in ("current_source_review", "legacy_receipt", "projection_evidence", "retirement_candidates"):
+        if key in prior:
+            record[key] = copy.deepcopy(prior[key])
+    record["payload_sha256"] = digest(record)
+    return record
+
+
+def revoke_source_attachment_revision(root, package, record_path, pointer_before):
+    """Undo only this transaction's still-current attachment activation."""
+    root, package = Path(root).resolve(), Path(package).resolve()
+    pointer = inside(root, (package / "completion_revision_current.json").relative_to(root).as_posix())
+    record_path = inside(root, record_path)
+    if not record_path.resolve().is_relative_to((package / "completion_revisions").resolve()):
+        raise ValueError("source attachment revision is outside its package")
+    if not pointer.is_file():
+        raise ValueError("source attachment revision pointer is missing during rollback")
+    active = json.loads(pointer.read_text(encoding="utf-8"))
+    if active.get("revision_path") != record_path.relative_to(root).as_posix():
+        raise ValueError("source attachment revision is no longer current during rollback")
+    if pointer_before is None:
+        pointer.unlink()
+    else:
+        temporary = pointer.with_suffix(".rollback.tmp")
+        with temporary.open("xb") as stream:
+            stream.write(pointer_before)
+        os.replace(temporary, pointer)
+    if record_path.is_file():
+        record_path.unlink()
+    folder = record_path.parent
+    if folder.is_dir() and not any(folder.iterdir()):
+        folder.rmdir()
+
+
+def write_source_attachment_note(root, source_note_path, after_bytes):
+    """Atomically apply the source-note bytes preflighted for one attachment.
+
+    This remains in the completed-source revision owner: the rail supplies only
+    an already-validated byte sequence and immediately registers it through
+    ``accept``.  It is deliberately not a general note writer.
+    """
+    root = Path(root).resolve()
+    source_note = inside(root, source_note_path)
+    if source_note.suffix.lower() != ".md" or not source_note.is_file() or not isinstance(after_bytes, bytes):
+        raise ValueError("source attachment note write is invalid")
+    temporary = source_note.with_name("." + source_note.name + ".source-attachment.tmp")
+    if temporary.exists():
+        raise ValueError("source attachment note temporary already exists")
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(after_bytes)
+        os.replace(temporary, source_note)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
 
 
 def _accept_locked(root, package, completion, record):
@@ -588,6 +838,30 @@ def _render_preserving_format(*, has_bom, newline, candidate_text, candidate_lin
             + (newline.join(candidate_lines) + (newline if candidate_text.endswith('\n') else '')).encode('utf-8'))
 
 
+def _source_body_with_attachment_paths(body, paths):
+    """Keep accepted source-attachment paths when rendering a content revision."""
+    if not isinstance(paths, list) or not all(isinstance(path, str) and path for path in paths):
+        raise ValueError('accepted source attachment paths are invalid')
+    lines = body.replace('\r\n', '\n').splitlines()
+    if not lines or lines[0] != '---':
+        raise ValueError('content revision source note lacks frontmatter')
+    try:
+        end = lines.index('---', 1)
+    except ValueError as exc:
+        raise ValueError('content revision source note has unterminated frontmatter') from exc
+    start = next((index for index in range(1, end) if lines[index].split(':', 1)[0].strip() == 'source_attachments'
+                  and ':' in lines[index]), None)
+    rendered = ['source_attachments:'] + ['  - ' + json.dumps(path, ensure_ascii=False) for path in paths]
+    if start is None:
+        lines[end:end] = rendered
+    else:
+        finish = start + 1
+        while finish < end and (lines[finish].startswith(' ') or not lines[finish].strip()):
+            finish += 1
+        lines[start:finish] = rendered
+    return '\n'.join(lines) + ('\n' if body.endswith(('\n', '\r\n')) else '')
+
+
 def _metadata_only_source_slice_bytes(before, candidate):
     """Fail closed unless the rendered slice changes only primary-work rows."""
     has_bom, newline, before_text, before_lines = _normalized_artifact_lines(before)
@@ -665,7 +939,11 @@ def prepare_content_revision(root, kp_path, plan_path, *, authorization, reason)
         raise ValueError('content revision requires a verified completed source')
     completion_path = worker.bound_completion_path(root, package, kp_path, before_kp)
     original_completion = worker.read_json(completion_path)
-    accepted_changes = read_current(root, package, original_completion)
+    prior_record = read_current(root, package, original_completion, include_record=True)
+    accepted_changes = {item['original_path']: item for item in prior_record.get('changes', [])}
+    inherited_attachments = copy.deepcopy(prior_record.get('source_attachments'))
+    if inherited_attachments is not None and not isinstance(inherited_attachments, list):
+        raise ValueError('accepted source attachment record is invalid')
     replacement = build_kp(plan, package, root=root)
     old_ids = worker.knowledge_package_point_ids(before_kp)
     new_ids = worker.knowledge_package_point_ids(replacement)
@@ -729,6 +1007,9 @@ def prepare_content_revision(root, kp_path, plan_path, *, authorization, reason)
     projection = adapter.build_plan(root, vault, slice_path, data)
     projection['content_revision'] = True
     projection['source_body'] = adapter.preserve_existing_created(projection['source_note'], projection['source_body'])
+    if inherited_attachments:
+        live_paths = adapter.frontmatter_fields(projection['source_note']).get('source_attachments')
+        projection['source_body'] = _source_body_with_attachment_paths(projection['source_body'], live_paths)
     projection['application_body'] = adapter.preserve_existing_created(projection['application_note'], projection['application_body'])
     projection['knowledge_point_bodies'] = [
         adapter.preserve_existing_created(path, body)
@@ -836,7 +1117,8 @@ def prepare_content_revision(root, kp_path, plan_path, *, authorization, reason)
                'previous_pointer_sha256': sha(pointer.read_bytes()) if pointer.exists() else '',
                'authorization': authorization, 'reason': reason, 'items': items,
                'projection_scope': 'metadata_only_primary_work' if metadata_only_primary_work else 'content_revision',
-               'protected_inputs': protected, 'prior_changes': accepted_changes,
+                'protected_inputs': protected, 'prior_changes': accepted_changes,
+                'source_attachments': inherited_attachments,
                'retirement_candidates': retirement}
     _save_json(journal_path, journal)
     return _prepared_result(root, journal_path, journal)
@@ -925,6 +1207,8 @@ def _content_revision_record(root, package, completion, journal, review_file, re
                                 for item in projections],
         'retirement_candidates': journal['retirement_candidates'],
     }
+    if journal.get('source_attachments'):
+        record['source_attachments'] = copy.deepcopy(journal['source_attachments'])
     record['payload_sha256'] = digest(record)
     return record
 

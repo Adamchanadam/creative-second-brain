@@ -9,6 +9,7 @@ import os
 import argparse
 import copy
 import contextlib
+import hashlib
 import html
 import io
 import json
@@ -32,10 +33,10 @@ try:
     from tools.ingest_plan_contract import COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
     from tools.ingest_plan_contract import RELATION_TYPES, PRIOR_DECISIONS, CONCEPT_RELATIONS, CONCEPT_RELATION_LINK_TYPES, blank_prior_knowledge, caption_reading_chunks
     from tools.obsidian_idea_retrieval import PRIOR_LINK_MIN_SCORE, existing_concept_names, prior_registry_fingerprint, related_prior_candidates
-    from tools.image_source_contract import visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
+    from tools.image_source_contract import inspect_image, validate_visual_analysis, visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
     from tools.infographic_prompt_contract import reader_page_payload, reader_page_sha256, visible_text_from_prompt
     from tools.outcome_page_generator import web_markdown_reader_text
-    from tools.outcome_page_quality_audit import content_repetition_issues, reader_surface_text_findings
+    from tools.outcome_page_quality_audit import audit_source, content_repetition_issues, reader_surface_text_findings
     from tools.workspace_paths import vault_path
 except ModuleNotFoundError:
     import compiler_worker_v2 as worker
@@ -43,10 +44,10 @@ except ModuleNotFoundError:
     from ingest_plan_contract import COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
     from ingest_plan_contract import RELATION_TYPES, PRIOR_DECISIONS, CONCEPT_RELATIONS, CONCEPT_RELATION_LINK_TYPES, blank_prior_knowledge, caption_reading_chunks
     from obsidian_idea_retrieval import PRIOR_LINK_MIN_SCORE, existing_concept_names, prior_registry_fingerprint, related_prior_candidates
-    from image_source_contract import visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
+    from image_source_contract import inspect_image, validate_visual_analysis, visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
     from infographic_prompt_contract import reader_page_payload, reader_page_sha256, visible_text_from_prompt
     from outcome_page_generator import web_markdown_reader_text
-    from outcome_page_quality_audit import content_repetition_issues, reader_surface_text_findings
+    from outcome_page_quality_audit import audit_source, content_repetition_issues, reader_surface_text_findings
     from workspace_paths import vault_path  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -176,15 +177,67 @@ def continuation_order(order):
     status, action = order.get("status"), order.get("action")
     if status == "completed" and action == "stop" and order.get("completion"):
         continuation = {"owner": "none", "directive": "deliver_verified_result", "task_complete": True}
+        if order.get("same_work_images"):
+            continuation["instructions"] = ("This source is complete. Before reporting, attach any images the user supplied "
+                                            "of this same work as same_work_images describes; the task is done when those are attached too.")
     elif status in {"ready", "needs_input"} and action in agent_actions:
         continuation = {
             "owner": "agent", "directive": "continue_same_job", "task_complete": False,
             "instructions": "Perform this work order within the user's existing scope, then submit and advance the same job. needs_input means the program needs agent work; it is not a human-input request or permission to end the task. Reconcile existing image actions before any dispatch. Stop only for verified completion or a concrete safety, authority, source, or runtime blocker; report the precise blocker without claiming completion.",
         }
+        if order.get("same_work_check"):
+            continuation["instructions"] += (" Exception: if same_work_check finds that this image belongs to an already saved work, "
+                                             "follow its if_same_work instead; then this job is not submitted.")
     else:
         continuation = {"owner": "agent", "directive": "report_blocker", "task_complete": False,
                         "instructions": "Inspect and report the concrete blocker. Do not bypass gates, retry image generation blindly, or infer new authority."}
     return {**order, "continuation": continuation}
+
+
+def same_work_images_guidance(source_id):
+    """Route images of this same work to source attachments, not new sources."""
+    return {
+        "when": "The user supplied images that belong to this same work (screenshots, slides, figures or pages of it).",
+        "action": "Attach each image to this source with the command below, one image at a time, following its work order. "
+                  "Do not ingest such images as separate sources with brain-image; that would count one work as several sources. "
+                  "Report each image's result; if one fails, say which one and why.",
+        "command": ["python", "-B", "tools/brain.py", "rail", "attach-source-image",
+                    "--source-id", source_id, "--image-file", "<workspace-relative image path>"],
+    }
+
+
+SAME_WORK_CANDIDATE_LIMIT = 12
+
+
+def same_work_check(root, source_id, image_path):
+    """Before a new image source is analysed, offer the recent completed sources it may belong to."""
+    vault = vault_dir(root)
+    rows = []
+    registry = vault / "_registry" / "sources.jsonl"
+    if registry.is_file():
+        for line in registry.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("source_id") != source_id and row.get("status") == "linked" and row.get("source_note_path"):
+                rows.append(row)
+    candidates = []
+    for row in sorted(rows, key=lambda item: str(item["source_id"]), reverse=True)[:SAME_WORK_CANDIDATE_LIMIT]:
+        note = vault / str(row["source_note_path"])
+        title = vault_adapter.frontmatter_fields(note).get("title") if note.is_file() else ""
+        candidates.append({"source_id": row["source_id"], "title": str(title or "")})
+    return {
+        "question": "Is this image part of a work that is already saved (a screenshot, slide, figure or page of it)? "
+                    "Decide from the image and from what the user said, before analysing it as a new source.",
+        "recent_sources": candidates,
+        "older_sources": "If the work may be older than this list, search the source note titles under the vault's sources/ folder.",
+        "if_same_work": "Do not submit this job. Attach the image to that source instead, following the work order of: "
+                        + " ".join(["python", "-B", "tools/brain.py", "rail", "attach-source-image", "--source-id",
+                                    "<that source_id>", "--image-file", image_path])
+                        + ". Tell the user the image was attached to that source, not saved as a new source.",
+        "otherwise": "Continue with this work order as a new image source.",
+    }
 
 
 def catalog_version_for(job):
@@ -223,11 +276,13 @@ def _work_order(root, job_id):
         return {**base, "status": "needs_input", "action": "review_original_image",
                 "original_image": (package / bundle["original_image_path"]).relative_to(root).as_posix(),
                 "source_image_sha256": bundle["source_image_sha256"],
+                "same_work_check": same_work_check(root, job["source_id"], (package / bundle["original_image_path"]).relative_to(root).as_posix()),
                 "required_source": "tools/image_source_contract.py:validate_visual_analysis",
                 "response_template": response_template,
                 "response_draft_file": draft_path.relative_to(root).as_posix(),
                 "allowed_values": {"visual_type": sorted(VISUAL_TYPES), "anchor_kind": sorted(ANCHOR_KINDS), "coverage_disposition": sorted(COVERAGE_DISPOSITIONS), "transcription_confidence": ["high", "medium", "low", "unreadable"], "verification_status": ["image_visible", "externally_verified", "needs_external_verification"]},
                 "instructions": (
+                    "First answer same_work_check; continue below only for a new source. "
                     "Inspect the entire original image, transcribe every legible region, mark unreadable regions, then perform a second visual check. Do not invent passed evidence. Fill response_draft_file in place (it already holds the response template inside the workspace; never write the response outside the project) and submit that file. "
                     + (
                         "For this knowledge_only job, submit only image_analysis first. After it is accepted, the next work order supplies the accepted IMG-* blocks and any related-knowledge candidates for semantic_plan. Copy each IMG-* ID exactly as printed there; never merge, extend or compute a range. A legacy combined image_analysis plus semantic_plan response remains accepted, but is not required."
@@ -296,7 +351,8 @@ def _work_order(root, job_id):
             from completion_revisions import read_current_idea_candidates
         return {**base, "status": "completed", "action": "stop", "completion": result,
                 "idea_candidates": read_current_idea_candidates(root, package, receipt),
-                "execution": receipt.get("execution"), "program_events": job.get("rail_events", [])}
+                "execution": receipt.get("execution"), "program_events": job.get("rail_events", []),
+                "same_work_images": same_work_images_guidance(job["source_id"])}
     if bundle.get("asset_mode") == "case_evidence":
         if kp.get("infographics"):
             raise worker.CompilerWorkerV2Error("case evidence package cannot retain infographic pages")
@@ -2199,6 +2255,505 @@ def completed_source_job(root: Path, source_id: str, *, allow_infographic_resume
     return job, package, kp_path, kp
 
 
+SOURCE_ATTACHMENT_WORK_ORDER_PREFIX = "attach-source-image"
+SOURCE_ATTACHMENT_SCHEMA = "source_attachment_record_v1"
+SOURCE_ATTACHMENT_OPEN_STATUSES = frozenset({"running", "awaiting_imagegen", "committing"})
+
+
+def source_attachment_context(root: Path, source_id: str) -> dict[str, object]:
+    """Resolve one writable completed source, before any attachment write."""
+    worker.validated_identifier(source_id, "source_id")
+    open_jobs, owners = [], []
+    for path in sorted(worker.job_root(root).glob("*.json")):
+        job = worker.read_json(path)
+        if job.get("source_id") != source_id:
+            continue
+        if job.get("status") in SOURCE_ATTACHMENT_OPEN_STATUSES:
+            open_jobs.append(str(job.get("job_id") or path.name))
+        if job.get("job_kind") not in worker.REVISION_JOB_KINDS:
+            owners.append(job)
+    if open_jobs:
+        raise worker.CompilerWorkerV2Error(
+            "attach-source-image requires no running, awaiting_imagegen, or committing job: " + ", ".join(open_jobs)
+        )
+    if len(owners) != 1 or owners[0].get("status") != "completed":
+        raise worker.CompilerWorkerV2Error("attach-source-image requires exactly one completed source owner")
+    vault = vault_dir(root).resolve()
+    try:
+        from tools.outcome_page_generator import completed_v2_package_for_standard_outcome, read_markdown_record
+        from tools import completion_revisions
+    except ModuleNotFoundError:
+        from outcome_page_generator import completed_v2_package_for_standard_outcome, read_markdown_record
+        import completion_revisions  # type: ignore
+    kp_path = completed_v2_package_for_standard_outcome(
+        vault, source_id, vault / "outcome-pages" / f"{source_id}_outcome.html", root=root,
+    )
+    if kp_path is None:
+        raise worker.CompilerWorkerV2Error("attach-source-image requires one verified current completed source package")
+    package = kp_path.parent
+    kp = worker.read_json(kp_path)
+    job = worker.validate_job_package_binding(root, kp_path, kp)
+    completion_path = worker.bound_completion_path(root, package, kp_path, kp)
+    completion = worker.read_json(completion_path)
+    completed = worker.completed_receipt_readback(root, package, kp_path, kp)
+    if completed is None or completed.get("superseded_by"):
+        raise worker.CompilerWorkerV2Error("attach-source-image current completion is not uniquely verified")
+    if completed.get("payload_sha256") != completion.get("payload_sha256"):
+        raise worker.CompilerWorkerV2Error("attach-source-image current completion changed during resolution")
+    adapter = completion.get("adapter") if isinstance(completion.get("adapter"), dict) else {}
+    source_note_rel = str(adapter.get("source_note") or "")
+    source_note = worker.relative_to_root(root / source_note_rel, root, "completed source note")
+    if not source_note.is_file() or source_note == vault or vault not in source_note.parents:
+        raise worker.CompilerWorkerV2Error("attach-source-image source note is outside the selected vault")
+    source_fields, _ = read_markdown_record(source_note)
+    adapter_fields = vault_adapter.frontmatter_fields(source_note)
+    current_attachments = source_fields.get("source_attachments", [])
+    adapter_attachments = adapter_fields.get("source_attachments", [])
+    if not isinstance(current_attachments, list) or current_attachments != adapter_attachments:
+        raise worker.CompilerWorkerV2Error("attach-source-image source_attachments does not read back as one path list")
+    kp_catalog = []
+    seen_kp_ids = set()
+    for value in adapter.get("knowledge_points") or []:
+        path = worker.relative_to_root(root / str(value), root, "completed knowledge-point note")
+        fields = vault_adapter.frontmatter_fields(path)
+        kp_id = str(fields.get("kp_id") or fields.get("kp_uid") or "").strip()
+        title = str(fields.get("knowledge_point") or fields.get("definition") or kp_id).strip()
+        if not kp_id or kp_id in seen_kp_ids:
+            raise worker.CompilerWorkerV2Error("attach-source-image completed knowledge-point IDs are invalid")
+        seen_kp_ids.add(kp_id)
+        kp_catalog.append({"kp_id": kp_id, "title": title, "path": path.relative_to(root).as_posix()})
+    prior = completion_revisions.read_current(root, package, completion, include_record=True)
+    # An older attachment can be rooted at the parent text package while a
+    # knowledge-only infographic child is the current reader package.  The
+    # child itself has no attachment revision in that case, so inherit the
+    # verified parent record for the next append; never use a superseded
+    # parent receipt as this transaction's completion.
+    if not prior.get("source_attachments"):
+        origin_package = worker.infographic_origin_package(root, package, kp)
+        if origin_package != package:
+            origin_kp_path = origin_package / "knowledge_package.json"
+            if origin_kp_path.is_file():
+                origin_kp = worker.read_json(origin_kp_path)
+                origin_completion_path = worker.bound_completion_path(root, origin_package, origin_kp_path, origin_kp)
+                origin_completion = worker.read_json(origin_completion_path)
+                # The parent can legitimately be overlaid by the current
+                # infographic child.  First prove that narrow receipt-bound
+                # allowance, then retain the immutable parent attachment
+                # record as the append baseline.
+                worker.completed_receipt_readback(root, origin_package, origin_kp_path, origin_kp)
+                inherited = completion_revisions.read_current(
+                    root, origin_package, origin_completion, include_record=True, verify=False
+                )
+                if inherited.get("source_attachments"):
+                    prior = inherited
+    return {
+        "job": job, "package": package, "kp_path": kp_path, "kp": kp, "completion": completion,
+        "vault": vault, "source_note": source_note, "source_fields": source_fields,
+        "source_attachments": current_attachments, "knowledge_points": kp_catalog, "prior_record": prior,
+    }
+
+
+def source_attachment_image(root: Path, image_file: Path):
+    path = worker.relative_to_root(image_file, root, "source attachment image")
+    if not path.is_file():
+        raise worker.CompilerWorkerV2Error("attach-source-image image file is missing")
+    try:
+        inspection = inspect_image(path)
+    except Exception as exc:
+        raise worker.CompilerWorkerV2Error(f"attach-source-image image is unsupported: {exc}") from exc
+    try:
+        from tools.outcome_page_quality_audit import user_image_structure_issue
+    except ModuleNotFoundError:
+        from outcome_page_quality_audit import user_image_structure_issue
+    # The reader audit checks attachments with this same rule; refuse here, before any write.
+    problem = user_image_structure_issue(path.read_bytes())
+    if problem:
+        raise worker.CompilerWorkerV2Error(f"attach-source-image image {problem}")
+    return path, inspection
+
+
+def attachment_work_order_paths(package: Path, image_sha256: str) -> tuple[Path, Path]:
+    stem = f"{SOURCE_ATTACHMENT_WORK_ORDER_PREFIX}-{image_sha256[:12]}"
+    directory = package / WORK_ORDER_DIR
+    return directory / f"{stem}.json", directory / f"{stem}.draft.json"
+
+
+def attachment_response_template(source_id: str, inspection, knowledge_points: list[dict[str, str]]) -> dict[str, object]:
+    return {
+        "schema_version": "source_attachment_response_v1",
+        "source_id": source_id,
+        "image_analysis": visual_analysis_template(
+            image_sha256=inspection.sha256,
+            dimensions={"width": inspection.width, "height": inspection.height},
+        ),
+        "kp_mapping": [{"anchor_id": "IMG-001", "kp_ids": [], "disposition": "supports", "reason": ""}],
+        "available_knowledge_points": [
+            {"kp_id": item["kp_id"], "title": item["title"]} for item in knowledge_points
+        ],
+    }
+
+
+def deliver_source_attachment_work_order(root: Path, context: dict[str, object], image_path: Path, inspection) -> dict[str, object]:
+    package = context["package"]
+    assert isinstance(package, Path)
+    order_path, draft_path = attachment_work_order_paths(package, inspection.sha256)
+    template = attachment_response_template(str(context["completion"]["source_id"]), inspection, context["knowledge_points"])
+    work_order = {
+        "schema_version": "source_attachment_work_order_v1",
+        "status": "needs_input",
+        "action": "review_source_attachment",
+        "source_id": context["completion"]["source_id"],
+        "image_file": image_path.relative_to(root).as_posix(),
+        "image_sha256": inspection.sha256,
+        "image_dimensions": {"width": inspection.width, "height": inspection.height},
+        "knowledge_points": template["available_knowledge_points"],
+        "response_contract": "image_analysis must satisfy validate_visual_analysis; every IMG-* anchor maps once to supports (one or more listed KP IDs) or excluded (with a reason).",
+        "work_order_file": order_path.relative_to(root).as_posix(),
+        "draft_file": draft_path.relative_to(root).as_posix(),
+        "submit": ["python", "-B", "tools/brain.py", "rail", "attach-source-image", "--source-id", str(context["completion"]["source_id"]), "--image-file", image_path.relative_to(root).as_posix(), "--response-file", draft_path.relative_to(root).as_posix()],
+    }
+    order_bytes, draft_bytes = _json_text(work_order).encode("utf-8"), _json_text(template).encode("utf-8")
+    with exclusive(root):
+        if _differs(order_path, order_bytes):
+            worker.write_bytes(order_path, order_bytes)
+        if not draft_path.exists():
+            worker.write_bytes(draft_path, draft_bytes)
+    return {"status": "needs_input", "action": "review_source_attachment", "source_id": context["completion"]["source_id"],
+            "work_order_file": work_order["work_order_file"], "draft_file": work_order["draft_file"],
+            "write_performed": False}
+
+
+def source_attachment_response_issues(response: object, inspection, knowledge_points: list[dict[str, str]]) -> list[dict[str, str]]:
+    errors: list[dict[str, str]] = []
+    if not isinstance(response, dict):
+        return [{"code": "response_invalid", "message": "response file must contain one JSON object"}]
+    analysis = response.get("image_analysis")
+    if not isinstance(analysis, dict):
+        errors.append({"code": "image_analysis_missing", "message": "image_analysis must be an object"})
+        analysis = {}
+    for issue in validate_visual_analysis(
+        analysis, expected_image_sha256=inspection.sha256,
+        expected_width=inspection.width, expected_height=inspection.height,
+    ):
+        errors.append({"code": str(issue.get("code") or "image_analysis_invalid"), "message": str(issue.get("message") or "invalid image analysis")})
+    anchors = [str(item.get("id") or "") for item in analysis.get("anchors", []) if isinstance(item, dict) and str(item.get("id") or "")]
+    mapping = response.get("kp_mapping")
+    if not isinstance(mapping, list):
+        return errors + [{"code": "kp_mapping_missing", "message": "kp_mapping must be a list"}]
+    by_anchor: dict[str, list[dict[str, object]]] = {}
+    for index, row in enumerate(mapping, start=1):
+        if not isinstance(row, dict):
+            errors.append({"code": "kp_mapping_invalid", "message": f"kp_mapping[{index}] must be an object"})
+            continue
+        anchor_id = str(row.get("anchor_id") or "")
+        by_anchor.setdefault(anchor_id, []).append(row)
+    target_ids = {item["kp_id"] for item in knowledge_points}
+    for anchor_id in anchors:
+        entries = by_anchor.get(anchor_id, [])
+        if len(entries) != 1:
+            errors.append({"code": "kp_mapping_anchor_count", "message": f"{anchor_id} needs exactly one kp_mapping entry"})
+            continue
+        row = entries[0]
+        disposition = str(row.get("disposition") or "")
+        kp_ids = row.get("kp_ids")
+        reason = str(row.get("reason") or "").strip()
+        if disposition not in {"supports", "excluded"}:
+            errors.append({"code": "kp_mapping_disposition", "message": f"{anchor_id} disposition must be supports or excluded"})
+        elif disposition == "supports":
+            if not isinstance(kp_ids, list) or not kp_ids:
+                errors.append({"code": "kp_mapping_supports_empty", "message": f"{anchor_id} supports needs one or more KP IDs"})
+            else:
+                for kp_id in kp_ids:
+                    if not isinstance(kp_id, str) or kp_id not in target_ids:
+                        errors.append({"code": "kp_mapping_foreign_kp", "message": f"{anchor_id} names a KP outside the target source: {kp_id}"})
+        elif not reason:
+            errors.append({"code": "kp_mapping_excluded_reason", "message": f"{anchor_id} excluded needs a reason"})
+    for anchor_id in by_anchor:
+        if anchor_id not in anchors:
+            errors.append({"code": "kp_mapping_unknown_anchor", "message": f"kp_mapping names an unknown anchor: {anchor_id}"})
+    return errors
+
+
+def append_source_attachment_frontmatter(
+    before: bytes, asset_rel: str, *, inherited_paths: list[str] | None = None
+) -> bytes:
+    bom = b"\xef\xbb\xbf" if before.startswith(b"\xef\xbb\xbf") else b""
+    text = before.decode("utf-8-sig")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    # Overlay fixtures and historical notes can contain CRCRLF.  Normalize
+    # every carriage-return form before rendering one deliberate newline form,
+    # otherwise YAML paths are written correctly but cannot be read back.
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    fields = vault_adapter.frontmatter_fields_from_text(normalized)
+    existing = fields.get("source_attachments", [])
+    if not isinstance(existing, list):
+        raise worker.CompilerWorkerV2Error("source_attachments must be a YAML list")
+    expected = list(inherited_paths) if inherited_paths else list(existing)
+    if inherited_paths and existing and existing != inherited_paths:
+        raise worker.CompilerWorkerV2Error("source_attachments do not match the accepted attachment record")
+    if asset_rel in expected:
+        return before
+    expected.append(asset_rel)
+    end = normalized.find("\n---", 4)
+    if not normalized.startswith("---\n") or end == -1:
+        raise worker.CompilerWorkerV2Error("source note has no writable YAML frontmatter")
+    frontmatter, body = normalized[:end], normalized[end:]
+    lines = frontmatter.split("\n")
+    for index, line in enumerate(lines):
+        if line.split(":", 1)[0].strip() != "source_attachments" or ":" not in line:
+            continue
+        if line.split(":", 1)[1].strip() not in {"", "[]"}:
+            raise worker.CompilerWorkerV2Error("source_attachments must be a YAML list")
+        insert_at = index + 1
+        while insert_at < len(lines) and lines[insert_at].startswith("  - "):
+            insert_at += 1
+        lines[index] = "source_attachments:"
+        lines[index + 1:insert_at] = ["  - " + json.dumps(path, ensure_ascii=False) for path in expected]
+        return bom + ("\n".join(lines) + body).replace("\n", newline).encode("utf-8")
+    lines.extend(["source_attachments:", *["  - " + json.dumps(path, ensure_ascii=False) for path in expected]])
+    return bom + ("\n".join(lines) + body).replace("\n", newline).encode("utf-8")
+
+
+def restore_attachment_paths(snapshots: dict[Path, bytes | None]) -> list[str]:
+    problems = []
+    for path, before in reversed(list(snapshots.items())):
+        try:
+            if before is None:
+                if path.exists():
+                    path.unlink()
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                worker.write_bytes(path, before)
+        except OSError as exc:
+            problems.append(f"{path}: {type(exc).__name__}: {exc}")
+    return problems
+
+
+def attach_source_image(root: Path, source_id: str, image_file: Path, response_file: Path | None = None) -> dict[str, object]:
+    """Create or apply the bounded source-attachment transaction."""
+    root = root.resolve()
+    context = source_attachment_context(root, source_id)
+    image_path, inspection = source_attachment_image(root, image_file)
+    existing_hashes = []
+    for relative in context["source_attachments"]:
+        path = (context["vault"] / str(relative)).resolve()
+        if path == context["vault"] or context["vault"] not in path.parents:
+            raise worker.CompilerWorkerV2Error("registered source attachment is outside the selected vault")
+        if path.is_file():
+            existing_hashes.append(worker.sha256_bytes(path.read_bytes()))
+    if inspection.sha256 in existing_hashes:
+        return {"status": "already_attached", "source_id": source_id, "image_sha256": inspection.sha256, "write_performed": False}
+    if response_file is None:
+        return deliver_source_attachment_work_order(root, context, image_path, inspection)
+    response_path = worker.relative_to_root(response_file, root, "source attachment response")
+    try:
+        response = worker.read_json(response_path)
+    except (OSError, ValueError) as exc:
+        return {"status": "failed", "source_id": source_id, "errors": [{"code": "response_unreadable", "message": str(exc)}], "write_performed": False}
+    errors = source_attachment_response_issues(response, inspection, context["knowledge_points"])
+    if errors:
+        return {"status": "failed", "source_id": source_id, "errors": errors, "write_performed": False}
+    analysis = response["image_analysis"]
+    mapping = response["kp_mapping"]
+    try:
+        from tools import completion_revisions
+    except ModuleNotFoundError:
+        import completion_revisions  # type: ignore
+    vault = context["vault"]
+    assert isinstance(vault, Path)
+    try:
+        # The lock is the transaction boundary: a failed acquisition has not
+        # observed or written any rollback target, so it must be a zero-write
+        # failure even if another writer changes the vault meanwhile.
+        with vault_adapter.vault_write_lock(vault):
+            context = source_attachment_context(root, source_id)
+            errors = source_attachment_response_issues(response, inspection, context["knowledge_points"])
+            if errors:
+                return {"status": "failed", "source_id": source_id, "errors": errors, "write_performed": False}
+            package, kp_path, completion = context["package"], context["kp_path"], context["completion"]
+            vault, source_note = context["vault"], context["source_note"]
+            assert isinstance(package, Path) and isinstance(kp_path, Path) and isinstance(completion, dict)
+            assert isinstance(vault, Path) and isinstance(source_note, Path)
+            existing_hashes = []
+            for relative in context["source_attachments"]:
+                path = (vault / str(relative)).resolve()
+                if path == vault or vault not in path.parents:
+                    raise worker.CompilerWorkerV2Error("registered source attachment is outside the selected vault")
+                if path.is_file():
+                    existing_hashes.append(worker.sha256_bytes(path.read_bytes()))
+            if inspection.sha256 in existing_hashes:
+                return {"status": "already_attached", "source_id": source_id, "image_sha256": inspection.sha256, "write_performed": False}
+            # The vault may sit in a nested folder; package records use workspace-relative paths.
+            vault_rel = vault.relative_to(root).as_posix()
+            source_note_asset_rel = f"assets/{source_id.lower()}/attachments/{inspection.sha256[:12]}{inspection.extension}"
+            asset_rel = f"{vault_rel}/{source_note_asset_rel}"
+            asset_path = worker.relative_to_root(root / asset_rel, root, "source attachment destination")
+            evidence_path = package / "source_attachments" / f"{inspection.sha256}.json"
+            outcome_path = vault / "outcome-pages" / f"{source_id}_outcome.html"
+            outcome_revision_path = package / "outcome_projection_revisions.json"
+            pointer_path = package / "completion_revision_current.json"
+            candidate_path = outcome_path.with_name(f".{source_id}_outcome_revision_candidate.html")
+            reader_lock_path = outcome_path.parent / ".reader-projection.lock"
+            source_relative = source_note.relative_to(vault).as_posix()
+            note_reader_path = outcome_path.parent / "notes" / ("N-" + hashlib.sha256(source_relative.encode()).hexdigest()[:24] + ".html")
+            catalogue_paths = [
+                *(outcome_path.parent / name for name in ("index.html", "knowledge.html", "thinking.html")),
+                *sorted(path for path in outcome_path.parent.glob("page-[0-9][0-9][0-9].html") if path.is_file()),
+                vault / "成果頁總覽.md",
+            ]
+            snapshots = {path: path.read_bytes() if path.is_file() else None for path in (
+                source_note, asset_path, evidence_path, outcome_path, outcome_revision_path, pointer_path,
+                candidate_path, reader_lock_path, outcome_path.parent / ".thinking-catalog.lock", note_reader_path,
+                *catalogue_paths,
+            )}
+            accepted_record = None
+            try:
+                asset_path.parent.mkdir(parents=True, exist_ok=True)
+                worker.write_bytes(asset_path, image_path.read_bytes())
+                if worker.sha256_bytes(asset_path.read_bytes()) != inspection.sha256:
+                    raise worker.CompilerWorkerV2Error("attach_source_image_asset_readback_failed")
+                prior_paths = []
+                for row in context["prior_record"].get("source_attachments", []):
+                    asset = str(row.get("asset_path") or "")
+                    if not asset.startswith(vault_rel + "/"):
+                        raise worker.CompilerWorkerV2Error("accepted source attachment is outside the selected vault")
+                    prior_paths.append(Path(asset).relative_to(vault_rel).as_posix())
+                expected_paths = [*(prior_paths or context["source_attachments"]), source_note_asset_rel]
+                source_after = append_source_attachment_frontmatter(
+                    snapshots[source_note] or b"", source_note_asset_rel, inherited_paths=prior_paths or None
+                )
+                completion_revisions.write_source_attachment_note(
+                    root, source_note.relative_to(root).as_posix(), source_after,
+                )
+                try:
+                    from tools.outcome_page_generator import read_markdown_record
+                except ModuleNotFoundError:
+                    from outcome_page_generator import read_markdown_record
+                fields, _ = read_markdown_record(source_note)
+                adapter_fields = vault_adapter.frontmatter_fields(source_note)
+                if fields.get("source_attachments") != adapter_fields.get("source_attachments") or fields.get("source_attachments") != expected_paths:
+                    raise worker.CompilerWorkerV2Error("attach_source_image_frontmatter_readback_failed")
+                attachment = {
+                    "asset_path": asset_rel, "sha256": inspection.sha256, "mime_type": inspection.mime_type,
+                    "dimensions": {"width": inspection.width, "height": inspection.height},
+                    "title": str(analysis["title"]), "summary": str(analysis["summary"]), "kp_mapping": mapping,
+                }
+                immutable = {
+                    "schema_version": SOURCE_ATTACHMENT_SCHEMA, "source_id": source_id,
+                    "source_identity": completion["source_identity"], "attachment": attachment,
+                    "source_note": {"path": source_note.relative_to(root).as_posix(), "before_sha256": worker.sha256_bytes(snapshots[source_note] or b""), "after_sha256": worker.sha256_bytes(source_after)},
+                    "image_analysis": analysis,
+                }
+                immutable["payload_sha256"] = completion_revisions.digest(immutable)
+                evidence_path.parent.mkdir(parents=True, exist_ok=True)
+                with evidence_path.open("xb") as stream:
+                    stream.write(_json_text(immutable).encode("utf-8"))
+                attachment["record_path"] = evidence_path.relative_to(root).as_posix()
+                attachment["record_sha256"] = worker.sha256_bytes(evidence_path.read_bytes())
+                revision = completion_revisions.prepare_source_attachment_revision(
+                    root, package, completion, source_note_path=source_note.relative_to(root).as_posix(), attachment=attachment,
+                    attachment_record={"path": attachment["record_path"], "sha256": attachment["record_sha256"]},
+                    authorization="Submitted through rail attach-source-image with a validated image analysis and KP mapping.",
+                    review_summary="Validated user-provided visual evidence was attached to this completed source.",
+                    prior_record=context["prior_record"],
+                )
+                accepted_record = completion_revisions.accept(root, package, completion, revision)
+                worker.refresh_completed_outcome(root, kp_path)
+                readback = worker.completed_receipt_readback(root, package, kp_path, worker.read_json(kp_path))
+                try:
+                    from tools.outcome_page_generator import refresh_outcome_index
+                except ModuleNotFoundError:
+                    from outcome_page_generator import refresh_outcome_index
+                catalogue = refresh_outcome_index(
+                    vault=vault, output_dir=outcome_path.parent,
+                    portal=vault / "成果頁總覽.md", defer_nebula=True,
+                )
+                for path in catalogue.get("index_pages", []):
+                    snapshots.setdefault(Path(str(path)), None)
+                quality = audit_source(vault, source_id)
+                if quality.get("status") != "ready":
+                    raise worker.CompilerWorkerV2Error("attach_source_image_reader_quality_failed")
+            except Exception as exc:
+                rollback_errors = []
+                if accepted_record is not None:
+                    try:
+                        completion_revisions.revoke_source_attachment_revision(root, package, accepted_record.relative_to(root).as_posix(), snapshots[pointer_path])
+                    except Exception as undo:
+                        rollback_errors.append(str(undo))
+                rollback_errors.extend(restore_attachment_paths(snapshots))
+                code = "attach_source_image_undo_incomplete" if rollback_errors else "attach_source_image_write_failed"
+                return {"status": "failed", "source_id": source_id, "errors": [{"code": code, "message": str(exc)}],
+                        "rollback_errors": rollback_errors, "write_performed": bool(rollback_errors)}
+    except Exception as exc:
+        return {"status": "failed", "source_id": source_id,
+                "errors": [{"code": "attach_source_image_write_failed", "message": str(exc)}],
+                "rollback_errors": [], "write_performed": False}
+    return {"status": "completed", "source_id": source_id, "image_sha256": inspection.sha256,
+            "asset_path": asset_rel, "attachment_record": evidence_path.relative_to(root).as_posix(),
+            "completion_revision": accepted_record.relative_to(root).as_posix() if accepted_record else "",
+            "readback": (readback or {}).get("status"), "reader_quality": quality.get("status"), "write_performed": True,
+            "redirected_image_jobs": retire_redirected_image_jobs(root, source_id, inspection.sha256, package)}
+
+
+REDIRECTABLE_IMAGE_JOB_STATUSES = frozenset({"running", "needs_input", "accepted"})
+
+
+def retire_redirected_image_jobs(root: Path, target_source_id: str, image_sha256: str, target_package: Path) -> list[dict[str, object]]:
+    """Remove the unfinished new-image job opened for an image that was attached instead.
+
+    same_work_check sends such an image here before its own job is submitted.  That job
+    never reached the vault, so only its own job file, accepted input and package are
+    removed, and only when every check below holds; otherwise it is reported and kept.
+    """
+    vault = vault_dir(root).resolve()
+    registry = vault / "_registry" / "sources.jsonl"
+    registered = registry.read_text(encoding="utf-8") if registry.is_file() else ""
+    package_root = (root / "outputs" / "compiler_worker_v2").resolve()
+    results = []
+    with exclusive(root):
+        jobs = [(path, worker.read_json(path)) for path in sorted(worker.job_root(root).glob("*.json"))]
+        for path, job in jobs:
+            source_id = str(job.get("source_id") or "")
+            if (job.get("source_input_kind") != "user_provided_image" or job.get("accepted_input_sha256") != image_sha256
+                    or source_id == target_source_id):
+                continue
+            reasons = []
+            if job.get("status") not in REDIRECTABLE_IMAGE_JOB_STATUSES:
+                reasons.append(f"status {job.get('status')}")
+            if any(other.get("source_id") == source_id for other_path, other in jobs if other_path != path):
+                reasons.append("another job shares its source ID")
+            if f'"{source_id}"' in registered or any(vault.glob(f"**/{source_id}*")) or any(vault.glob(f"**/*{source_id.lower()}*")):
+                reasons.append("the vault already holds files of this source")
+            package = (root / str(job.get("package_dir") or "")).resolve() if job.get("package_dir") else None
+            if package is not None and (package.parent != package_root or not package.name.startswith(source_id + "_")
+                                        or (package / "completion_receipt.json").exists()):
+                reasons.append("its package is not an unfinished package of this source")
+            accepted = (root / str(job.get("accepted_input_path") or "")).resolve()
+            if job.get("accepted_input_path") and accepted.parent != worker.job_root(root).resolve() / "accepted-inputs":
+                reasons.append("its accepted input is outside the job folder")
+            entry = {"job_id": job.get("job_id"), "source_id": source_id}
+            if reasons:
+                results.append({**entry, "status": "kept", "reasons": reasons})
+                continue
+            removed = [path.relative_to(root).as_posix()]
+            if job.get("accepted_input_path") and accepted.is_file():
+                removed.append(accepted.relative_to(root).as_posix())
+            if package is not None and package.is_dir():
+                removed.append(package.relative_to(root).as_posix() + "/")
+            record = target_package / "source_attachments" / "redirected_image_jobs.jsonl"
+            record.parent.mkdir(parents=True, exist_ok=True)
+            with record.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({**entry, "image_sha256": image_sha256, "removed": removed,
+                                         "removed_at": worker.iso_now()}, ensure_ascii=False) + "\n")
+            if package is not None and package.is_dir():
+                shutil.rmtree(package)
+            if job.get("accepted_input_path") and accepted.is_file():
+                accepted.unlink()
+            path.unlink()
+            results.append({**entry, "status": "removed", "removed": removed})
+    return results
+
+
 def active_infographic_addition(root: Path, package: Path):
     candidates = []
     revisions = package / "revisions"
@@ -2795,6 +3350,10 @@ def main():
     check_infographic.add_argument("--response-file", type=Path, required=True)
     check_infographic.add_argument("--revision-id")
     check_infographic.add_argument("--rebuild", action="store_true")
+    attach_source = commands.add_parser("attach-source-image")
+    attach_source.add_argument("--source-id", required=True)
+    attach_source.add_argument("--image-file", type=Path, required=True)
+    attach_source.add_argument("--response-file", type=Path)
     for command in ("prepare-content-revision", "apply-content-revision"):
         revision = commands.add_parser(command)
         revision.add_argument("--job-id", required=True)
@@ -2844,6 +3403,8 @@ def main():
                         root, args.source_id, args.response_file, args.revision_id,
                         rebuild=args.rebuild,
                     )
+                elif args.command == "attach-source-image":
+                    result = attach_source_image(root, args.source_id, args.image_file, args.response_file)
                 elif args.command == "prepare-infographic-recovery":
                     try:
                         from . import completion_revisions

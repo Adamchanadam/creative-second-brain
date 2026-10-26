@@ -442,7 +442,8 @@ def audit_page(page_path: Path, vault: Path) -> dict[str, object]:
     text = visible_text(reader_html)
     source_input_kind = body_attribute(html_text, "data-source-input-kind")
     source_note = first_matching_source_note(vault, page_path.stem.replace("_outcome", ""))
-    source_fields = frontmatter_fields(source_note.read_text(encoding="utf-8")) if source_note else {}
+    source_note_text = source_note.read_text(encoding="utf-8") if source_note else ""
+    source_fields = frontmatter_fields(source_note_text) if source_note else {}
     asset_mode = str(source_fields.get("asset_mode") or "formal_infographic").strip().strip('"')
     missing_texts = [item for item in REQUIRED_PAGE_TEXTS if item not in text]
     overview_heading = SOURCE_OVERVIEW_HEADINGS.get(source_input_kind)
@@ -455,6 +456,7 @@ def audit_page(page_path: Path, vault: Path) -> dict[str, object]:
         asset_mode=asset_mode,
         source_input_kind=source_input_kind,
         source_fields=source_fields,
+        source_attachments=frontmatter_list(source_note_text, "source_attachments"),
     )
     direct_provenance_ok = has_direct_source_provenance(
         html_text,
@@ -651,6 +653,22 @@ def frontmatter_fields(text: str) -> dict[str, str]:
     return fields
 
 
+def frontmatter_list(text: str, key: str) -> list[str]:
+    """Read one flat YAML string list (``key:`` then ``  - "item"`` lines)."""
+    if not text.startswith("---"):
+        return []
+    end = text.find("\n---", 3)
+    lines = text[3:end if end != -1 else 3].splitlines()
+    items, inside = [], False
+    for line in lines:
+        if not line.startswith(" "):
+            inside = line.split(":", 1)[0].strip() == key
+            continue
+        if inside and line.lstrip().startswith("- "):
+            items.append(line.lstrip()[2:].strip().strip('"').strip("'"))
+    return items
+
+
 def body_attribute(html_text: str, attribute: str) -> str:
     body_match = re.search(r"<body\b([^>]*)>", html_text, flags=re.IGNORECASE)
     if not body_match:
@@ -799,6 +817,35 @@ def _webp_stream_issue(raw: bytes) -> str | None:
     return None if kinds & {b"VP8 ", b"VP8L", b"ANMF"} else "WebP has no image data"
 
 
+def user_image_structure_issue(raw: bytes) -> str | None:
+    """Why user-supplied image bytes are not one complete PNG, JPEG or WebP, or None."""
+    try:
+        mime_type = identify_image(raw)[0]
+    except ImageSourceContractError:
+        return "is not a readable PNG, JPEG or WebP file"
+    structure = {"image/png": _png_stream_issue, "image/jpeg": _jpeg_stream_issue, "image/webp": _webp_stream_issue}
+    problem = structure[mime_type](raw)
+    return f"is incomplete or corrupt ({problem})" if problem else None
+
+
+def attachment_image_issue(path: Path) -> str | None:
+    """Validate a declared source attachment: user evidence like an original.
+
+    Its bytes are kept as supplied (PNG, JPEG or WebP), and its file name starts
+    with the first 12 hex digits of its SHA-256, which binds name to content.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return "source attachment is unreadable"
+    problem = user_image_structure_issue(raw)
+    if problem:
+        return f"source attachment {problem}"
+    if not hashlib.sha256(raw).hexdigest().startswith(path.stem):
+        return "source attachment does not match the hash in its file name"
+    return None
+
+
 def original_image_issue(path: Path, source_fields: dict[str, str] | None) -> str | None:
     """Validate a user-provided original: complete PNG/JPEG/WebP bound to its registered hash.
 
@@ -837,9 +884,11 @@ def missing_assets(
     asset_mode: str = "formal_infographic",
     source_input_kind: str = "",
     source_fields: dict[str, str] | None = None,
+    source_attachments: list[str] | None = None,
 ) -> list[str]:
     issues = []
     image_sources = re.findall(r'<img\s+[^>]*src="([^"]+)"', html_text)
+    attachments = {(vault / item).resolve() for item in source_attachments or []}
     if not image_sources:
         return [] if asset_mode == "knowledge_only" else ["missing infographic image"]
     # The shared reader shell supplies one project-owned brand PNG.  It keeps
@@ -871,6 +920,10 @@ def missing_assets(
             issues.append(f"missing image file: {source}")
         elif original is not None and candidate == original:
             problem = original_image_issue(candidate, source_fields)
+            if problem:
+                issues.append(f"{problem}: {source}")
+        elif candidate in attachments:
+            problem = attachment_image_issue(candidate)
             if problem:
                 issues.append(f"{problem}: {source}")
         elif not is_png_file(candidate):

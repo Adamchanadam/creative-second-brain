@@ -127,6 +127,22 @@ python -B tools/brain.py rail apply-content-revision --job-id <原job> --revisio
 
 標準成果頁須依正式 job 綁定、資訊圖目前指標及已驗證的 case 修訂來源選擇目前收據，不以時間排序。已有完成鏈但無唯一可驗證目前版本時停止，不可退回無收據的直接生成。撤回／待覆核關係不得由舊計劃重播重新設為成立；KP 閱讀、概念筆記及星雲均以 registry 的已成立關係投影。
 
+### 來源附圖
+
+一份已完成來源可以掛上使用者提供的原圖，作為同一來源的視覺證據（例如影片截圖、文章內的圖表、投影片）。附圖不是新來源：不分配新 source ID，不新增知識點、概念、跨來源連結或 registry 的知識點／關係列，因此同一作品不會被計算成多個來源。不是同一作品的圖片仍以普通 `brain-image` 獨立入庫。
+
+```text
+python -B tools/brain.py rail attach-source-image --source-id <已完成來源> --image-file <工作區相對圖片路徑>
+python -B tools/brain.py rail attach-source-image --source-id <已完成來源> --image-file <同一圖片> --response-file <解讀與對應.json>
+```
+
+1. **前提。** 目標來源必須已完成（有唯一可讀回的現行完成收據，且沒有 `running`、`awaiting_imagegen` 或 `committing` 的工作）；否則零寫入停止。來源的 `source_retention_mode`、正文、知識點、概念、資訊圖欄位及原收據都不改。
+2. **工作單。** 第一次呼叫只回傳工作單：沿用原圖入庫的 `review_original_image` 解讀範本與 `tools/image_source_contract.py:validate_visual_analysis`（同一套錨點、轉寫、主張、覆蓋與第二輪校對要求），另加一份對應表：每個 IMG 錨點只可對應到目標來源**現有**的知識點 ID（可多個），或標 `excluded` 並寫理由；工作單列出目標來源全部現有知識點的 ID 與標題。不設 related knowledge、prior_knowledge、概念或關係欄位。
+3. **檢查與寫入。** 帶 `--response-file` 時，所有檢查在第一個位元組寫入前完成：圖片 SHA-256 與尺寸、解讀契約、每個錨點都有對應或排除、對應的知識點 ID 確實屬於目標來源、圖片檔在工作區內且為支援格式。任何一項不符即零寫入並一次列出全部錯誤。通過後在 vault 寫入鎖內：原圖存入 `assets/<來源>/attachments/`（檔名含圖片 hash 前綴），來源筆記 frontmatter 的 `source_attachments` 追加該圖片的 vault 相對路徑（與 `source_assets` 一樣是路徑字串清單，不放巢狀物件），圖片標題、hash、解讀及每個錨點對應的知識點保存於原 package 的不可變附圖紀錄，成果頁重建並多一個「附圖」區（顯示圖片、圖片標題、一句定位及「支持的知識點」連結）。全部改動以 `tools/completion_revisions.py` 登記為一份獨立種類的已接受完成修訂並即時以 `completed_receipt_readback` 讀回；讀回失敗即把本次寫入的檔案還原、撤銷登記。附圖絕不經 `project --write-vault` 的 full writer。
+4. **重跑與多張圖。** 同一來源再附同一 hash 的圖片回報 `already_attached`，零寫入；不同圖片逐張附加，次序按附加先後。附圖的耗時不改原入庫的計時。
+5. **讀者面。** 預覽圖次序見 [成果頁索引資料層設計 §4](成果頁索引資料層設計.md)；附圖是第三順位，所以沒有資訊圖、也沒有自身原圖的文字或網址來源，會以第一張附圖作預覽。附圖區只顯示圖片內容與知識點連結，不顯示提交者、處理狀態、hash 或內部路徑。
+6. **進入方式（由程式輸出帶到 AI，入口技能不必另記）。** 使用者不需要知道這個命令或來源編號。文字、網址或圖片來源完成時，完成工作單帶 `same_work_images`：說明使用者同時提供的同一作品圖片要逐張附到本來源，並附上已填好本來源編號的命令。新圖片來源的第一份解讀工作單帶 `same_work_check`：列出最近 12 個已完成來源的編號與標題，要求 AI 先判斷這張圖是否屬於其中一個作品（依圖片內容及使用者所說）；若是，便不提交該工作，改把圖片附到那個來源，並如實告訴使用者。附圖成功後，程式找出為同一張圖（同一 SHA-256）開出、仍未完成的新圖片工作；只有在它的狀態是 `running`、`needs_input` 或 `accepted`，沒有其他工作共用其來源編號，登記檔與 vault 都沒有它的檔案，而且套件沒有完成收據時，才刪去它自己的工作檔、已接受輸入及套件，並在目標來源套件的 `source_attachments/redirected_image_jobs.jsonl` 記一行（工作、來源編號、圖片 hash、刪去的路徑）。任一條件不符便保留原工作並在結果列明原因。被刪去的來源編號從未寫入 vault，可由下一個新來源沿用。
+
 ## 7. 時間與使用者體驗契約
 
 - 接單：目標 **60 秒內**返回 `job_id`／已接單；由當前 agent 續行同一工作。本版沒有自動背景服務，不把這個目標當成已驗證的非同步能力。
@@ -174,7 +190,7 @@ python -B tools/brain.py rail apply-content-revision --job-id <原job> --revisio
 | `start --text-file <UTF-8 原文>` | 保存原始 bytes，另產生只正規化換行及邊緣空白的完整正文；不經網站清理器 | 原始檔 hash、全文逐字比較及 canonical hash 一致 |
 | `start --image-file <原圖>` | 先保存 PNG／JPEG／WebP 原圖，再回傳固定解讀表；逐區轉寫、不可讀處標示及第二輪對照原圖 | 原圖身份、尺寸、轉寫、錨點及覆蓋表通過；原圖永久保留，不能用摘要取代 |
 
-文字附使用者現成 PNG 仍是文字來源的相容附件分支，沿用既有直接保存契約，不冒充 Codex 生圖。新 rail 不接收已生成圖片附件、不暗中重生；圖片來源與生成資訊圖是不同資產。PDF／影音未新增為第四種原生來源；符合 URL 擷取契約的 YouTube 字幕仍是 `url` 子類。
+使用者連同文字、網址或圖片一併提供的同一作品圖片（截圖、投影片、圖表），一律在來源完成後以 §6「來源附圖」掛上，不另開來源；進入方式見該節第 6 項。新 rail 不接收已生成圖片附件、不暗中重生；圖片來源與生成資訊圖是不同資產。PDF／影音未新增為第四種原生來源；符合 URL 擷取契約的 YouTube 字幕仍是 `url` 子類。
 
 新 rail 將全文保存與內容難度分開：文字與 URL 固定 `full_body_required`，圖片固定 `original_image_required`；只選 `article` 或 `paper`，不得用 `full_body` profile 逃避計時。舊工作可維持原 profile 讀回。
 

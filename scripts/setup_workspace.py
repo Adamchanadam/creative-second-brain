@@ -138,9 +138,9 @@ def skill_entry_payloads(profile: str) -> dict[str, bytes]:
     specialized = {
         "url": "可保存完整文章、論文或提交即已授權的 YouTube 字幕；摘要、影片描述、登入牆摘要或只讀頁面不當全文。正常 knowledge_only 工作單會提供完整來源 block、compact schema 及指紋；分析必填摘要、知識點和證據 block ID，來源 metadata／relations／application 在來源有實質依據時一併填入。程式保留全文、逐字證據、欄位、讀回和 completion receipt；資訊圖只在使用者之後明示時補做。若要查看結果，從 completion receipt 讀取當前成果頁；宿主有安全本機開檔工具時才開啟它，再用 `tools/brain.py home` 讀回首頁／成果總覽；沒有開檔工具便提供可點擊連結，不得假稱已打開。",
         "text": "保存完整文字時，先按正式 rail start／work_order 取得完整來源 block 和 compact schema。每個知識點必須有真實 evidence_block_ids；來源自身有實質用途、採納、關係、複利或品味判斷時，使用可選 application／relations／metadata 欄位表達，沒有既有脈絡便如實 needs_context。程式保留全文、逐字證據、既有 Obsidian 欄位、讀回和 completion receipt；資訊圖不阻礙文字成果，只在正式入庫後按明示要求補做。",
-        "image": "保留原圖，分開可讀文字與看不清內容；不把猜測寫成來源事實。正常 knowledge_only 可在同一份回應提交原圖解讀和以 IMG-* 錨點支持的 compact semantic plan；解讀已接納而語義被拒時，只按下一份工作單補語義，不重讀原圖。這是原圖入庫，不是畫圖或補圖。",
+        "image": "保留原圖，分開可讀文字與看不清內容；不把猜測寫成來源事實。正常 knowledge_only 先提交原圖解讀；接納後按下一份工作單交以 IMG-* 錨點支持的 compact semantic plan（同一份回應合併提交仍相容）；解讀已接納而語義被拒時，只按下一份工作單補語義，不重讀原圖。這是原圖入庫，不是畫圖或補圖。",
         "infographic": "只為指定 source_id 的已入庫知識製作可選資訊圖；文字內容已完成，不會因未製圖而受阻。先用 `tools/brain.py rail add-infographic --source-id <SOURCE_ID>` 讀取同一來源的工作單；已有合格圖只交付現有成果，不自動畫。只有使用者明示重製才加 `--rebuild` 並沿用原有 revision 計畫；沒有 source ID 時只列可選來源，不掃描全庫。原圖入庫不等於已製資訊圖。",
-        "think": "先讀證據再形成判斷；若 prepare 回 `needs_review` 或 `deferred_required_paths` 非空，代表原文與知識點包未齊，必須收窄問題或明示選定一個來源後重新 prepare，不可用部分材料作答。深入分析只有經過來源綁定的 answer、review 與讀回後才會保存思考紀錄；簡短事實回答不會自動建立紀錄。",
+        "think": "prepare 必須帶 `--expand \"<另一個問法>\"`（可多次）或 `--no-expand \"<一句理由>\"`，只有 `--selected-only` 例外；先讀證據再形成判斷；若 prepare 回 `needs_review` 或 `deferred_required_paths` 非空，代表原文與知識點包未齊，必須收窄問題或明示選定一個來源後重新 prepare，不可用部分材料作答。深入分析只有經過來源綁定的 answer、review 與讀回後才會保存思考紀錄；簡短事實回答不會自動建立紀錄。",
         "grow": "先評估來源是否適合補充知識庫；適合才交由正式入庫流程，不自動保存探索結果。",
         "create": "先選取庫內材料再創作；每個候選先讀其 `must_read`（來源筆記、應用筆記及已列衍生應用，來源筆記已載知識點草案），再按需要讀 `knowledge_point_paths` 列出的知識點；材料未齊時先收窄至一個完整來源包，不可把片段知識點當原文。新作品不自動回寫為知識來源。",
         "tidy": "先提出可核對的整理建議；只有使用者指定時才改閱讀頁或目錄。",
@@ -191,7 +191,8 @@ def skill_entry_payloads(profile: str) -> dict[str, bytes]:
         if key in {"url", "text", "image"}:
             work_order_step = (
                 "2. 只按回傳的工作單指標做：依序讀完閱讀檔、填草稿、跑 check 至通過、submit；未完成便以同一 job 繼續（`rail advance --job-id <id>` 或工作單所列命令）。"
-                + ("原圖入庫則按工作單的原圖解讀要求提交，不用閱讀檔。" if key == "image" else "")
+                + ("原圖入庫則按工作單的原圖解讀要求提交，不用閱讀檔；工作單的 `same_work_check` 判斷這張圖屬於已入庫作品時，改按其指示附到該來源，不提交本工作。" if key == "image"
+                   else "使用者同時附上同一作品的圖片（截圖、投影片、圖表）時，不要另用 brain-image 逐張入庫；先完成本來源，再按完成工作單的 `same_work_images` 逐張附上。")
                 + "\n"
             )
             entries[name] = (

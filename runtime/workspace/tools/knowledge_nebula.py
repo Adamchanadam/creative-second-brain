@@ -105,19 +105,11 @@ def values(v): return v if isinstance(v,list) else []
 
 def preview_files(vault, fields):
     """Use only canonical declared media; never crawl or regenerate images."""
-    case = fields.get('asset_mode') == 'case_evidence'
-    candidates = values(fields.get('evidence_screenshots' if case else 'infographics'))
-    label = '案例截圖' if case else '資訊圖'
-    if not candidates:
-        candidates = values(fields.get('evidence_screenshots'))
-        label = '案例截圖'
-    images = []
-    for rel in candidates:
-        if not isinstance(rel, str): continue
-        p = inside(vault, rel)
-        if p.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.gif'} or not p.is_file(): continue
-        images.append((p, label))
-    return images
+    try:
+        from tools.source_preview import source_preview_files
+    except ModuleNotFoundError:
+        from source_preview import source_preview_files
+    return [(preview.path, preview.kind) for preview in source_preview_files(vault, fields)]
 
 
 def preview_images(vault, fields, output_dir):
