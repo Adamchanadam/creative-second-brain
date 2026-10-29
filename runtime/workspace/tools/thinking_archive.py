@@ -28,6 +28,7 @@ SCHEMA = 'thinking_record_v1'
 ID = re.compile(r'ASK-[0-9a-f]{32}')
 LOCK_WAIT_SECONDS = 60
 LOCK_POLL_SECONDS = 0.5
+LOCK_UNLINK_TRIES, LOCK_UNLINK_PAUSE_SECONDS = 20, 0.05
 
 
 def safe(vault: Path, path: Path) -> Path:
@@ -62,16 +63,93 @@ def relative_note(relative: str) -> str:
     return relative
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether a process with this id is still running; anything unclear counts as alive (the lock then stays)."""
+    if pid <= 0:
+        return True
+    if os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE, ERROR_INVALID_PARAMETER = 0x1000, 259, 87
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.OpenProcess.argtypes, kernel.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], ctypes.c_void_p
+        kernel.GetExitCodeProcess.argtypes, kernel.GetExitCodeProcess.restype = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL
+        kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = [ctypes.c_void_p], wintypes.BOOL
+        handle = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return ctypes.get_last_error() != ERROR_INVALID_PARAMETER  # access denied etc.: assume it is alive
+        try:
+            code = wintypes.DWORD()
+            return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == STILL_ACTIVE
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _break_stale_lock(vault: Path, path: Path, text: str) -> bool:
+    """Remove a lock whose writer is dead, mutually exclusive with every other waiter.
+
+    Only the holder of the short-lived ``<lock>.break`` file may remove the lock, and only after re-reading it under that file and
+    finding the same content with the same dead pid; a lock that changed meanwhile belongs to someone else and is never touched.
+    A breaker that already exists (another waiter, or a crash) means: touch nothing and keep waiting.
+    """
+    breaker = safe(vault, path.with_name(path.name + '.break'))
+    try:
+        breaker.open('x', encoding='utf-8').close()
+    except OSError:
+        return False
+    try:
+        try:
+            current = path.read_text(encoding='utf-8')
+        except (OSError, UnicodeDecodeError):
+            return False
+        if current != text or _pid_alive(int(text)):
+            return False
+        path.unlink()
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            breaker.unlink()
+        except OSError:
+            pass
+
+
 @contextmanager
 def lock(vault: Path, path: Path):
     path = safe(vault, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + LOCK_WAIT_SECONDS
+    cleared = False
     while True:
         try:
             handle = path.open('x', encoding='utf-8')
             break
+        except PermissionError:
+            # Windows answers this instead of FileExistsError while the previous writer's lock is still being deleted: poll again.
+            # A folder that really cannot be written stays an error once the wait is over.
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(LOCK_POLL_SECONDS)
         except FileExistsError:
+            # A lock whose writer is known to be dead is the one recoverable stale case (removed once per call, under the breaker file).
+            # An empty, malformed or live lock keeps the old wait-then-raise rule.
+            try:
+                text = path.read_text(encoding='utf-8')
+                if not cleared and re.fullmatch(r'[0-9]{1,9}', text) and not _pid_alive(int(text)):
+                    cleared = True
+                    if _break_stale_lock(vault, path, text):
+                        continue
+                    cleared = False  # the breaker was busy or the lock changed: nothing was removed, so a later poll may try again
+            except (OSError, UnicodeDecodeError):
+                pass
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ValueError('another write is active or interrupted; inspect the named lock before resuming: ' + str(path))
@@ -81,7 +159,16 @@ def lock(vault: Path, path: Path):
             handle.write(str(os.getpid()))
         yield
     finally:
-        path.unlink()  # Only the lock acquired by this invocation.
+        # Only the lock acquired by this invocation.  Windows refuses the delete for an instant while a waiter reads the lock
+        # (to see whether its writer is dead): try again briefly instead of leaving a lock behind that names a live process.
+        for attempt in range(LOCK_UNLINK_TRIES):
+            try:
+                path.unlink()
+                break
+            except PermissionError:
+                if attempt == LOCK_UNLINK_TRIES - 1:
+                    raise
+                time.sleep(LOCK_UNLINK_PAUSE_SECONDS)
 
 
 def atomic_text(vault: Path, path: Path, content: str):

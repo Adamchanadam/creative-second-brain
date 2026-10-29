@@ -19,12 +19,17 @@ from urllib.request import build_opener, ProxyHandler
 import webbrowser
 
 import knowledge_nebula as nebula
+try:
+    import knowledge_cradle as cradle
+except ImportError:
+    # A workspace copy whose managed files (brain.json) do not list knowledge_cradle.py yet still serves the reader, only without 星之搖籃.
+    cradle = None
 # The one "may the reader layer be rebuilt now?" answer lives in knowledge_nebula (refresh_installed asks it too); same names here.
 from knowledge_nebula import GUARD_DOCTOR_SECONDS, ProjectionPaused, doctor_python, projection_guard, record_projection_pause
 from reader_port_policy import candidate_ports, find_reader_state
 from reader_service_lease import ReaderLease
 
-SERVICE_GENERATION = "knowledge-nebula-server-v7"
+SERVICE_GENERATION = "knowledge-nebula-server-v8"
 PREFERENCE_SCHEMA = "knowledge_nebula_preferences_v1"
 DEFAULT_PREFERENCES = {"schema": PREFERENCE_SCHEMA, "palette": "violet", "reduced_motion": False, "entrance_enabled": True}
 PALETTE_IDS = {"violet", "aurora", "rose", "amber"}
@@ -196,6 +201,12 @@ def reader_input_stamp(root: Path) -> tuple:
     return tuple(stamps)
 
 
+class NoCradle:
+    """Stands in for the 星之搖籃 jobs when knowledge_cradle.py is not part of this workspace copy."""
+    def close(self): pass
+    def busy(self): return 0
+
+
 class NebulaServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -221,10 +232,15 @@ class NebulaServer(ThreadingHTTPServer):
         self.refresh_jobs_lock = threading.Lock()
         self.watch_stop = threading.Event()
         self.watch_thread = None
+        # A port that cannot be bound closes this half-built server (and so its cradle) before the error reaches main(), which then tries
+        # the next port: the stand-in keeps that close from replacing the OSError.
+        self.cradle = NoCradle()
         super().__init__(('127.0.0.1', port), Handler)
         self.origin = f'http://127.0.0.1:{self.server_port}'
         self.page_url = self.origin+'/'+quote(self.page.relative_to(self.root).as_posix(), safe='/')
         self.home_url = self.origin + '/index.html#prompts'
+        # The 星之搖籃 jobs and their single worker.  Construction only reads an existing runtime folder; none is created until a job is accepted.
+        self.cradle = cradle.Cradle(self, lambda root: reader_input_stamp(root)) if cradle else NoCradle()
 
     def begin_write(self) -> bool:
         """Atomically reject new projection or preference writes after handoff."""
@@ -246,6 +262,8 @@ class NebulaServer(ThreadingHTTPServer):
             if self.retiring:
                 return False
             self.retiring = True
+            # Stop admitting cradle work and end its AI process first; an archive step already holding build_lock still finishes (the drain below waits for it).
+            self.cradle.close()
             self.build_lock.acquire()
             self.build_lock.release()
             self.retire_requested.set()
@@ -331,11 +349,37 @@ class NebulaServer(ThreadingHTTPServer):
         if not self.begin_write():
             raise ValueError('reader service could not begin initial projection refresh')
         try:
+            return self._first_refresh()
+        finally:
+            self.end_write()
+
+    def _first_refresh(self) -> dict | None:
+        try:
             return self.refresh_projections()
         except ProjectionPaused:
             return None
-        finally:
-            self.end_write()
+
+    def start_initial_refresh(self, on_ready) -> list:
+        """The cold-start refresh beside the request loop, so an opener finds the service at once however long the rebuild takes
+        (it grows with the library).  Write admission is taken before the thread starts, so /api/ping says updating and the watcher
+        cannot begin a second rebuild meanwhile.  on_ready runs once the refresh is done, still holding write admission, so a stop
+        (which drains the writer) cannot end the service before the ready line is out; a failure of either is put in the returned
+        list and ends the service, as a failed cold start always has."""
+        if not self.begin_write():
+            raise ValueError('reader service could not begin initial projection refresh')
+        failure: list = []
+        def run():
+            try:
+                self._first_refresh()
+                on_ready()
+            except BaseException as error:
+                failure.append(error)
+            finally:
+                self.last_active = time.monotonic()
+                self.end_write()
+            if failure: self.retire_requested.set()
+        threading.Thread(target=run, daemon=True).start()
+        return failure
 
     def _run_refresh_job(self, job_id: str) -> None:
         while not self.begin_write():
@@ -385,6 +429,7 @@ class NebulaServer(ThreadingHTTPServer):
         # A handler can have accepted a request before the idle loop exits.
         # Close its later write admission before releasing this service's lease.
         self.close_write_admission()
+        self.cradle.close()
         self.watch_stop.set()
         if self.watch_thread: self.watch_thread.join()
         super().server_close()
@@ -394,7 +439,7 @@ class NebulaServer(ThreadingHTTPServer):
         self.start_watching()
         try:
             while (not self.retire_requested.is_set()
-                   and (time.monotonic()-self.last_active < self.idle_seconds or self.build_lock.locked())):
+                   and (time.monotonic()-self.last_active < self.idle_seconds or self.build_lock.locked() or self.cradle.busy())):
                 self.handle_request()
         finally:
             self.server_close()
@@ -441,6 +486,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_request(): return self.reply(403, {'error':'此連線只供本機星雲使用。'})
         self.server.last_active = time.monotonic()
         path = urlsplit(self.path).path
+        if path.startswith('/api/cradle/'): return self.cradle_request('GET', path)
         if path == '/api/status':
             pause = self.server.projection_pause
             return self.reply(200, {'app':'knowledge-nebula', 'identity':self.server.identity,
@@ -504,8 +550,54 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, body, kind)
         except (ValueError, OSError): return self.reply(404, {'error':'沒有此閱讀資源。'})
 
+    def cradle_body(self, raw, length):
+        try:
+            if length < 1 or length > 16384 or not self.headers.get('Content-Type', '').startswith('application/json'): raise ValueError('Invalid cradle request')
+            return json.loads(raw.decode('utf-8'))
+        except (ValueError, TypeError, UnicodeDecodeError):
+            raise cradle.CradleError(400, '孕育要求格式不正確，沒有開始孕育。') from None
+
+    def cradle_request(self, method, path):
+        """Every /api/cradle/ call.  Same origin and the page token (a POST also needs the exact Origin); the work itself lives in knowledge_cradle."""
+        raw, length = b'', 0
+        if method == 'POST':  # read the body first: a refusal sent over an unread request can be reset by Windows before the page sees it
+            try: length = int(self.headers.get('Content-Length', '0'))
+            except ValueError: length = 0
+            if 0 < length <= 65536: raw = self.rfile.read(length)
+        allowed = self.allowed_lifecycle_request() if method == 'POST' else self.allowed_preference_request()
+        if not allowed: return self.reply(403, {'error':'搖籃孕育只供目前本機星雲頁面使用。'})
+        if cradle is None: return self.reply(404, {'error':'這個工作區還沒有安裝星之搖籃。'})
+        self.server.last_active = time.monotonic()
+        store, missing = self.server.cradle, {'error':'沒有此孕育工作。'}
+        parts = path.removeprefix('/api/cradle/').split('/')
+        try:
+            if parts == ['runners'] and method == 'GET':
+                return self.reply(200, store.runners(refresh='refresh=1' in urlsplit(self.path).query.split('&')))
+            if parts == ['settings'] and method == 'POST':
+                try: body = self.cradle_body(raw, length)
+                except cradle.CradleError: raise cradle.CradleError(400, 'AI 設置的要求格式不正確。') from None
+                return self.reply(200, store.set_runner(body))
+            if parts == ['jobs']:
+                return self.reply(200, store.summaries()) if method == 'GET' else self.reply(202, store.create(self.cradle_body(raw, length)))
+            if len(parts) >= 2 and parts[0] == 'jobs' and re.fullmatch(r'CJ-\d{8}-\d{4}', parts[1]):
+                job_id, action = parts[1], '/'.join(parts[2:])
+                status = store.status(job_id)
+                if status is None: return self.reply(404, missing)
+                if method == 'GET' and action == '': return self.reply(200, status)
+                if method == 'GET' and action == 'draft':
+                    draft = store.draft(job_id)
+                    return self.reply(200, draft) if draft else self.reply(404, missing)
+                if method == 'POST' and action == 'retry': return self.reply(200, store.retry(job_id))
+                if method == 'POST' and action == 'cancel': return self.reply(200, store.cancel(job_id))
+        except cradle.CradleError as error:
+            return self.reply(error.status, {'error':error.message})
+        except (ValueError, OSError):
+            return self.reply(500, {'error':'孕育工作的資料夾無法使用，沒有開始孕育。'})
+        return self.reply(404, missing)
+
     def do_POST(self):
         path = urlsplit(self.path).path
+        if path.startswith('/api/cradle/'): return self.cradle_request('POST', path)
         if path == '/api/refresh-jobs':
             if not self.allowed_preference_request():
                 return self.reply(403, {'error':'此同步收據只供目前本機閱讀服務使用。'})
@@ -655,20 +747,29 @@ def main():
         for port in candidate_ports(identity):
             try: server = NebulaServer(root, port, args.idle_seconds)
             except OSError: continue
+            failure: list = []
             try:
-                # Not released through the gate yet: serve the existing pages, rebuild nothing.
-                server.initial_refresh()
+                url = server.home_url if args.page == 'home' else server.page_url
+                def announce():
+                    ready = {'status':'ready','url':url}
+                    if server.projection_pause: ready.update(projection_paused=True, reason=server.projection_pause['reason'])
+                    print(json.dumps(ready), flush=True)
+                # Not released through the gate yet: serve the existing pages, rebuild nothing.  With no page to serve yet (a new
+                # workspace) the first build still comes before any request; otherwise the existing pages are served while it runs,
+                # so the browser opens at once and the open page reloads itself if the rebuild changes it (its revision check).
+                if server.page.is_file():
+                    failure = server.start_initial_refresh(announce)
+                else:
+                    server.initial_refresh()
+                    announce()
+                if not args.no_browser: webbrowser.open(url)
                 # Initial projection work can take longer than a deliberately
                 # short test idle period.  Start the inactivity clock only once
                 # the loopback endpoint can actually accept its first request.
                 server.last_active = time.monotonic()
-                url = server.home_url if args.page == 'home' else server.page_url
-                ready = {'status':'ready','url':url}
-                if server.projection_pause: ready.update(projection_paused=True, reason=server.projection_pause['reason'])
-                print(json.dumps(ready), flush=True)
-                if not args.no_browser: webbrowser.open(url)
                 server.serve_until_idle()
             finally: server.server_close()
+            if failure: raise failure[0]  # the same record and notice as a cold start that failed before serving
             return 0
     finally:
         lease.release()

@@ -62,6 +62,8 @@ DIRECTION_STYLE = (
     "#direction ul{margin:8px 0 0;padding-left:1.2em}#direction li a{color:var(--gold)}"
     "@media (max-width:760px){#direction .direction-grid{grid-template-columns:1fr}}</style>"
 )
+NEBULA_AI_STYLE = ('<style>.nebula-ai{margin-left:12px;font-size:.85rem;color:var(--muted);text-decoration:none}'
+                   '.nebula-ai:hover{text-decoration:underline}</style>')
 
 
 def direction_section(vault: Path, vault_rel: str) -> str:
@@ -137,6 +139,12 @@ def document(*, runtime: Path, workspace: Path, vault_rel: str, display_name: st
     if page.count(marker) != 1:
         raise ValueError("daily-home renderer shape changed")
     page = page.replace(marker, direction_section(workspace / vault_rel, vault_rel) + marker, 1)
+    if (runtime / "tools" / "knowledge_cradle.py").is_file():
+        cta = re.search(r'<a class="nebula-cta"\s+href="([^"]*)"[^>]*>.*?</a>', page, re.S)
+        if cta is None:
+            raise ValueError("daily-home renderer shape changed")
+        page = (page[:cta.end()] + '<a class="nebula-ai" href="' + cta.group(1) + '#ai-setup">AI 設置</a>'
+                + NEBULA_AI_STYLE + page[cta.end():])
     return page
 
 

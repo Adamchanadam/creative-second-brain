@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import sys
 import tempfile
@@ -124,17 +125,18 @@ def assert_reproject_rejects_incomplete_and_stale_pages(work: Path) -> None:
 
 
 def assert_server_never_reports_ready_after_reader_failure(work: Path) -> None:
-    root, vault = work / "server-root", work / "server-root" / "vault"
-    vault.mkdir(parents=True)
-    (root / "brain.json").write_text(json.dumps({"vault": "vault"}), encoding="utf-8")
-
     class FakeServer:
         closed = False
         initial_refresh_called = False
+        initial_background_refresh_called = False
+        served = False
 
         def __init__(self, root, port, idle):
             self.root = Path(root)
             self.page = Path(root) / "vault" / "outcome-pages" / "nebula.html"
+            self.page_url = "http://127.0.0.1:54321/vault/outcome-pages/nebula.html"
+            self.home_url = "http://127.0.0.1:54321/index.html#prompts"
+            self.projection_pause = None
             self.last_active = 0
 
         def server_close(self):
@@ -153,23 +155,56 @@ def assert_server_never_reports_ready_after_reader_failure(work: Path) -> None:
             self.initial_refresh_called = True
             return self.refresh_projections()
 
+        def start_initial_refresh(self, on_ready):
+            self.initial_background_refresh_called = True
+            failure = []
+            try:
+                self.refresh_projections()
+                on_ready()
+            except BaseException as error:
+                failure.append(error)
+            return failure
+
         def serve_until_idle(self):
-            raise AssertionError("a failed reader projection was served as ready")
+            self.served = True
 
     def unavailable(*args, **kwargs):
         raise OSError("no existing local reader")
 
-    with patch.object(server, "candidate_ports", return_value=(54321,)), \
-         patch.object(server, "NebulaServer", FakeServer), \
-         patch.object(server, "refresh_reader_projections", side_effect=ValueError("catalogue incomplete")), \
-         patch.object(server, "build_opener", return_value=SimpleNamespace(open=unavailable)), \
-         patch.object(sys, "argv", ["knowledge_nebula_server.py", "--root", str(root), "--no-browser"]):
-        try:
-            server.main()
-        except ValueError as error:
-            assert str(error) == "catalogue incomplete"
-        else:
-            raise AssertionError("reader startup emitted ready despite an incomplete catalogue")
+    def assert_failure(existing_page: bool) -> FakeServer:
+        root, vault = work / ("background-root" if existing_page else "first-root"), work / ("background-root" if existing_page else "first-root") / "vault"
+        (vault / "outcome-pages").mkdir(parents=True)
+        if existing_page:
+            (vault / "outcome-pages" / "nebula.html").write_text("<main>previous reader</main>", encoding="utf-8")
+        (root / "brain.json").write_text(json.dumps({"vault": "vault"}), encoding="utf-8")
+        made = []
+
+        def constructed(*args, **kwargs):
+            instance = FakeServer(*args, **kwargs)
+            made.append(instance)
+            return instance
+
+        output = io.StringIO()
+        with patch.object(server, "candidate_ports", return_value=(54321,)), \
+             patch.object(server, "NebulaServer", side_effect=constructed), \
+             patch.object(server, "refresh_reader_projections", side_effect=ValueError("catalogue incomplete")), \
+             patch.object(server, "build_opener", return_value=SimpleNamespace(open=unavailable)), \
+             patch.object(sys, "argv", ["knowledge_nebula_server.py", "--root", str(root), "--no-browser"]), \
+             patch("sys.stdout", output):
+            try:
+                server.main()
+            except ValueError as error:
+                assert str(error) == "catalogue incomplete"
+            else:
+                raise AssertionError("reader startup emitted ready despite an incomplete catalogue")
+        assert '"ready"' not in output.getvalue()
+        assert len(made) == 1 and made[0].closed
+        return made[0]
+
+    first = assert_failure(False)
+    assert first.initial_refresh_called and not first.initial_background_refresh_called and not first.served
+    background = assert_failure(True)
+    assert not background.initial_refresh_called and background.initial_background_refresh_called and background.served
 
 
 def assert_refresh_build_ownership_and_receipts(work: Path) -> None:

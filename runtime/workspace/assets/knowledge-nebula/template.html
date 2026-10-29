@@ -303,26 +303,57 @@ body[data-ambient=true] .palette-control{bottom:65px}
 .cons-menu{display:flex;flex-direction:column;gap:4px;margin-top:8px}.cons-opt{display:flex;align-items:center;gap:8px;padding:7px 10px;border:1px solid var(--bd);border-radius:9px;background:transparent;font-size:12.5px;text-align:left;color:var(--silver)}.cons-opt i{flex:none;width:8px;height:8px;border-radius:50%;background:var(--c)}.cons-opt[aria-pressed=true]{border-color:var(--c);background:#ffffff12}.cons-opt .tick{margin-left:auto;color:var(--gold)}
 .cons-new{display:flex;gap:6px;margin-top:2px}.cons-new input{flex:1;min-width:0;padding:7px 9px;border:1px solid #ffffff30;border-radius:9px;background:#0a0d1dd0;color:#e8f0fb;font:inherit;font-size:12.5px}.cons-new button{padding:6px 10px;border-radius:9px;font-size:12px;white-space:nowrap}
 @media(max-width:600px){.cons-row,.cons-bar{max-width:none}}
+/* ===== Cradle step 1 (the encounter draw) and step 3 (background incubation): the pool choice, the three slots, the encounter card, the tier line under the meeting point, the job view and the badge by the cradle button. Warm gold is the cradle's colour; the ceremony has no frame, ring or banner (the one ring is the still gold ring round a locked star, all through an encounter (the draw, a re-draw and the card; the hero's place is locked from the start), which is not part of the ceremony). ===== */
+.enc-start{display:flex;flex-direction:column;gap:10px}.enc-pools{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}.enc-pools button{padding:7px 4px;border-radius:999px;font-size:13px}.enc-pools button[aria-checked=true]{border-color:#e8c27a99;color:var(--gold);background:#e8c27a1a}
+.enc-tip{margin:0;font-size:12px;color:var(--soft);line-height:1.6}.enc-draw,.enc-card{display:flex;flex-direction:column;gap:10px}.enc-draw[hidden],.enc-card[hidden]{display:none}
+.enc-head{display:flex;align-items:center;justify-content:space-between;gap:8px}.enc-head h3{margin:0;font-family:"Noto Serif TC","PMingLiU",serif;font-size:16px;letter-spacing:.12em;font-weight:500}.enc-head .again{height:30px}
+.enc-slots{list-style:none;margin:0;padding:0;display:grid;gap:6px}.enc-slots li{display:grid;grid-template-columns:auto auto 1fr auto;align-items:center;gap:3px 10px;padding:7px 10px;border:1px solid var(--bd);border-radius:10px;background:#ffffff0d}
+.enc-slots .role{font-size:11.5px;letter-spacing:.06em;color:var(--soft);white-space:nowrap}.enc-slots .name{min-width:0;font-weight:600;color:#e3eafa;overflow-wrap:anywhere}.enc-slots .name.wait{color:var(--soft);font-weight:400;letter-spacing:.3em}.enc-meta{grid-column:1/-1;font-size:12px;line-height:1.5;color:var(--soft)}
+.enc-slots li.lit{animation:enc-lit .9s ease-out}@keyframes enc-lit{from{background:#e8c27a24;border-color:#e8c27a66}}body[data-reduced=true] .enc-slots li.lit{animation:none}@media(prefers-reduced-motion:reduce){.enc-slots li.lit{animation:none}}
+.enc-lock{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--soft);font-size:12px}.enc-lock svg{width:12px;height:12px}.enc-lock[aria-pressed=true]{color:var(--gold);border-color:#e8c27a99;background:#e8c27a1a}.enc-lock:disabled{opacity:1;cursor:default}
+.enc-card-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap}.enc-badge{font-family:"Noto Serif TC","PMingLiU",serif;font-weight:500;letter-spacing:.2em;font-size:17px;color:#f5e6bd}.enc-badge em{font-style:normal;color:var(--gold);letter-spacing:.1em;margin-left:4px;font-size:13px}.enc-score{font-size:12px;color:var(--soft)}
+.enc-meters{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:12.5px;color:#c9d4e8}.enc-meters li{display:grid;grid-template-columns:44px 52px 1fr;align-items:center;gap:8px}.enc-meters b{font-weight:400;color:var(--soft)}.enc-bar{height:4px;border-radius:2px;background:#ffffff14;overflow:hidden}.enc-bar i{display:block;height:100%;background:#e8c27acc}
+.enc-seeds h4{margin:0 0 6px;font-size:12px;font-weight:400;color:var(--soft)}.enc-seed{display:block;width:100%;margin-bottom:6px;padding:7px 10px;border:1px dashed #e8c27aa6;border-radius:10px;background:#050813;color:#e8f0fb;text-align:left;font-size:13px;line-height:1.5}.enc-seed:hover{background:#e8c27a14}.enc-seed .q-dir{display:inline-block;margin-right:6px;padding:0 6px;border-radius:6px;background:#e8c27a1f;color:var(--gold);font-size:11px;line-height:1.6;white-space:nowrap}
+.enc-slots .no{font-size:13px;color:var(--gold)}.enc-slots li.focus{border-color:#e8c27a99;background:#e8c27a1f}
+.star.enc-drawn{width:max-content}.star.enc-focus{color:#fff4dc;background:#2b2312f2;box-shadow:0 0 0 1px #e8c27a,0 0 20px #e8c27a55}.star.enc-dim{opacity:var(--enc-dim,.5)!important}.star .enc-lock-ico{display:inline-block;width:.85em;height:.85em;margin-right:3px;vertical-align:-1px;color:#e8c27a}.star .enc-lock-ico svg{display:block;width:100%;height:100%}
+.enc-ring{position:fixed;left:0;top:0;transform:translate(-50%,-50%);border:1px solid #e8c27a;border-radius:50%;pointer-events:none;z-index:2}.enc-ring[hidden]{display:none}
+.bp-actions{flex-wrap:wrap}.star .enc-role{display:block;margin-bottom:2px;font-size:max(8px,.62em);letter-spacing:.1em;color:#9ba9c7}
+.enc-line{position:fixed;z-index:124;left:0;top:0;transform:translate(-50%,-50%);pointer-events:none;opacity:0;white-space:nowrap;font-family:"Noto Serif TC","PMingLiU",serif;font-size:15px;font-weight:500;letter-spacing:.3em;color:#f5e6bd;text-shadow:0 0 8px #000c,0 0 2px #000}
+.cradle-host{position:relative;display:inline-flex}.job-pill{position:absolute;z-index:131;top:calc(100% + 6px);right:0;height:24px;padding:0 10px;border:1px solid #e8c27acc;border-radius:999px;background:#1a1408f2;color:var(--gold);font-size:12px;line-height:22px;white-space:nowrap}.job-pill:hover{background:#2a2010f2}
+@media(max-width:600px){.job-pill{top:auto;bottom:calc(100% + 10px)}}
+.job-view{display:flex;flex-direction:column;gap:10px}.job-line{margin:0;font-size:14px;line-height:1.6;color:var(--silver)}.job-sub{margin:0;font-size:12px;line-height:1.6;color:var(--soft)}.job-err{margin:0;font-size:13px;line-height:1.6;color:#ffb89c}.job-detail{margin:6px 0 0;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--soft)}
+/* AI setup shares the cradle's glass and type; the modal stays below the toolbar and its badges. */
+.ai-setup-panel{position:fixed;inset:168px 12px 24px;margin:auto;width:min(420px,calc(100vw - 24px));height:fit-content;max-height:calc(100dvh - 192px);overflow:auto;padding:14px 16px 16px;border:1px solid var(--bd);border-radius:16px;background:rgb(from var(--glass) r g b / 1);box-shadow:0 20px 60px #0009;color:#d3dcee;font-size:13px;line-height:1.6;scrollbar-width:thin}
+.ai-setup-panel::backdrop{background:transparent}.ai-setup-panel header{display:flex;align-items:center;justify-content:space-between;gap:12px}.ai-setup-panel h2{margin:0;font-size:14px;font-weight:500;color:var(--silver);outline:0}.ai-setup-panel p{margin:12px 0}.ai-setup-panel button{font-size:12px}.ai-setup-panel button:disabled{opacity:.4;cursor:default}
+.ai-runners{display:flex;flex-direction:column;gap:8px;margin:12px 0;padding:0;border:0;min-width:0}.ai-runner{display:flex;align-items:flex-start;gap:9px;padding:10px;border:1px solid var(--bd);border-radius:10px;background:#ffffff08;overflow-wrap:anywhere}.ai-runner input{flex:none;margin:4px 0;accent-color:var(--gold)}.ai-runner-info{flex:1;min-width:0}.ai-runner-head{display:flex;flex-wrap:wrap;gap:4px 10px;color:var(--silver)}.ai-runner-version,.ai-runner-current{font-size:12px;color:var(--soft)}.ai-runner-current{color:var(--gold)}.ai-runner-status{display:block;margin-top:4px;font-size:12px;color:var(--soft)}.ai-setup-actions{display:flex;flex-wrap:wrap;gap:8px}.ai-setup-link{padding:2px 0;border:0;background:transparent;color:var(--cyan);font-size:12px}.ai-setup-link:hover{background:transparent;text-decoration:underline}#ai-runner-note{margin:2px 2px 0}#ai-runner-note button{margin-left:4px}
+.job-actions{display:flex;flex-wrap:wrap;gap:8px}.job-actions .again,.job-actions .primary{height:34px;font-size:12.5px;text-decoration:none}.job-actions .primary{padding:0 14px;border-radius:999px}.job-actions .primary:disabled{opacity:.4}.job-actions a.again{display:inline-flex;align-items:center}
+.job-choices{display:flex;flex-direction:column;gap:6px}.job-choice{display:flex;flex-direction:column;gap:3px;width:100%;padding:8px 10px;border:1px solid var(--bd);border-radius:10px;background:#ffffff06;text-align:left;font-size:13px;line-height:1.5;color:#dfe7ef}.job-choice[aria-pressed=true]{border-color:#e8c27a88;background:#e8c27a14;color:#fff}
+.job-tags{display:flex;flex-wrap:wrap;align-items:center;gap:6px}.job-angle{padding:0 6px;border-radius:6px;background:#e8c27a1f;color:var(--gold);font-size:11px;line-height:1.6}.job-surprise{font-size:11px;color:var(--gold)}.job-why{font-size:12px;color:var(--soft)}
+.job-draft{max-height:240px;margin:0;padding:8px 10px;overflow:auto;border:1px solid var(--bd);border-radius:10px;background:#050813;font:inherit;font-size:12px;line-height:1.7;color:#c9d4e8;white-space:pre-wrap;overflow-wrap:anywhere}.job-review{margin:0;padding-left:18px;font-size:12px;line-height:1.7;color:var(--soft)}
+#ai-start-note{margin:0 2px}
+body[data-encounter=card] #bp-actions1{position:sticky;bottom:-16px;z-index:2;margin:2px -16px -16px;padding:10px 16px 16px;background:#091020;border-top:1px solid var(--bd)}
+@media(max-width:600px){body[data-encounter] .searchbox{visibility:hidden}body[data-encounter=card] #bp-actions1{margin:2px -14px -14px;padding:10px 14px 14px}}
 </style></head><body>
 <canvas id="sky" aria-label="可拖動旋轉的知識星雲。亦可透過成果清單選取。"></canvas><div id="gnames" aria-label="主題群名稱"></div><div id="labels"></div><div id="focus-ring" aria-hidden="true"></div>
-<div class="top"><div class="brand"><h1>知識星雲</h1><button id="hint-open" class="ib sm" type="button"></button></div><nav class="tools" aria-label="星雲工具"><div class="seg" role="group" aria-label="檢視"><button id="overview" class="ib" type="button" aria-pressed="true"></button><button id="list-toggle" class="ib" type="button" aria-pressed="false"></button></div><button id="motion" class="ib" type="button" aria-pressed="false"></button><button id="ambient-toggle" class="ib" type="button" aria-pressed="false"></button><a id="catalog-link" class="ib" href="#"></a><button id="refresh-data" class="ib" type="button" data-sync="offline"><i class="status-dot"></i></button><button id="basket-open" class="ib" type="button" aria-expanded="false" aria-controls="basket-panel"><i id="basket-badge" class="badge" hidden></i><i id="birth-dot" class="badge dot warm" hidden></i></button></nav></div>
+<div class="top"><div class="brand"><h1>知識星雲</h1><button id="hint-open" class="ib sm" type="button"></button></div><nav class="tools" aria-label="星雲工具"><div class="seg" role="group" aria-label="檢視"><button id="overview" class="ib" type="button" aria-pressed="true"></button><button id="list-toggle" class="ib" type="button" aria-pressed="false"></button></div><button id="motion" class="ib" type="button" aria-pressed="false"></button><button id="ambient-toggle" class="ib" type="button" aria-pressed="false"></button><a id="catalog-link" class="ib" href="#"></a><button id="refresh-data" class="ib" type="button" data-sync="offline"><i class="status-dot"></i></button><span class="cradle-host"><button id="basket-open" class="ib" type="button" aria-expanded="false" aria-controls="basket-panel"><i id="basket-badge" class="badge" hidden></i><i id="birth-dot" class="badge dot warm" hidden></i></button><button id="job-pill" class="job-pill" type="button" hidden></button></span></nav></div>
 <div class="searchbox"><div class="search-row"><label class="search-field"><span data-icon="search"></span><input id="search" type="search" autocomplete="off" placeholder="搜尋" aria-label="搜尋"><button id="clear-search" class="ib xs" type="button" hidden></button></label><div id="palette-home" class="palette-home"></div><div class="pop-host"><button id="filter-toggle" class="ib" type="button"><i id="filter-badge" class="badge dot" hidden></i></button><div id="filter-pop" class="pop filter-pop" role="group" aria-label="篩選" hidden><div id="scene-kind" class="kinds" role="radiogroup" aria-label="節點類別"><button type="button" role="radio" data-kind="all">全部</button><button type="button" role="radio" data-kind="source"><i class="kdot"></i>知識成果</button><button type="button" role="radio" data-kind="idea"><i class="kdot hub"></i>主題與概念</button></div><select id="scene-group" aria-label="星雲主題群"></select></div></div></div><div id="results" class="search-results" hidden></div><div id="scene-nav" class="scene-nav"><div id="relation-legend" class="relation-filter" role="group" aria-label="關係線顏色與篩選"></div><div id="scene-pager" class="scene-pager"><button id="scene-prev" class="ib sm" type="button"></button><span id="scene-page"></span><button id="scene-next" class="ib sm" type="button"></button><span id="scene-info" class="sr"></span></div><nav id="group-crumb" class="group-crumb" aria-label="主題群位置" hidden></nav></div>
 <div id="cons-row" class="cons-row" role="group" aria-label="我的星座" hidden></div>
 <div id="cons-bar" class="cons-bar" hidden><div class="cons-bar-head"><i id="cons-dot" class="cons-dot"></i><b id="cons-name"></b><span id="cons-count"></span></div><div class="cons-bar-actions"><button id="cons-put" type="button"></button><button id="cons-members-toggle" type="button" aria-expanded="false" aria-controls="cons-members"></button><button id="cons-del" type="button" hidden></button><button id="cons-off" class="ib xs" type="button"></button></div><ul id="cons-members" class="cons-members" hidden></ul><div id="cons-pick" class="cons-pick" hidden></div><p id="cons-note" class="cons-note" role="status"></p></div></div>
 <aside class="intro" aria-label="統計"><span class="stats"></span></aside>
 <div class="zoom"><output id="depth-readout" class="sr" aria-label="視角倍率">1.0×</output><button id="zoom-out" class="ib" type="button"></button><button id="zoom-in" class="ib" type="button"></button><button id="reset" class="ib" type="button"></button></div>
 <footer class="footer"><span id="instruction" hidden></span><span>創造型第二大腦 | Adam Chan</span></footer>
-<aside id="hint-card" class="hint" role="note" aria-label="操作說明" hidden><p id="hint-ops"></p><p id="hint-keys" class="hint-keys"></p><p id="hint-pan" class="hint-keys"></p><ul id="hint-icons"></ul><p id="hint-dex-title" class="hint-keys" hidden></p><ul id="hint-dex" class="hint-dex" hidden></ul></aside>
-<div id="birth-note" class="birth-note" role="status" hidden><button id="birth-open" type="button"></button></div><div id="birth-stamp" class="birth-stamp" aria-hidden="true"></div>
+<aside id="hint-card" class="hint" role="note" aria-label="操作說明" hidden><p id="hint-ops"></p><p id="hint-keys" class="hint-keys"></p><p id="hint-pan" class="hint-keys"></p><ul id="hint-icons"></ul><p id="hint-dex-title" class="hint-keys" hidden></p><ul id="hint-dex" class="hint-dex" hidden></ul><p id="hint-enc-title" class="hint-keys" hidden></p><ul id="hint-enc-dex" class="hint-dex" hidden></ul></aside>
+<div id="birth-note" class="birth-note" role="status" hidden><button id="birth-open" type="button"></button></div><div id="birth-stamp" class="birth-stamp" aria-hidden="true"></div><div id="enc-line" class="enc-line" aria-hidden="true"></div>
 <section id="basket-panel" class="basket-panel" role="dialog" aria-modal="false" aria-label="星之搖籃" hidden><div class="bp-head"><ol id="bp-steps" class="bp-steps"><li data-step="1"></li><li data-step="2"></li><li data-step="3"></li></ol><b id="bp-title" tabindex="-1"></b><button id="bp-close" class="ib sm" type="button"></button></div>
 <div id="bp-births" class="bp-births" hidden><button id="recent-toggle" class="recent-row" type="button" aria-expanded="false" aria-controls="recent-box" hidden></button><section id="recent-box" hidden><ol id="recent-list" class="recent-list"></ol><a id="all-stars" class="all-stars" href="#"></a></section><p id="next-try" class="next-try" hidden></p></div>
-<div class="bp-step" data-step="1"><button id="surprise" class="surprise" type="button" data-tip="讓星空替你安排一次相遇" hidden>✦ 偶遇</button><p id="basket-empty" class="bp-empty" hidden>放入兩三顆知識星，看看會孕育出甚麼</p><ol id="basket-items" class="basket-items"></ol><div id="bridge-row" class="bridge-row" hidden><button id="bridge-toggle" class="bridge" type="button" aria-expanded="false" aria-controls="basket-bridges"><span data-icon="bulb"></span><span id="bridge-count"></span></button><div id="basket-bridges" class="basket-bridges" hidden></div></div><div class="bp-actions"><button id="basket-view" class="ib" type="button" aria-pressed="false"></button><button id="basket-clear" class="ib" type="button"></button><button id="surprise-again" class="again" type="button" hidden><span data-icon="sync"></span>換一組</button><button id="step-next" class="primary" type="button">下一步<span data-icon="right"></span></button></div></div>
+<div class="bp-step" data-step="1"><div id="enc-start" class="enc-start" hidden><div id="enc-pools" class="enc-pools" role="radiogroup"></div><p id="enc-pool-tip" class="enc-tip"></p><button id="surprise" class="surprise big" type="button" data-tip="讓星空替你安排一次相遇" hidden>✦ 偶遇</button></div><p id="basket-empty" class="bp-empty" hidden>放入兩三顆知識星，看看會孕育出甚麼</p><div id="enc-draw" class="enc-draw" hidden><div class="enc-head"><h3 id="enc-draw-head"></h3><button id="enc-skip" class="again" type="button"></button></div><ol id="enc-live" class="enc-slots"></ol></div><div id="enc-card" class="enc-card" hidden><div class="enc-card-head"><span id="enc-badge" class="enc-badge"></span><span id="enc-score" class="enc-score"></span></div><ul id="enc-meters" class="enc-meters"></ul><ol id="enc-card-slots" class="enc-slots"></ol><p id="enc-short" class="enc-tip" hidden></p><div class="enc-seeds"><h4 id="enc-seeds-head"></h4><div id="enc-seeds"></div></div></div><ol id="basket-items" class="basket-items"></ol><div id="bridge-row" class="bridge-row" hidden><button id="bridge-toggle" class="bridge" type="button" aria-expanded="false" aria-controls="basket-bridges"><span data-icon="bulb"></span><span id="bridge-count"></span></button><div id="basket-bridges" class="basket-bridges" hidden></div></div><div id="bp-actions1" class="bp-actions"><button id="basket-view" class="ib" type="button" aria-pressed="false"></button><button id="basket-clear" class="ib" type="button"></button><button id="enc-reroll" class="again" type="button" hidden><span data-icon="sync"></span> </button><button id="step-next" class="primary" type="button"><span id="step-next-text">下一步</span><span data-icon="right"></span></button></div></div>
 <div class="bp-step" data-step="2" hidden><div id="ai-tabs" class="tiles" role="radiogroup" aria-label="孕育方式"><button type="button" role="radio" class="tile" data-tab="think"><span data-icon="search"></span>深入思考</button><button type="button" role="radio" class="tile" data-tab="gap"><span data-icon="link"></span>找連結</button><button type="button" role="radio" class="tile" data-tab="create"><span data-icon="pen"></span>創作</button></div><div id="ai-purpose-row" class="tags" hidden><span id="ai-purpose" class="tags" role="group" aria-label="用途"><button type="button" data-purpose="比較表">比較表</button><button type="button" data-purpose="報告">報告</button><button type="button" data-purpose="文章大綱">文章大綱</button><button type="button" data-purpose="other">其他</button></span><input id="ai-purpose-custom" type="text" placeholder="自填用途" aria-label="自填用途" hidden></div><div id="ai-suggest" class="qs"></div><div id="ai-question-wrap" class="qbox"><span data-icon="pen"></span><textarea id="ai-question" rows="1" placeholder="寫下或修改問題" aria-label="問題"></textarea></div><div class="bp-actions"><button id="step-back2" class="ib" type="button"></button><button id="step-next2" class="primary" type="button">下一步<span data-icon="right"></span></button></div></div>
-<div class="bp-step" data-step="3" hidden><div id="ai-out-row" class="out-row" hidden><button id="ai-out" class="out-switch" type="button" role="switch" aria-checked="false" aria-describedby="ai-out-desc"><span class="track" aria-hidden="true"></span><span>向外延伸</span><span class="state" aria-hidden="true">關</span></button><span id="ai-out-desc" class="sr"></span></div><button id="ai-copy" class="big" type="button"><span data-icon="copy"></span>複製指令</button><p id="ai-notes" class="meta"><span class="n"></span><span class="o" hidden></span></p><p id="ai-copy-status" class="ok" role="status"></p><details id="ai-fold" class="fold"><summary>查看全文</summary><textarea id="ai-preview" rows="8" readonly aria-label="指令全文"></textarea></details><div class="bp-actions"><button id="step-back3" class="ib" type="button"></button></div></div>
+<div class="bp-step" data-step="3" hidden><div id="ai-out-row" class="out-row" hidden><button id="ai-out" class="out-switch" type="button" role="switch" aria-checked="false" aria-describedby="ai-out-desc"><span class="track" aria-hidden="true"></span><span>向外延伸</span><span class="state" aria-hidden="true">關</span></button><span id="ai-out-desc" class="sr"></span></div><button id="ai-start" class="big" type="button" hidden><span data-icon="cradle"></span>開始孕育</button><p id="ai-runner-note" class="job-sub" hidden><span></span> <button class="ai-setup-link" type="button" aria-controls="ai-setup"></button></p><p id="ai-start-note" class="meta" hidden></p><p id="job-start-error" class="job-err" role="status" hidden></p><details id="ai-other" class="fold" hidden><summary></summary><div id="ai-other-body"></div></details><div id="copy-zone"><button id="ai-copy" class="big" type="button"><span data-icon="copy"></span>複製指令</button><p id="ai-notes" class="meta"><span class="n"></span><span class="o" hidden></span></p><p id="ai-copy-status" class="ok" role="status"></p><details id="ai-fold" class="fold"><summary>查看全文</summary><textarea id="ai-preview" rows="8" readonly aria-label="指令全文"></textarea></details></div><div id="job-view" class="job-view" hidden></div><div class="bp-actions"><button id="step-back3" class="ib" type="button"></button></div></div>
 <p id="basket-note" class="bp-note" role="status"></p></section>
 <aside id="detail" class="panel" aria-label="節點內容" hidden><div class="panel-top"><button id="previous" class="ib sm" type="button" disabled></button><span id="detail-kind" class="kind"></span><button id="replay-birth" class="pill" type="button" hidden></button><span class="grow"></span><button id="basket-toggle" class="ib sm" type="button" aria-pressed="false"></button><button id="close" class="ib sm" type="button"></button></div><h2 id="detail-title" tabindex="-1"></h2><p id="thought-born" class="thought-born" hidden></p><div id="thought-from" class="born-from" hidden><span id="born-title"></span><span id="born-parents" class="chips"></span></div><div class="card-meta"><span id="detail-group" class="chips"></span><span id="detail-tension" class="counts" hidden></span></div>
-<div id="cons-box" class="cons-box" hidden><div id="cons-chips" class="cons-chips"></div><button id="cons-add" class="open" type="button"></button><div id="cons-menu" class="cons-menu" hidden></div><p id="cons-msg" class="cons-msg" role="status"></p></div><div id="preview" class="preview" hidden></div><p id="detail-copy"></p><div id="thought-more" class="thought-more" hidden><div id="thought-insights" hidden><h4>洞見</h4><ul></ul></div><div id="thought-asks" hidden><h4>未完的問題</h4><ul></ul></div></div><div class="card-actions"><a id="open-outcome" class="open">閱讀完整成果 ↗</a><button id="continue-cradle" class="open" type="button" hidden>接續孕育</button></div><p id="question"></p><h3 class="rel-head"><button id="relation-title" class="rel-title" type="button" data-tip-click></button></h3><div id="relations"></div></aside>
+<div id="cons-box" class="cons-box" hidden><div id="cons-chips" class="cons-chips"></div><button id="cons-add" class="open" type="button"></button><div id="cons-menu" class="cons-menu" hidden></div><p id="cons-msg" class="cons-msg" role="status"></p></div><div id="preview" class="preview" hidden></div><p id="detail-copy"></p><div id="thought-more" class="thought-more" hidden><div id="thought-insights" hidden><h4>洞見</h4><ul></ul></div><div id="thought-asks" hidden><h4>未完的問題</h4><ul></ul></div></div><div class="card-actions"><a id="open-outcome" class="open">閱讀完整成果 ↗</a><button id="continue-cradle" class="open" type="button" hidden>接續孕育</button><button id="hero-draw" class="open" type="button" hidden></button></div><p id="question"></p><h3 class="rel-head"><button id="relation-title" class="rel-title" type="button" data-tip-click></button></h3><div id="relations"></div></aside>
 <section id="list" class="list" aria-label="全部成果" hidden><header><h2 id="list-count">成果清單</h2><p>選取標題查看星雲位置與依據，或直接閱讀成果。</p></header><div id="list-grid" class="list-grid"></div></section>
+<dialog id="ai-setup" class="ai-setup-panel" aria-labelledby="ai-setup-title" aria-describedby="ai-setup-intro"><header><h2 id="ai-setup-title" tabindex="-1"></h2><button id="ai-setup-back" type="button"></button></header><p id="ai-setup-intro"></p><div id="ai-setup-controls"><button id="ai-setup-detect" type="button"></button><fieldset id="ai-setup-runners" class="ai-runners"></fieldset><div class="ai-setup-actions"><button id="ai-setup-approve" class="primary" type="button" disabled></button><button id="ai-setup-disable" type="button" hidden></button></div><p id="ai-setup-error" class="job-err" role="status" hidden></p></div></dialog>
 <dialog id="connect-dialog" class="media-viewer" aria-label="開啟同步連線"><header><h2>開啟本機同步</h2><button id="connect-close">關閉</button></header><p>目前是離線閱讀頁。請在工作區的 assets 資料夾雙擊「開啟知識星雲.cmd」，之後便可在星雲內按「同步最新成果」，不用輸入指令。</p><p class="viewer-note">同步只讀取本機正式筆記與圖片，不上載資料；關閉頁面後，連線會在閒置三分鐘內結束。</p></dialog><dialog id="media-viewer" class="media-viewer" aria-label="原圖預覽"><header><p id="viewer-title"></p><button id="viewer-close">關閉原圖</button></header><img id="viewer-image" alt=""><p class="viewer-note">原色原圖 · 可於完整成果閱讀所有圖片及正文</p></dialog><p id="status" class="sr" role="status" aria-live="polite"></p><noscript><h1>知識星雲 · 成果清單</h1><p>開啟 JavaScript 可探索星雲。以下成果仍可直接閱讀。</p><ul><!--FALLBACK--></ul></noscript>
 <button id="ambient-view" hidden aria-label="靜觀模式，點一下返回探索"><span class="ambient-clock"><span id="ambient-date"></span><time id="ambient-time"></time></span><span class="ambient-hint">點一下或按 Esc，返回探索</span></button>
 <script>
@@ -334,7 +365,7 @@ let nodes=[],edges=[],visibleEdges=[];const allSources=allNodes.filter(n=>n.kind
 const groups=DATA.layout?.groups||[],groupById=new Map(groups.map(g=>[g.id,g]));
 const byId=new Map(allNodes.map(n=>[n.id,n])),edgeIndex=new Map(allEdges.map((e,i)=>[e,i]));
 const systemReduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
-const state={palette:"violet",ambient:false,selected:null,list:false,reduced:systemReduced,reducedPreference:false,legacyEntranceEnabled:true,yaw:-.10,tyaw:-.10,pitch:.05,tpitch:.05,distance:12.6,tdistance:12.6,focus:[0,0,0],target:[0,0,0],screen:[],drag:null,frames:0,clock:0,last:0,query:'',gpu:false,attention:0,tint:[.4,.65,1],hover:null,hoverStart:0,hoverInterval:6000,orbit:1,orbitLift:0,vx:0,vy:0,mouse:[0,0],pointer:[0,0],seed:Math.random()*200,motionClock:0,events:[],eventTime:0,energy:0,zoomEnergy:0,original:false,cameraTour:null,panTarget:null,coreFlash:null,diskCollapse:null,birth:null,starLevel:null,coreStats:{shown:false}};let projectWorld=null;
+const state={palette:"violet",ambient:false,selected:null,list:false,reduced:systemReduced,reducedPreference:false,legacyEntranceEnabled:true,yaw:-.10,tyaw:-.10,pitch:.05,tpitch:.05,distance:12.6,tdistance:12.6,focus:[0,0,0],target:[0,0,0],screen:[],drag:null,frames:0,clock:0,last:0,query:'',gpu:false,attention:0,tint:[.4,.65,1],hover:null,hoverStart:0,hoverInterval:6000,orbit:1,orbitLift:0,vx:0,vy:0,mouse:[0,0],pointer:[0,0],seed:Math.random()*200,motionClock:0,events:[],eventTime:0,energy:0,zoomEnergy:0,original:false,cameraTour:null,panTarget:null,coreFlash:null,diskCollapse:null,birth:null,starLevel:null,coreStats:{shown:false}};let projectWorld=null,projectWith=null;
 const clamp=(x,a,b)=>Math.max(a,Math.min(b,x)),lerp=(a,b,t)=>a+(b-a)*t;
 // ===== Camera, pan, labels and group names: every number added for them is named and explained in this one block. =====
 const ZOOM_MAX=8;                                         // deepest zoom (x); the manual zoom range is 1x to ZOOM_MAX
@@ -365,7 +396,7 @@ for(const e of over){if(picked.size>=cap)break;if(!full(e))take(e);}}
 else for(const e of rest){if(picked.size>=cap)break;picked.add(e);}
 edges=[...picked,...visibleEdges.filter(e=>familyOf(e)==='origin')];}   // origin (孕育自) lines: new star to parent, few, so they take no quota and are drawn whenever both ends are in the scene
 const nextHoverInterval=()=>4000+Math.random()*4000;
-function setHover(id){if(state.hover===id)return;state.hover=id;state.hoverStart=state.eventTime;state.hoverInterval=nextHoverInterval();if(id)state.vx=state.vy=0;refreshEdges();}
+function setHover(id){if(state.hover===id)return;state.hover=id;state.hoverStart=state.eventTime;state.hoverInterval=nextHoverInterval();if(id)state.vx=state.vy=0;refreshEdges();skyFocus(id);}   // skyFocus: the card row of a drawn star under the pointer lights up
 // Two travelling beats, a quiet rest, then repeat. Direction is an exploration response.
 function hoverBeat(age,k,beat=0){const delay=(k%5)*65,travel=1050+(k%4)*155,phase=age-delay-beat*410;return age<delay||phase<0?null:{progress:phase/travel,arrival:(phase-travel)/400};}
 let neighborSet=new Set(),sceneGroups=new Map();const related=n=>!state.selected||neighborSet.has(n.id);
@@ -611,7 +642,7 @@ $('#scene-prev').onclick=()=>{scenePage--;rebuildScene();};$('#scene-next').oncl
 const clearSearch=$('#clear-search');clearSearch.onclick=()=>{$('#search').value='';state.query='';listPage=scenePage=0;$('#results').hidden=true;syncList();rebuildScene();$('#search').focus({preventScroll:true});};
 
 // ===== Thinking basket: pick up to BASKET_MAX stars, combine them into one plain-text instruction for brain-think or brain-create, and copy it. =====
-// The page never calls an AI, writes a file or uses the network. The basket is only a convenience of this browser: node ids in localStorage, not project state.
+// The page itself never calls an AI, writes a file or goes online (only the local reader service, when 開始孕育 is pressed, runs a background job: see CRADLE_*). The basket is only a convenience of this browser: node ids in localStorage, not project state.
 // One panel with three steps, one shown at a time: 1 pick (the basket and its bridge suggestions), 2 what to do (action, question), 3 hand over to the AI (copy).
 const BASKET_MAX=6,NOTE_MAX=6,NOTE_RESERVE=4,BASKET_KEY='nebula-basket-v1',CLEAR_CONFIRM_MS=3000;   // nodes in the basket; notes in one instruction; notes kept free for tensions; how long a second press may take to confirm "clear"
 // NOTE_MAX is the number of notes named with --note (and of outcomes named with --source-id). The thinking tool reads at most 10 full texts per run; NOTE_RESERVE = 4 of them stay free for the source notes of up to two established tensions (two notes per tension, added in pairs), so a prepared packet is not pushed over that limit.
@@ -626,8 +657,7 @@ const HINT_LABELS={born:'已孕育的星',tension:'拉扯的星',latent:'未相�
 // Who limits whom is in the sentence of the note, not in the direction of the line (every such relation is recorded twice, once from each note): "此概念限制 [[B]]" = the note's concept limits B, "此概念受 [[B]] 限制" = it is limited by B. A bare list entry under 限制 reads "B limits the concept"; under 反例 "B is a counterexample of the concept". Only a note that says it is itself the counterexample ("此概念是 [[B]] 的反例") turns that round.
 const HOST_LIMITS_RE=/此概念限制\s*\[\[/,HOST_COUNTER_RE=/此概念(?:是|為)\s*\[\[[^\]]*\]\]\s*的反例/;
 const SURPRISE_COUNT=3,SURPRISE_TOP=20,SURPRISE_RECENT_DAYS=45,SURPRISE_ISOLATED_MAX=1,SURPRISE_TRIES=8,SURPRISE_RANDOM_HOOK='__nebulaRandom';   // nodes drawn; tension nodes (by semanticDegree) the first node is drawn from, and far relatives the third is drawn from; a concept is "new" when its newest outcome lies within this many days of the newest outcome in the library; "isolated" means semanticDegree at most this; draws to get a set that differs from the last one; the name of an optional window function that replaces Math.random (for tests)
-const SURPRISE_PLAIN={tension:'張力熱點',hot:'高連結概念',fresh:'新而孤立',latest:'出處最新',distant:'遠親',other:'另一主題群',random:'隨機補上'},DAY_MS=864e5;   // the plain reasons the instruction gives the AI
-const SURPRISE_LABELS={tension:'拉扯中',hot:'連結多',fresh:'新而孤單',latest:'新入庫',distant:'遠方',other:'遠方',random:'隨機'},SURPRISE_TIPS={tension:'張力熱點',hot:'高連結概念',fresh:'新入庫而連線少',latest:'出處最新',distant:'另一主題群',other:'另一主題群',random:'隨機補上'};   // the same reasons on the screen: a short word, and the plain meaning as its tooltip
+const DAY_MS=864e5;   // milliseconds in a day
 const AI_FIRST='✦ 先觀星',AI_FIRST_TIP='讓 AI 讀過再提問',AI_FIRST_NOTE='還未想好問題？AI 先讀這幾顆星，給你 5 條不同角度的問題揀，你揀定才開始深入思考',AI_OR='或直接用以下問題',DRAFT_TEMP_QUESTION='為以上筆記擬題';   // the first choice at step 2, its tooltip, the line under it (AI reads first, gives questions to pick from, thinking starts after the pick) and the small heading before the page's own questions; the provisional question for the first think prepare
 // "Your question": the question the person wrote or rewrote in the box (ai.edited of that way is true, and it is not empty); a picked suggestion they did not change is not. The draft instruction takes it as the direction (DRAFT_OWN_*), step 2 and the step-3 summary say so (OWN_LEAD, DRAFT_OWN_NOTE; the line shows the first OWN_SHOW_MAX characters, the tooltip all of it), a switch of way carries it to a way the person has not written in, and it is remembered with the basket (OWN_KEY, every access in try/catch).
 const OWN_LEAD='AI 會以你寫的問題為方向：',OWN_SHOW_MAX=30,DRAFT_OWN_LEAD='我想問的方向：',DRAFT_OWN_AROUND='圍繞我想問的方向，',DRAFT_OWN_NOTE='（以你的問題為方向）',OWN_EDIT='修改',OWN_EDIT_TIP='修改你的問題；先觀星暫時關掉，改好後再點先觀星',OWN_KEY='nebula-basket-question-v1';
@@ -692,6 +722,53 @@ const FX_BINARY={merge:.65,radius:160,shrink:1,turns:[1,1.8],trail:.4,samples:40
 const FX_ECHO={lit:.25,rings:3,first:.10,gap:.22,life:.42,r0:18,r1:175,ringPx:22,flashPx:190,corePx:80};
 // 星系交會 (a cross): two curved arcs (x, y = half width and height px, bend = how far they curve, tilt = most random turn, in radians) are drawn towards the star, meet there at `cross`, pass through to `reach`, and the meeting throws `sparks` small stars (speed in px between sparkMin and sparkMax).
 const FX_GALAXY={cross:.45,reach:.72,x:250,y:140,bend:80,tilt:.5,samples:40,head:44,stroke:26,flashPx:230,corePx:95,sparks:26,sparkMin:80,sparkMax:200};
+// ===== Encounter (① 相遇: the star draw) and background incubation (③ 誕生): every number and sentence added for them is named and explained in this one block. =====
+// The draw keeps the 偶遇 rules above (SURPRISE_TOP, SURPRISE_RECENT_DAYS, SURPRISE_ISOLATED_MAX, SURPRISE_TRIES, SURPRISE_RANDOM_HOOK) and gives each of the three stars a role. ENCOUNTER_POOLS lists the roles of a pool in slot order; a draw that starts from a content card (主角) uses ENCOUNTER_HERO_ROLES.
+// ENCOUNTER_ROLES holds the label of every role, and of the fallback shown when a role had no candidate (hot, latest, other, random), with the reason the card gives; the far reason is given the name of the star's theme group.
+const ENCOUNTER_POOLS={cross:{label:'跨界',tip:'三顆星來自三個不同主題群：拉扯者、新秀、遠客各一。',roles:['tension','fresh','far']},clash:{label:'拉扯',tip:'集中抽有爭議的知識：兩個拉扯者，再加一位遠客。',roles:['tension','tension','far']},fresh:{label:'新知',tip:'最近入庫的知識，遇上庫內連結最多的老將。',roles:['fresh','fresh','veteran']}};
+const ENCOUNTER_HERO_ROLES=hero=>['hero',hero.tension?'fresh':'tension','far'];
+const ENCOUNTER_ROLES={tension:{label:'拉扯者',why:()=>'有觀點支持它，也有觀點限制或反駁它'},fresh:{label:'新秀',why:()=>'最近入庫，與其他知識的連線還很少'},far:{label:'遠客',why:group=>`來自另一個主題群「${group}」，與其餘兩顆沒有已記錄的關係`},veteran:{label:'老將',why:()=>'庫內連結最多的知識之一，常是新舊知識的接口'},hero:{label:'主角',why:()=>'你親自點選的星'},
+hot:{label:'連結多',why:()=>'沒有可抽的拉扯者，改抽庫內連結最多的概念'},latest:{label:'新入庫',why:()=>'沒有新而孤立的概念，改抽出處最新的'},other:{label:'遠方',why:()=>'沒有遠親，改抽另一主題群的概念'},random:{label:'隨機',why:()=>'資料不足，隨機補上'}};
+// Rarity. Score of a set of stars = ENCOUNTER_SCORE.group for each main group beyond the first (the group of unlinked outcomes is not a group) + ENCOUNTER_SCORE.pairs[0, 1, 2 or more] by how many of the pairs are joined by a recorded line that is not structural + ENCOUNTER_SCORE.tension for each star with tension + ENCOUNTER_SCORE.bridge when a star outside the set (never a new star)
+// is joined to two of them by such lines + the spread (the mean distance between the stars over twice the farthest concept from the centre of all concepts, 0 to 1). A tier is a percentile among ENCOUNTER_SAMPLES simulated draws of the same pool, made once per pool the first time it is needed with a seeded generator (ENCOUNTER_SEED plus the position of the pool; never the page's dice), in chunks of at most
+// ENCOUNTER_CHUNK_MS of work so that the page never freezes: the share of simulated scores strictly lower than the score, so a tie never lifts a set into a higher tier. ENCOUNTER_CUTS are the shares that start 少見, 罕見 and 傳說 (target shares 55, 30, 12 and 3 percent). ENCOUNTER_TIERS: name, the mark after the name, glow gain of the meeting flash, spike length gain (0 = no spikes), sparks thrown.
+// The test hook ENCOUNTER_SIM_HOOK (window function, pool, count, seed) classifies count fresh draws of another seed by the page's thresholds, for the checks. A draw that starts from a content card uses the 跨界 thresholds.
+const ENCOUNTER_SCORE={group:1,pairs:[1.5,.5,0],tension:.6,bridge:1.2},ENCOUNTER_SAMPLES=1500,ENCOUNTER_CHUNK_MS=40,ENCOUNTER_SEED=20261027,ENCOUNTER_CUTS=[.55,.85,.97],ENCOUNTER_SIM_HOOK='__nebulaEncounterSim',ENCOUNTER_DEX_KEY='nebula-encounter-dex-v1';
+const ENCOUNTER_TIERS=[{name:'常見',mark:'',glow:.75,spikes:0,sparks:0},{name:'少見',mark:'✦',glow:.9,spikes:1,sparks:0},{name:'罕見',mark:'✦✦',glow:1.05,spikes:1.25,sparks:10},{name:'傳說',mark:'✦✦✦',glow:1.25,spikes:1.6,sparks:26}];
+// The ceremony (about 6 s; ENCOUNTER_TIME in ms): ENCOUNTER_TIME.start before the first slot, .gap between two slots, .end after the last; .wisp a warm light drifts along the way to the chosen star; .bloom the chosen star swells (the first ENCOUNTER_BLOOM.rise of it); .frame the camera has this long to frame the three stars before the meeting;
+// .thread each star sends a thread of light to the middle, which then fades until .threadEnd; .flash [from, to] the soft flash at the middle (it rises for ENCOUNTER_FLASH.rise of its time and falls with ENCOUNTER_FLASH.power); .disc [from, to] the cradle disc forms from nothing; .line [from, to] the one line under the middle (.lineIn and .lineOut are its fades); .card the panel shows the card;
+// every time counts from the start of the meeting. Reduced motion and 略過動畫 show none of it.
+const ENCOUNTER_TIME={start:300,gap:150,end:450,wisp:1050,bloom:1100,frame:700,thread:1000,threadEnd:1700,flash:[950,2350],disc:[1150,2050],line:[1300,4600],lineIn:600,lineOut:800,card:2000};
+// ENCOUNTER_WISP: the light passes through up to `via` other candidates of the same role; its trail keeps `trail` positions (sizes px[0] to px[1], strength `trailAlpha`), the head is `head` px wide with a `halo` around it; a star within `liftPx` of the head shines up to `lift` brighter.
+// ENCOUNTER_BLOOM: the swelling glow is px[0] to px[1] wide, spikes are the FX_SPIKE length times `spike`. ENCOUNTER_THREAD: the curve bends by `bend` of the way between the star and the middle, the thread is the last `tail` of the way, its points are `step` px apart (at most BIRTH_CHAIN_MAX), px[0] to px[1] wide, strength alpha[0] to alpha[1].
+// ENCOUNTER_FLASH: the soft flash is `wide` px (times the tier's glow gain) with a `core` px white heart. ENCOUNTER_SPARK: sparks fly speed[0] to speed[1] px per second with a slowing of `decay`, flattened to `flat` of their height, live life[0] to life[1] ms and are `px` wide. ENCOUNTER_LINE: the line sits `drop` px under the middle and rises `rise` px while it fades in; `reserve` px of width are kept free for it when the camera frames the stars.
+const ENCOUNTER_WISP={via:2,trail:16,trailPx:[5,19],trailAlpha:.5,head:24,halo:52,liftPx:60,lift:.6},ENCOUNTER_BLOOM={rise:.25,px:[20,80],spike:.85},ENCOUNTER_THREAD={bend:.22,tail:.5,step:1.8,px:[5,11],alpha:[.08,.4]},ENCOUNTER_FLASH={rise:.12,power:1.6,wide:210,core:90},ENCOUNTER_SPARK={speed:[50,170],decay:2.2,flat:.7,life:[900,1500],px:6},ENCOUNTER_LINE={drop:46,rise:6,reserve:90};
+// Camera framing: the three stars and their labels (labelW wide at most, labelH high, to the right of the star) are fitted into the free sky: next to the floating panel (on a screen that has one) the wider side of it (at least `sideMin` px wide, `gap` px from the panel), otherwise the band above it; a phone (which hides the search column while a draw is on screen) starts `topPhone` px from the top, a desktop `topDesktop`; `bottom` px stay free at the bottom, `left`
+// px on the left of a desktop (the left column), `margin` px at the other edges; the closest distance tried is BIRTH_VIEW.min, each step is `grow` times farther, up to `far` times the overview distance (a camera that cannot fit the three stars in the free sky goes out a little farther than the overview), `tries` rounds move the focus to centre them; the place is taken `pad` px smaller on every side, because the stars drift a little; when the three stars cannot fit, the camera may also be turned (`turns` evenly spaced turns are tried, the smallest turn that fits first).
+const ENCOUNTER_FRAME={sideMin:260,gap:16,far:1.7,topPhone:110,topDesktop:108,bottom:84,left:300,margin:12,labelW:{desktop:180,phone:150},labelH:50,grow:1.12,tries:3,turns:12,pad:16};
+// Card and sky (the same number, the focus and the locks of a drawn star; see "卡與天空的對照" in the spec). `spots`: where the label of a drawn star may go when its first place (to the right of the star) is taken by an interface block or another label, tried in this order, each as [x, y] with -1 = left of / above the star, 0 = centred, 1 = right of / below it, `gap` px away from the star; with no free spot the label stays at its first place, so a drawn star is never left without its name.
+// `glow`: the warm halo of the focused star (px wide, strength; the colour is BIRTH_COLOR). `dim`: the opacity of the other two drawn labels while one star is focused (given to the CSS as --enc-dim). `ring`: the still ring round a locked star (diameter px, line width px, line strength): at most three, drawn in a fixed place, never animated.
+const ENCOUNTER_LINK={spots:[[-1,0],[0,-1],[0,1]],gap:14,glow:{px:320,gain:.6},dim:.45,ring:{px:46,width:1,alpha:.85}};
+// 主角: the content card's button; a cradle that is not empty asks for a second press within CLEAR_CONFIRM_MS.
+const ENCOUNTER_TEXT={poolsLabel:'抽星範圍',drawHead:'星空正在為你挑選',skip:'略過動畫',wait:'……',meta:(group,why)=>`${group}｜${why}`,badge:name=>`${name}相遇`,score:n=>`新意潛力勝過 ${n}% 的組合`,
+meters:['跨度','未知度','張力','牽線'],span:n=>`${n} 個主題群`,unknown:['之間沒有已記錄的關係','只有一條已記錄的關係','已有多條關係'],tension:n=>n?`${n} 顆有爭議的星`:'沒有爭議的星',bridge:name=>name?`「${name}」同時連到其中兩顆`:'沒有牽線的星',
+lock:'鎖定',locked:'已鎖定',seeds:'可以由這裡開始問',reroll:'重抽未鎖定的星',rerollSure:'再按一次',rerollAsk:'重抽會取代你寫的問題，再按一次才重抽',next:'就這組 · 下一步',short:n=>`庫內可抽的星不足三顆，只放入 ${n} 顆。`,none:'庫內沒有可抽取的概念。',
+hero:'以它為主角抽夥伴',heroAsk:'會取代搖籃內的星，再按一次',dexTitle:'相遇圖鑑',dexCount:(tier,n)=>`${tier} ${n}`,revealed:(n,name,role)=>`第 ${n} 顆：${name}（${role}）`,met:(tier,n)=>`${tier}相遇，新意潛力勝過 ${n}% 的組合`};
+// Background incubation (③ 誕生), only on the page the local service serves. CRADLE_POLL_OPEN_MS / CRADLE_POLL_CLOSED_MS: how often the shown job and the list (for the badge) are asked while the panel is open / closed; polling stops only when the list and the shown job have been answered and nothing is queued, running or waiting for a pick (a failed ask is tried again at the same pace).
+// CRADLE_JOBS_KEY remembers the jobs this browser started or picked (newest first, at most CRADLE_JOBS_MAX; try/catch). A page that reloads itself because the star was saved opens ③ (until the person presses 完成) when the newest job finished at most CRADLE_JUST_DONE_MS ago; CRADLE_GOTO_KEY carries a star the person asked to see across a reload.
+const CRADLE_POLL_OPEN_MS=3000,CRADLE_POLL_CLOSED_MS=15000,CRADLE_JOBS_KEY='nebula-cradle-jobs-v1',CRADLE_JOBS_MAX=20,CRADLE_GOTO_KEY='nebula-cradle-goto',CRADLE_JUST_DONE_MS=2*60*1000;
+const CRADLE_TEXT={start:'開始孕育',startQueued:'開始孕育（排隊）',other:'其他做法',queued:n=>`排隊中：前面還有 ${n} 個孕育。`,
+steps:{prepare:'正在準備材料',write:'正在寫答案',check:'正在檢查引文',review:n=>`正在覆核（第 ${n} 輪）`,revise:'正在按覆核意見修訂',archive:'正在存成新星',refresh:'正在整理星雲',questions:'正在讀星擬題'},
+eta:min=>`大約還要 ${min} 分鐘`,away:'期間可以繼續逛星雲，甚至關掉頁面，工作會在背景照做。',stop:'停止孕育',stopSure:'再按一次停止',
+pickHead:n=>`AI 擬了 ${n} 條問題，揀一條開始孕育：`,surprising:'✦ 最出人意表',pickGo:'以這條問題開始孕育',pickNone:'都不合適，返回 ②',
+born:'新星已誕生。',seeStar:'看新星',openRecord:'開啟思考紀錄',cancelled:'已停止孕育。',restart:'重新開始',back2:'返回 ②',done:'完成',again:'新孕育',
+actions:{retry:'重試',retry_later:'稍後重試',copy:'改用「複製指令」',edit_question:'改問題',draft:'看草稿',refresh:'重新整理星雲'},detail:'詳情',notSaved:'未通過的答案不會存入星雲。',reviewHead:'覆核意見',draftMissing:'草稿暫時讀不到。',
+pill:{running:n=>`孕育中 ${n}`,pick:n=>`待揀問題 ${n}`},offline:'本機連線已關閉，請雙擊啟動檔重新開啟。',failedAsk:'孕育未能開始。'};
+// All AI setup words live here; runner labels, versions and refusal sentences come straight from the service.
+const AI_SETUP_TEXT={title:'AI 設置',intro:'背景孕育由你揀的一個 AI 在這部電腦上完成，只用你已登入的帳戶，不用 API key。',
+back:'返回',detect:'偵測',detecting:'正在偵測…',ready:'可用',current:'目前使用',approve:'批准使用',disable:'停用背景 AI',
+offline:'要經本機閱讀服務打開星雲，才可以設定背景 AI；現在仍可用「複製指令」。',
+unset:'未設定背景 AI ·',unavailable:label=>`${label} 暫時用不到 ·`,using:label=>`背景 AI：${label} ·`,setup:'前往 AI 設置',change:'更改',failed:'未能讀取或保存 AI 設置，請稍後再試。'};
 // ===== Birth memorial and parent-child bonds. Every sentence is in BIRTH_TEXT; every number is here. =====
 // Dates use the browser's own time zone (created_at converted). The birth stamp floats beside a replayed star: it fades in between BIRTH_STAMP_FADE[0] and [1] of the birth, stays, and fades out between [2] and [3] (first choice: its right edge BIRTH_STAMP_OFFSET[0] px to the left of the star and BIRTH_STAMP_OFFSET[1] px below it, because the labels sit on the right of a star; it takes part in the label placement and keeps BIRTH_STAMP_GAP px from any label, group name or interface block; with no free spot it is shown in the birth note; at most BIRTH_STAMP_ALPHA).
 // Anniversary: the same month and day as the birth in a later year (a 29 February birth uses 28 February in a year without a 29th). The page asks the clock through nowDate(): window[NOW_HOOK] (milliseconds, a date string or a function) replaces "now", the same way __nebulaRandom replaces the dice, so that tests can pretend today is an anniversary.
@@ -737,13 +814,15 @@ const childrenOf=new Map(),freshParents=new Set(),glowLevels=new Map();   // glo
 for(const t of allThoughts)for(const id of t.parents||[]){if(!childrenOf.has(id))childrenOf.set(id,new Set());childrenOf.get(id).add(t.id);if(t.fresh)freshParents.add(id);}
 // The overview shows the parents of the fresh new stars next to them (they lead the overview after the new stars), so that a new star is never alone and the bonds between them can be seen.
 const parentNodes=[...freshParents].map(id=>byId.get(id)).filter(Boolean);
-function overviewPool(){const lead=new Set([...(consActive?consActive.ordered.map(id=>byId.get(id)):[]),...allThoughts.slice(0,NEW_STAR_FIRST),...parentNodes]),rest=list=>list.filter(n=>!lead.has(n));return [...lead,...rest(overviewIdeas.slice(0,24)),...rest(allSources),...rest(overviewIdeas.slice(24)),...rest(allThoughts.slice(NEW_STAR_FIRST))];}
+function overviewPool(){const lead=new Set([...(encounter?basket.map(id=>byId.get(id)):[]),...(consActive?consActive.ordered.map(id=>byId.get(id)):[]),...allThoughts.slice(0,NEW_STAR_FIRST),...parentNodes]),rest=list=>list.filter(n=>!lead.has(n));return [...lead,...rest(overviewIdeas.slice(0,24)),...rest(allSources),...rest(overviewIdeas.slice(24)),...rest(allThoughts.slice(NEW_STAR_FIRST))];}
 const tintColor=(base,col,k)=>{const mean=(col[0]+col[1]+col[2])/3;return base.map((v,i)=>Math.max(0,v+k*(col[i]-mean)));};   // the hue of the group colour only (its brightness is left out), so the warm gold stays as bright as before
 for(const t of allThoughts){const byGroup=new Map();for(const id of t.parents||[]){const p=byId.get(id),g=p&&mainGroup(p);if(g&&g!=='unlinked'&&!byGroup.has(g))byGroup.set(g,p.color);}
 const cols=[...byGroup.values()],base=[...t.color];if(cols.length){t.color=tintColor(base,cols[0],BOND_TINT);if(cols.length>1)t.haloColor=tintColor(base,cols[1],BOND_TINT_HALO);}}
 let memoryKept=true;   // false when the page found at load that its memory of seen stars cannot be written: then nothing counts as missed (a dot that can never go away would only nag)
 let recentOpen=false;   // the cradle's "recent births" list starts folded every time the cradle opens (never remembered)
-let basket=[],basketIndex=new Map(),bridges=[],bridgeShown=new Set(),hints=[],latentPairs=[],surprise=null,suggestions={think:[],gap:[],create:[]},basketView=false,basketOpen=false,bridgeOpen=false,clearTimer=0,noticeTimer=0;
+let basket=[],basketIndex=new Map(),bridges=[],bridgeShown=new Set(),hints=[],latentPairs=[],encounter=null,suggestions={think:[],gap:[],create:[]},basketView=false,basketOpen=false,bridgeOpen=false,clearTimer=0,noticeTimer=0;
+let encounterPool='cross',encounterToken=0,diskHold=null,heroTimer=0,againTimer=0;   // the pool chosen for the next draw; a counter that tells one draw from the next; the job that holds the cradle disc drawn in; the timers of the two-press buttons (主角, draw again)
+let cradleAvail=null,jobsMap=new Map(),jobList={jobs:[],active:0,awaiting:0},jobTracked=jobsRead(),jobViewOff=false,jobForceCopy=false,jobPick=-1,jobError='',jobBusy=false,jobPollTimer=0,jobLastTick=0,jobDraft=null,jobStopTimer=0;   // incubation: null = not asked yet, false = this workspace has no cradle service; the last answer per job; the list; the jobs this browser tracks; what the job view shows or has set aside
 const compactQuery=matchMedia('(max-width: '+COMPACT_MAX_WIDTH+'px)'),phoneQuery=matchMedia('(max-width: '+PHONE_WIDTH+'px)'),panel=$('#basket-panel');
 const ai={step:1,tab:'think',question:{think:'',gap:GAP_QUESTION,create:''},edited:{think:false,gap:false,create:false},auto:{think:true,gap:true,create:false},purpose:PURPOSES[0],custom:'',out:false};   // auto: the AI drafts the question first (the default for thinking and connecting, not offered for creating); out: the 向外延伸 switch of step 3 (thinking and connecting only), off at every load and never stored
 const nodeName=n=>String(n.title).replace(/[\r\n]+/g,' ').trim(),shortName=n=>{const s=nodeName(n);return s.length>NAME_MAX?s.slice(0,NAME_MAX-1)+'…':s;},numberOf=i=>CIRCLED[i]||String(i+1);
@@ -915,7 +994,7 @@ gap:['碰撞：把其中幾點合起來，可以做出甚麼單靠一方做不�
 // The hints quoted in the instruction (at most HINT_COMMAND_MAX, in the order shown) and the reasons of a surprise draw. Names, not circled numbers: the instruction has no numbered list.
 function hintLines(){
 const out=hints.slice(0,HINT_COMMAND_MAX).map(h=>`- ${HINT_PLAIN[h.kind]}：${h.node&&h.kind!=='born'?`「${nodeName(h.node)}」`:''}${hintReason(h,refPlain,nodeName)}`);
-const drawn=surprise?basket.filter(id=>surprise.reasons.has(id)).map(id=>`- 驚喜籃：「${nodeName(byId.get(id))}」（${SURPRISE_PLAIN[surprise.reasons.get(id)]}）`):[];
+const drawn=encounter?encounter.slots.filter((s,k)=>encounter.revealed.has(k)&&basketIndex.has(s.id)).map(s=>`- 驚喜籃：「${nodeName(byId.get(s.id))}」（${ENCOUNTER_ROLES[s.why].label}）`):[];
 return [...drawn,...out];}
 // The capture date of a note line: the node's own date when it is a real calendar date (a time after it is dropped); anything else (no date, free text, 2026-02-30) shows nothing, never a guess. Only outcomes carry one.
 function noteDate(n){const m=/^(\d{4})-(\d{2})-(\d{2})(?:$|[T\s])/.exec(String(n.date||'').trim());if(!m)return '';const d=new Date(Date.UTC(+m[1],+m[2]-1,+m[3]));return d.getUTCFullYear()===+m[1]&&d.getUTCMonth()===+m[2]-1&&d.getUTCDate()===+m[3]?`${m[1]}-${m[2]}-${m[3]}`:'';}
@@ -944,11 +1023,12 @@ if(basket.length>=BASKET_MAX){notice(`搖籃最多放 ${BASKET_MAX} 顆星，請
 const first=basket.length===0;basket.push(id);basketChanged();if(first)openBasket();say(`已放入搖籃，現有 ${basket.length} 顆。`);}   // the first star opens step 1
 function basketChanged(){
 reindexBasket();computeHints();storeWrite();
-if(surprise&&!(basket.length===surprise.ids.length&&basket.every(id=>surprise.reasons.has(id))))surprise=null;   // the surprise labels only live while the basket is exactly the drawn set
+if(encounter&&!encounter.internal)endEncounter();   // an encounter only lives while the basket is the set it drew: a change by hand ends it (the draw itself goes through setEncounterBasket)
 if(!basket.length){basketView=false;ai.step=1;forgetQuestions();}   // an empty cradle forgets the questions written for it (the stored copy went in storeWrite above)
 if(!hints.length)bridgeOpen=false;
 refreshSuggestions();renderBasket();syncBasketButton();
 if(basketView&&!state.selected){rebuildScene();const h=homeView();state.target=h.target;state.tdistance=h.distance;}
+else if(encounter&&!state.selected)rebuildScene();   // the drawn stars lead the overview (overviewPool), so each one that arrives gets its light and its label
 else{visibleEdges=sceneEdges(new Set(nodes.map(n=>n.id)),keepFamilies());refreshEdges();markLabels();}}
 // Lines of the current scene: both ends shown, the chosen families, and lines between two basket nodes whatever their family (the person picked those stars).
 const keepFamilies=()=>new Set((FILTERS.find(f=>f.id===relFilter)||FILTERS[0]).families);
@@ -957,39 +1037,62 @@ function setBasketView(on){
 on=on&&basket.length>0;if(basketView===on)return;basketView=on;scenePage=0;
 if(state.selected)release(false);else rebuildScene();
 const h=homeView();state.target=h.target;state.tdistance=h.distance;renderBasket();}
-// Labels: number in front of a basket node, a soft class for the listed bridges. Updated when the basket changes, never per frame.
+// Labels: number in front of a basket node, a soft class for the listed bridges. Updated when the basket changes, never per frame. During an encounter a drawn star's number is its place in the draw (the same on the card), which does not change while the other places are drawn.
+const encSlot=id=>{const e=encounter,k=e?e.slots.findIndex(s=>s.id===id):-1;return k>=0&&e.revealed.has(k)?k:-1;};   // the place of a drawn star that has been revealed, else -1
 function markLabels(){
-for(const n of nodes){const el=n.el;if(!el)continue;const i=basketIndex.get(n.id),name=el.querySelector('.node-name');let no=el.querySelector('.basket-no');
+for(const n of nodes){const el=n.el;if(!el)continue;const i=basketIndex.get(n.id),k=encSlot(n.id),p=k>=0?k:i,name=el.querySelector('.node-name');let no=el.querySelector('.basket-no');
 el.classList.toggle('in-basket',i!==undefined);el.classList.toggle('is-bridge',i===undefined&&bridgeShown.has(n.id));
-if(i!==undefined){if(!no){no=text('span','','basket-no');name.prepend(no);}no.textContent=numberOf(i)+' ';}else if(no)no.remove();
-el.setAttribute('aria-label','探索 '+n.title+(i!==undefined?'（搖籃第 '+(i+1)+' 顆）':''));}}
+if(p!==undefined){if(!no){no=text('span','','basket-no');name.prepend(no);}no.textContent=numberOf(p)+' ';}else if(no)no.remove();
+{let role=el.querySelector('.enc-role');   // a drawn star wears its role as one grey small line
+if(k>=0){if(!role){role=text('span','','enc-role');name.before(role);}role.textContent=ENCOUNTER_ROLES[encounter.slots[k].why].label;}else if(role)role.remove();}
+markDrawn(n);
+el.setAttribute('aria-label','探索 '+n.title+(p!==undefined?'（搖籃第 '+(p+1)+' 顆）':''));}
+syncEncounter(false);}
+// The marks of an encounter on the sky, set only when the encounter, its locks or its focus change, never per frame: the focused / dimmed label, the small lock in front of a locked star's name, the still ring round it (encRings, at most three) and the star that gets the warm glow (encFocusId).
+const encRings=[0,1,2].map(()=>{const d=document.createElement('div'),R=ENCOUNTER_LINK.ring;d.className='enc-ring';d.hidden=true;d.setAttribute('aria-hidden','true');d.style.width=d.style.height=R.px+'px';d.style.borderWidth=R.width+'px';d.style.borderColor=`rgba(${BIRTH_COLOR.map(x=>Math.round(x*255)).join(',')},${R.alpha})`;$('#focus-ring').after(d);return d;});
+document.documentElement.style.setProperty('--enc-dim',String(ENCOUNTER_LINK.dim));
+let encMarked=new Set(),encLocked=[],encFocusId=null;
+function markDrawn(n){
+const el=n.el;if(!el)return;const e=encounter,k=encSlot(n.id),f=e?e.focus:-1,lock=k>=0&&e.slots[k].locked;let ico=el.querySelector('.enc-lock-ico');
+el.classList.toggle('enc-drawn',k>=0);el.classList.toggle('enc-focus',k>=0&&f===k);el.classList.toggle('enc-dim',k>=0&&f>=0&&f!==k);
+if(lock&&!ico){ico=text('span','','enc-lock-ico');ico.setAttribute('aria-hidden','true');ico.insertAdjacentHTML('afterbegin',LOCK_SVG);const no=el.querySelector('.basket-no');if(no)no.after(ico);else el.querySelector('.node-name').prepend(ico);}else if(!lock&&ico)ico.remove();}
+function syncEncounter(light=true){
+const e=encounter,drawn=e?e.slots.filter((s,k)=>e.revealed.has(k)).map(s=>s.id):[];
+encFocusId=e&&e.focus>=0&&e.revealed.has(e.focus)&&e.slots[e.focus]?e.slots[e.focus].id:null;
+if(light)for(const id of new Set([...encMarked,...drawn])){const n=byId.get(id);if(n)markDrawn(n);}   // markLabels has just marked every label itself
+encMarked=new Set(drawn);encLocked=[];
+if(e)for(const [k,s] of e.slots.entries())if(e.revealed.has(k)&&s.locked&&encLocked.length<encRings.length)encLocked.push({id:s.id,ring:encRings[encLocked.length],index:nodes.findIndex(n=>n.id===s.id),on:null});
+for(let x=encLocked.length;x<encRings.length;x++)encRings[x].hidden=true;}
+// Per frame, for a drawn star whose label is blocked at its first place (right of the star): the first of ENCOUNTER_LINK.spots where it fits, moved there and returned as its rectangle; null when none is free (the label then stays where it is). The label sits at left/top plus its own translate(12px, -50%).
+function drawnSpot(el,q,rect,isBlocked){
+const w=rect.width,h=rect.height,gap=ENCOUNTER_LINK.gap;
+for(const [sx,sy] of ENCOUNTER_LINK.spots){const x=sx<0?q.x-gap-w:sx>0?q.x+gap:q.x-w/2,y=sy<0?q.y-gap-h:sy>0?q.y+gap:q.y-h/2,r={left:x,top:y,right:x+w,bottom:y+h};
+if(r.left<8||r.top<8||r.bottom>innerHeight-8||isBlocked(r))continue;el.style.left=(x-12)+'px';el.style.top=(y+h/2)+'px';return r;}
+return null;}
+// Per frame: only the position of the rings (the star on the screen, the ring on it).
+function placeRings(){
+for(const d of encLocked){const v=state.screen[d.index],on=!!v&&v.n.id===d.id&&v.vis&&!state.ambient;if(on){d.ring.style.left=v.q.x+'px';d.ring.style.top=v.q.y+'px';}if(on!==d.on){d.on=on;d.ring.hidden=!on;}}}
 // The content card's basket button: a basket with a plus, or with a check when the node is already in the basket.
 function syncBasketButton(){
 const b=$('#basket-toggle'),id=state.selected,has=!!id&&basketIndex.has(id);
 b.setAttribute('aria-pressed',String(has));b.setAttribute('aria-label',has?'移出搖籃':'放入搖籃');setIcon(b,has?'basketcheck':'basketplus');b.hidden=!id;refreshTip();}
 // ----- The panel -----
-function openBasket({focus=false,step=1}={}){if(state.ambient)return;basketOpen=true;recentOpen=false;ai.step=step;bridgeOpen=false;renderBasket();if(focus)$('#bp-title').focus({preventScroll:true});}
+function openBasket({focus=false,step=1}={}){if(state.ambient)return;basketOpen=true;recentOpen=false;ai.step=step;bridgeOpen=false;renderBasket();if(focus)$('#bp-title').focus({preventScroll:true});jobSchedule();}
 function closeBasket(restore=true){
-if(!basketOpen)return;const had=panel.contains(document.activeElement);basketOpen=false;clearTimeout(clearTimer);clearTimer=0;renderBasket();if(restore&&had)$('#basket-open').focus({preventScroll:true});}
-function setStep(n){ai.step=clamp(n,1,3);renderBasket();$('#bp-title').focus({preventScroll:true});}
+if(!basketOpen)return;const had=panel.contains(document.activeElement);basketOpen=false;clearTimeout(clearTimer);clearTimer=0;renderBasket();if(restore&&had)$('#basket-open').focus({preventScroll:true});jobSchedule();}
+function setStep(n){ai.step=clamp(n,1,3);if(ai.step<3)jobForceCopy=false;renderBasket();$('#bp-title').focus({preventScroll:true});}
 // On a narrow screen or phone the panel is a bottom sheet; the content card gets its height through --sheet-h so the two never overlap.
 function syncSheetHeight(){const h=basketOpen&&compactQuery.matches&&!panel.hidden?Math.ceil(panel.getBoundingClientRect().height):0;document.documentElement.style.setProperty('--sheet-h',h?h+8+'px':'0px');if(state.selected)updateViewShift();}
 function renderBasket(){
 const n=basket.length,badge=$('#basket-badge'),button=$('#basket-open');
 badge.hidden=n===0;badge.textContent=String(n);button.setAttribute('aria-expanded',String(basketOpen));syncCradleLabel();button.classList.toggle('on',basketOpen);
-panel.hidden=!basketOpen;document.body.dataset.basketOpen=String(basketOpen);document.body.dataset.step=String(ai.step);document.body.dataset.sheet=String(basketOpen&&compactQuery.matches);
+panel.hidden=!basketOpen;document.body.dataset.basketOpen=String(basketOpen);document.body.dataset.step=String(ai.step);document.body.dataset.sheet=String(basketOpen&&compactQuery.matches);if(encounter)document.body.dataset.encounter=encounter.phase;else delete document.body.dataset.encounter;
 for(const s of panel.querySelectorAll('.bp-step'))s.hidden=Number(s.dataset.step)!==ai.step;
 renderBirths();
 for(const li of $('#bp-steps').children){const i=Number(li.dataset.step);li.className=i<ai.step?'done':'';li.textContent=i<ai.step?'✓':String(i);li.dataset.tip=STEP_NAMES[i-1]+'：'+STEP_TIPS[i-1];if(i===ai.step)li.setAttribute('aria-current','step');else li.removeAttribute('aria-current');}
 $('#bp-title').textContent=STEP_NAMES[ai.step-1];$('#bp-title').dataset.tip=STEP_TIPS[ai.step-1];
 if(basketOpen){if(ai.step===1)renderStepOne();else if(ai.step===2)renderAI();else renderCommand();}
 syncSheetHeight();refreshTip();}
-function renderStepOne(){
-const n=basket.length,list=$('#basket-items');$('#basket-empty').hidden=n>0;list.hidden=n===0;
-list.replaceChildren(...basket.map((id,i)=>{const node=byId.get(id),li=text('li','','basket-item'),x=document.createElement('button');li.dataset.tip=nodeName(node);li.dataset.nodeId=id;
-x.type='button';x.className='basket-remove';setIcon(x,'x');x.setAttribute('aria-label','移出搖籃：'+nodeName(node));x.onclick=()=>toggleBasket(id);li.append(text('span',numberOf(i),'no'),text('span',shortName(node),'name'));if(surprise?.reasons.has(id)){const why=text('span',SURPRISE_LABELS[surprise.reasons.get(id)],'why');why.dataset.tip=SURPRISE_TIPS[surprise.reasons.get(id)];li.append(why);}li.append(x);return li;}));
-renderBridges();$('#surprise').hidden=n>0;$('#surprise-again').hidden=!surprise;
-const view=$('#basket-view');view.setAttribute('aria-pressed',String(basketView));view.disabled=n===0;$('#basket-clear').disabled=n===0;$('#step-next').disabled=n===0;syncClear();}
 // The hints are folded into one "bulb + N" button; the list opens on demand, grouped by kind (icon and name), each item a name, its reason sentence and, where there is a node, a + to add it. A latent relation between two basket nodes has no node to add.
 function renderBridges(){
 const row=$('#bridge-row'),box=$('#basket-bridges'),toggle=$('#bridge-toggle');row.hidden=!hints.length;if(!hints.length)return;
@@ -1012,45 +1115,443 @@ if(!basket.length)return;
 if(!clearTimer){clearTimer=setTimeout(()=>{clearTimer=0;syncClear();},CLEAR_CONFIRM_MS);syncClear();showTip($('#basket-clear'),'再按一次清空',CLEAR_CONFIRM_MS);return;}
 clearTimeout(clearTimer);clearTimer=0;basket=[];basketChanged();say('已清空搖籃。');};
 $('#basket-view').onclick=()=>setBasketView(!basketView);
-// ----- Surprise basket: with an empty basket, draw SURPRISE_COUNT concepts, each with a reason (SURPRISE_LABELS): 1 a tension hotspot (a node with both support and counter/limit lines, drawn from the SURPRISE_TOP highest by semanticDegree; without any: a highly linked concept), 2 new and isolated (newest outcome within SURPRISE_RECENT_DAYS of the library's newest, semanticDegree at most SURPRISE_ISOLATED_MAX; without any: the concept with the newest outcome and the lowest semanticDegree), 3 a distant relative of the first (drawn from the SURPRISE_TOP best; without any: a concept of another main group).
-// The three are never the same node and, where the data allows, lie in three different main groups. Math.random, unless the page has a function named SURPRISE_RANDOM_HOOK (tests). Nothing is stored: the reasons live only while the basket is the drawn set.
 const rnd=()=>{const f=window[SURPRISE_RANDOM_HOOK];return typeof f==='function'?f():Math.random();};
 const pickOne=list=>list.length?list[Math.floor(rnd()*list.length)%list.length]:null;
 let conceptDates=null,newestDate=-Infinity;
 function latestDates(){if(conceptDates)return conceptDates;conceptDates=new Map();for(const s of allSources){const t=Date.parse(s.date);if(Number.isFinite(t))newestDate=Math.max(newestDate,t);}
 for(const c of allNodes){if(c.kind!=='idea')continue;let m=null;for(const s of citing(c)){const t=Date.parse(s.date);if(Number.isFinite(t)&&(m===null||t>m))m=t;}if(m!==null)conceptDates.set(c.id,m);}return conceptDates;}
-function rollSurprise(avoid=null){
-const concepts=allNodes.filter(n=>n.kind==='idea'),dates=latestDates(),chosen=[],reasons=new Map(),used=new Set();
-const free=n=>!reasons.has(n.id),soft=list=>{const keep=avoid?list.filter(n=>!avoid.has(n.id)):list;return keep.length?keep:list;},spread=list=>{const other=list.filter(n=>!used.has(n.group));return other.length?other:list;};   // soft: a re-roll leaves the previous nodes out when it can; spread: a main group not drawn yet when there is one
-const take=(n,why)=>{if(!n)return;chosen.push(n.id);reasons.set(n.id,why);used.add(n.group);};
-let hot=concepts.filter(n=>n.tension).sort(bySemantic).slice(0,SURPRISE_TOP),why='tension';
-if(!hot.length){hot=concepts.slice().sort(bySemantic).slice(0,SURPRISE_TOP);why='hot';}
-take(pickOne(soft(hot)),why);
-const fresh=concepts.filter(n=>free(n)&&dates.has(n.id)&&newestDate-dates.get(n.id)<=SURPRISE_RECENT_DAYS*DAY_MS&&(n.semanticDegree||0)<=SURPRISE_ISOLATED_MAX);
-if(fresh.length)take(pickOne(soft(spread(fresh))),'fresh');
-else{const dated=concepts.filter(n=>free(n)&&dates.has(n.id)).sort((x,y)=>dates.get(y.id)-dates.get(x.id)||(x.semanticDegree||0)-(y.semanticDegree||0)||(x.id<y.id?-1:1));take(soft(spread(dated))[0],'latest');}
-const first=chosen[0]&&byId.get(chosen[0]);
-if(first){const far=distantFrom([first.id],n=>n.kind!=='idea'||!free(n)).slice(0,SURPRISE_TOP).map(f=>f.node);
-if(far.length)take(pickOne(soft(spread(far))),'distant');
-else take(pickOne(soft(spread(concepts.filter(n=>free(n)&&n.group!==first.group&&n.group!=='unlinked')))),'other');}
-while(chosen.length<SURPRISE_COUNT){const rest=concepts.filter(free);if(!rest.length)break;take(pickOne(soft(spread(rest))),'random');}
-return{ids:chosen,reasons};}
 const sameSet=(ids,set)=>ids.length===set.size&&ids.every(id=>set.has(id));
-function surpriseBasket(again){
-const last=again&&surprise?new Set(surprise.ids):null;let draw=null;
-for(let k=0;k<SURPRISE_TRIES;k++){draw=rollSurprise();if(!last||!sameSet(draw.ids,last))break;}
-if(last&&sameSet(draw.ids,last))draw=rollSurprise(last);   // the plain draws kept giving the same set: leave the last nodes out where the data has others
-if(!draw.ids.length){notice('庫內沒有可抽取的概念。',$('#surprise'));return;}
-basket=[...draw.ids];surprise={ids:[...draw.ids],reasons:draw.reasons};ai.tab='think';ai.auto.think=true;forgetQuestions();
-basketChanged();say('偶遇已放入 '+basket.length+' 顆星。');
-if(!again)openBasket({step:2});}
-// "Another set" replaces the stars, and the questions written for the old ones go with them: when the person has written one, the first press only says so (like "clear"), the second within CLEAR_CONFIRM_MS draws. The first draw needs an empty cradle, which has no questions (an empty cradle forgets them).
-let againTimer=0;
-function syncAgain(){const b=$('#surprise-again'),armed=!!againTimer;b.classList.toggle('on',armed);b.lastChild.textContent=armed?'再按一次':'換一組';}
-$('#surprise').onclick=()=>surpriseBasket(false);
-$('#surprise-again').onclick=()=>{
-if(hasWrittenQuestion()&&!againTimer){againTimer=setTimeout(()=>{againTimer=0;syncAgain();},CLEAR_CONFIRM_MS);syncAgain();const m='換一組會取代你寫的問題，再按一次才換';say(m);showTip($('#surprise-again'),m,CLEAR_CONFIRM_MS);return;}
-clearTimeout(againTimer);againTimer=0;syncAgain();surpriseBasket(true);};
+// ----- Encounter (① 相遇): the draw. Three roles are drawn one after the other (a locked star keeps its slot and counts as already drawn): the candidates of each role follow the 偶遇 rules (ENCOUNTER_ROLES says what a role is and what it falls back to), a star of a main group not used yet is preferred (spread) and, on a re-draw, the stars of the last draw are left out where the data allows (soft).
+// The draw is the same code for a real draw and for the simulated draws that decide the tiers; only the dice differ: `rnd` (the page's own, or the __nebulaRandom hook) for a real draw, a seeded generator for the simulation. Nothing of an encounter is stored except the dex (ENCOUNTER_DEX_KEY) and the basket itself.
+const mulberry32=seed=>{let a=seed>>>0;return()=>{a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};};
+let encKit=null;
+function encounterKit(){
+if(encKit)return encKit;
+const concepts=allNodes.filter(n=>n.kind==='idea'),dates=latestDates(),ranked=concepts.slice().sort(bySemantic),nbr=new Map();   // nbr: id -> ids joined to it by a recorded line that is not structural (a new star and its 孕育 lines are left out)
+for(const e of allEdges){if(familyOf(e)==='structural')continue;const a=byId.get(e.a),b=byId.get(e.b);if(!a||!b||a.kind==='thought'||b.kind==='thought')continue;for(const [x,y] of [[e.a,e.b],[e.b,e.a]]){let s=nbr.get(x);if(!s)nbr.set(x,s=new Set());s.add(y);}}
+const mid=[0,1,2].map(i=>concepts.reduce((s,n)=>s+n.p[i],0)/Math.max(1,concepts.length)),reach=concepts.reduce((m,n)=>Math.max(m,Math.hypot(n.p[0]-mid[0],n.p[1]-mid[1],n.p[2]-mid[2])),0);
+encKit={concepts,ranked,nbr,far:new Map(),span:Math.max(1e-6,2*reach),tensionTop:ranked.filter(n=>n.tension).slice(0,SURPRISE_TOP),hotTop:ranked.slice(0,SURPRISE_TOP),
+fresh:concepts.filter(n=>dates.has(n.id)&&newestDate-dates.get(n.id)<=SURPRISE_RECENT_DAYS*DAY_MS&&(n.semanticDegree||0)<=SURPRISE_ISOLATED_MAX),
+dated:concepts.filter(n=>dates.has(n.id)).sort((x,y)=>dates.get(y.id)-dates.get(x.id)||(x.semanticDegree||0)-(y.semanticDegree||0)||(x.id<y.id?-1:1))};
+return encKit;}
+// Far relatives of the stars drawn so far: the best SURPRISE_TOP of distantFrom. Remembered per set of stars, because the simulation asks the same question many times.
+function farOf(kit,taken,ids){
+const key=taken.map(n=>n.id).sort().join('|');let far=kit.far.get(key);
+if(!far){far=distantFrom(taken.map(n=>n.id),n=>n.kind!=='idea'||ids.has(n.id)).slice(0,SURPRISE_TOP).map(f=>f.node);if(kit.far.size>4000)kit.far.clear();kit.far.set(key,far);}
+return far;}
+// One role: {node, why (the role, or the fallback key), cands (the candidates it was drawn from)}.
+function encounterRole(role,taken,opt){
+const kit=opt.kit,avoid=opt.avoid,ids=new Set(taken.map(n=>n.id)),used=new Set(taken.map(mainGroup)),free=n=>!ids.has(n.id);
+const soft=list=>{const keep=avoid?list.filter(n=>!avoid.has(n.id)):list;return keep.length?keep:list;},spread=list=>{const other=list.filter(n=>!used.has(mainGroup(n)));return other.length?other:list;};
+const choose=(list,why)=>{const pool=soft(spread(list));return pool.length?{node:pool[Math.floor(opt.rng()*pool.length)%pool.length],why,cands:pool}:null;};
+let got=null;
+if(role==='tension'){const list=kit.tensionTop.filter(free);got=list.length?choose(list,'tension'):choose(kit.hotTop.filter(free),'hot');}
+else if(role==='fresh'){const list=kit.fresh.filter(free);if(list.length)got=choose(list,'fresh');else{const pool=soft(spread(kit.dated.filter(free)));if(pool.length)got={node:pool[0],why:'latest',cands:pool};}}
+else if(role==='far'){const far=taken.length?farOf(kit,taken,ids):[];got=far.length?choose(far,'far'):null;
+if(!got){let list=kit.concepts.filter(n=>free(n)&&n.group!=='unlinked'&&!used.has(mainGroup(n)));if(!list.length&&taken.length)list=kit.concepts.filter(n=>free(n)&&n.group!=='unlinked'&&mainGroup(n)!==mainGroup(taken[0]));got=choose(list,'other');}}
+else if(role==='veteran')got=choose(kit.ranked.filter(free).slice(0,SURPRISE_TOP),'veteran');
+return got||choose(kit.concepts.filter(free),'random');}
+// `locked[i]` is a slot that stays (its star counts as drawn); the others are drawn in slot order. A slot stays null when the library has no star left for it.
+function rollEncounter(roles,locked,opt){
+const slots=roles.map((role,i)=>locked[i]||null);
+roles.forEach((role,i)=>{if(slots[i])return;const got=encounterRole(role,slots.filter(Boolean).map(s=>byId.get(s.id)),opt);if(got)slots[i]={role,why:got.why,id:got.node.id,locked:false,cands:got.cands.map(n=>n.id)};});
+return slots;}
+const NO_IDS=new Set();
+function encounterScore(ids,kit,full=false){
+const ns=ids.map(id=>byId.get(id)),groups=new Set(ns.map(mainGroup).filter(g=>g&&g!=='unlinked')).size,nb=ids.map(id=>kit.nbr.get(id)||NO_IDS);
+let joined=0,pairs=0,dist=0,bridge=null;
+for(let i=0;i<ns.length;i++)for(let j=i+1;j<ns.length;j++){
+pairs++;dist+=Math.hypot(ns[i].p[0]-ns[j].p[0],ns[i].p[1]-ns[j].p[1],ns[i].p[2]-ns[j].p[2]);if(nb[i].has(ids[j]))joined++;
+if(bridge&&!full)continue;const [small,large]=nb[i].size<=nb[j].size?[nb[i],nb[j]]:[nb[j],nb[i]];   // a star outside the set that is joined to both ends of this pair
+for(const x of small)if(large.has(x)&&!ids.includes(x)){const node=byId.get(x);if(!bridge||bySemantic(node,bridge)<0)bridge=node;if(!full)break;}}
+const tens=ns.filter(n=>n.tension).length,spread=pairs?clamp(dist/pairs/kit.span,0,1):0,S=ENCOUNTER_SCORE;
+return{score:Math.max(0,groups-1)*S.group+S.pairs[Math.min(2,joined)]+tens*S.tension+(bridge?S.bridge:0)+spread,groups,joined,tens,bridge,spread};}
+const oneScore=(poolKey,kit,rng)=>encounterScore(rollEncounter(ENCOUNTER_POOLS[poolKey].roles,[null,null,null],{kit,rng,avoid:null}).filter(Boolean).map(s=>s.id),kit).score;
+const poolSeed=poolKey=>ENCOUNTER_SEED+Object.keys(ENCOUNTER_POOLS).indexOf(poolKey);
+// The thresholds of a pool: ENCOUNTER_SAMPLES scores, sorted. Made lazily, in chunks; window.__nebulaEncounterStats keeps, per pool, how long it took (ms, since the request), the work done (work) and the longest chunk, for the checks.
+const encSim={},encStats=window.__nebulaEncounterStats={};
+function encounterThresholds(poolKey){
+if(encSim[poolKey]&&encSim[poolKey].promise)return encSim[poolKey].promise;
+const s=encSim[poolKey]={sorted:null,promise:null},t0=performance.now(),scores=[],rng=mulberry32(poolSeed(poolKey)),kit=encounterKit(),stat=encStats[poolKey]={ms:0,work:0,longest:0,chunks:0};
+s.promise=new Promise(resolve=>{const step=()=>{const from=performance.now();
+while(scores.length<ENCOUNTER_SAMPLES&&performance.now()-from<ENCOUNTER_CHUNK_MS)scores.push(oneScore(poolKey,kit,rng));
+const spent=performance.now()-from;stat.work+=spent;stat.longest=Math.max(stat.longest,spent);stat.chunks++;
+if(scores.length<ENCOUNTER_SAMPLES){setTimeout(step,0);return;}
+s.sorted=scores.sort((a,b)=>a-b);stat.ms=performance.now()-t0;resolve(s.sorted);};setTimeout(step,0);});
+return s.promise;}
+function encounterTier(sorted,score){let lo=0,hi=sorted.length;while(lo<hi){const mid=(lo+hi)>>1;if(sorted[mid]<score)lo=mid+1;else hi=mid;}const pct=lo/sorted.length;return{pct,tier:pct>=ENCOUNTER_CUTS[2]?3:pct>=ENCOUNTER_CUTS[1]?2:pct>=ENCOUNTER_CUTS[0]?1:0};}   // pct: the share of the simulated scores that are strictly lower
+window[ENCOUNTER_SIM_HOOK]=(poolKey,count,seed)=>{
+if(!ENCOUNTER_POOLS[poolKey])return null;const kit=encounterKit();
+if(!encSim[poolKey]||!encSim[poolKey].sorted){const rng=mulberry32(poolSeed(poolKey)),scores=[];for(let i=0;i<ENCOUNTER_SAMPLES;i++)scores.push(oneScore(poolKey,kit,rng));const sorted=scores.sort((a,b)=>a-b);encSim[poolKey]={sorted,promise:Promise.resolve(sorted)};}
+const rng=mulberry32(seed),out={common:0,uncommon:0,rare:0,legend:0},names=['common','uncommon','rare','legend'];
+for(let i=0;i<count;i++)out[names[encounterTier(encSim[poolKey].sorted,oneScore(poolKey,kit,rng)).tier]]++;
+return out;};
+// The dex of tiers: four counts in this browser only; a missing or damaged value counts as zeros.
+function dexRead(){try{const v=JSON.parse(window.localStorage.getItem(ENCOUNTER_DEX_KEY));if(Array.isArray(v)&&v.length===4)return v.map(n=>Math.max(0,Math.floor(Number(n))||0));}catch{}return [0,0,0,0];}
+function dexAdd(tier){const d=dexRead();d[tier]++;try{window.localStorage.setItem(ENCOUNTER_DEX_KEY,JSON.stringify(d));}catch{}renderHintDex();}
+// ----- The encounter in front of the person: {pool, hero, roles, slots (only the stars that could be drawn), revealed (slot indexes already in the basket), phase ('drawing' or 'card'), rar, skip, fx (what the renderer draws: wisp, blooms, meet), token, internal, focus}. focus (a slot index, -1 = none) is the star the card and the sky point at together, in the card phase only: see setEncounterFocus (row, key, sky and pin are its four sources).
+const groupTitleOf=n=>groupById.get(mainGroup(n))?.title||'';
+const encounterEffects=e=>!state.reduced&&!e.skip&&state.gpu;
+function setEncounterBasket(e){e.internal=true;try{basket=e.slots.filter((s,k)=>e.revealed.has(k)).map(s=>s.id);basketChanged();}finally{e.internal=false;}}
+function endEncounter(){const e=encounter;if(!e)return;encounter=null;e.token=-1;if(e.wake)e.wake();hideEncounterLine();clearTimeout(againTimer);againTimer=0;syncEncounter();syncFocusRows();}   // syncEncounter: no focus, lock or ring is left on the sky
+function hideEncounterLine(){const el=$('#enc-line');el.style.opacity='0';el.dataset.key='';}
+function newEncounter(pool,hero,roles,slots){
+return{pool,hero,roles:slots.map(s=>s.role),slots,revealed:new Set(slots.map((s,k)=>s.locked?k:-1).filter(k=>k>=0)),phase:'drawing',rar:null,skip:false,lit:-1,short:slots.length<roles.length?slots.length:0,fx:{wisp:null,blooms:[],meet:null,head:null},token:0,internal:false,wake:null,focus:-1,row:-1,key:-1,sky:-1,pin:-1};}
+function drawEncounter({hero=null}={}){
+if(state.ambient)return;
+const heroNode=hero?byId.get(hero):null;if(hero&&(!heroNode||heroNode.kind==='thought'))return;
+const kit=encounterKit(),roles=heroNode?ENCOUNTER_HERO_ROLES(heroNode):ENCOUNTER_POOLS[encounterPool].roles;
+const slots=rollEncounter(roles,heroNode?[{role:'hero',why:'hero',id:heroNode.id,locked:true,cands:[]},null,null]:[null,null,null],{kit,rng:rnd,avoid:null}).filter(Boolean);
+if(!slots.length||!heroNode&&!slots.some(s=>!s.locked)){notice(ENCOUNTER_TEXT.none,$('#surprise'));return;}
+ai.tab='think';ai.auto.think=true;forgetQuestions();
+const e=newEncounter(heroNode?'cross':encounterPool,hero,roles,slots);
+if(encounter)endEncounter();
+encounter=e;e.token=++encounterToken;
+overviewForEncounter();setEncounterBasket(e);openBasket();
+playEncounter(e,e.slots.map((s,k)=>s.locked?-1:k).filter(k=>k>=0));}
+function redrawEncounter(){
+const e=encounter;if(!e||e.phase!=='card'||e.slots.every(s=>s.locked))return;
+const prev=new Set(e.slots.map(s=>s.id)),left=new Set(e.slots.filter(s=>!s.locked).map(s=>s.id)),kit=encounterKit(),locked=e.slots.map(s=>s.locked?s:null);
+let slots=null;
+for(let k=0;k<SURPRISE_TRIES;k++){slots=rollEncounter(e.roles,locked,{kit,rng:rnd,avoid:left});if(!sameSet(slots.filter(Boolean).map(s=>s.id),prev))break;}   // the new set differs from the last one where the data allows
+e.slots=slots.filter(Boolean);e.roles=e.slots.map(s=>s.role);e.revealed=new Set(e.slots.map((s,k)=>s.locked?k:-1).filter(k=>k>=0));
+e.phase='drawing';e.rar=null;e.skip=false;e.lit=-1;e.focus=e.row=e.key=e.sky=e.pin=-1;e.fx={wisp:null,blooms:[],meet:null,head:null};e.token=++encounterToken;
+forgetQuestions();setEncounterBasket(e);
+playEncounter(e,e.slots.map((s,k)=>s.locked?-1:k).filter(k=>k>=0));}
+// The whole sky is shown for a draw (a filter, a group, a search or the basket view would hide the stars that are drawn), the content card is closed and the camera goes back to the overview.
+function overviewForEncounter(){
+if(!state.gpu)return;
+if(state.list||state.query||groupId!=='all'||sceneKind!=='all'||relFilter!=='all'||consActive||basketView){reset();}
+else if(state.selected)release(false);
+scenePage=0;state.target=[0,0,0];state.tdistance=MAX_DISTANCE;}
+function makeWisp(e,fromId,slot){
+const taken=new Set(e.slots.filter((s,k)=>e.revealed.has(k)).map(s=>s.id)),rest=(slot.cands||[]).filter(id=>id!==slot.id&&id!==fromId&&!taken.has(id)),rng=mulberry32(Math.floor(idHash(slot.id,e.token)*4294967296)),via=[];
+while(via.length<ENCOUNTER_WISP.via&&rest.length)via.push(rest.splice(Math.floor(rng()*rest.length),1)[0]);
+return{ids:[fromId,...via,slot.id],start:performance.now(),trail:[]};}
+async function playEncounter(e,todo){
+const token=e.token,T=ENCOUNTER_TIME,alive=()=>encounter===e&&e.token===token,fx=e.fx;
+const wait=ms=>new Promise(resolve=>{if(ms<=0||!encounterEffects(e)){resolve();return;}const id=setTimeout(()=>{e.wake=null;resolve();},ms);e.wake=()=>{clearTimeout(id);e.wake=null;resolve();};});
+hideEncounterLine();renderBasket();
+const sortedP=encounterThresholds(e.pool);   // started now: the tier is needed only at the meeting, a few seconds later
+await wait(T.start);if(!alive())return;
+let from=(e.slots.find((s,k)=>e.revealed.has(k))||{}).id||null;
+for(const [n,i] of todo.entries()){
+const slot=e.slots[i];
+if(encounterEffects(e))fx.wisp=makeWisp(e,from,slot);
+await wait(T.wisp);if(!alive())return;
+fx.wisp=null;fx.head=null;e.revealed.add(i);e.lit=i;setEncounterBasket(e);
+say(ENCOUNTER_TEXT.revealed(i+1,nodeName(byId.get(slot.id)),ENCOUNTER_ROLES[slot.why].label));
+if(encounterEffects(e))fx.blooms.push({id:slot.id,start:performance.now()});
+from=slot.id;await wait(n===todo.length-1?T.end:T.gap);if(!alive())return;}
+const ids=e.slots.map(s=>s.id),info=encounterScore(ids,encounterKit(),true),frame=encounterFrame(ids);
+if(frame){state.target=frame.target;state.tdistance=frame.distance;state.tyaw=frame.yaw;if(!encounterEffects(e))jumpCamera();}
+await wait(T.frame);if(!alive())return;
+const sorted=await sortedP;if(!alive())return;
+const tier=encounterTier(sorted,info.score);
+e.rar={...info,tier:tier.tier,pct:tier.pct,percent:Math.round(tier.pct*100)};
+fx.meet={start:performance.now(),tier:e.rar.tier,instant:!encounterEffects(e),ids,key:ids.join('|')};
+dexAdd(e.rar.tier);say(ENCOUNTER_TEXT.met(ENCOUNTER_TIERS[e.rar.tier].name,e.rar.percent));
+await wait(T.card);if(!alive())return;
+e.phase='card';renderBasket();
+requestAnimationFrame(()=>{if(!alive())return;const again=encounterFrame(ids);if(again){state.target=again.target;state.tdistance=again.distance;state.tyaw=again.yaw;if(!encounterEffects(e))jumpCamera();}});}   // the card makes the panel taller: the stars are framed once more
+function jumpCamera(){state.focus=[...state.target];state.distance=state.tdistance;state.yaw=state.tyaw;}
+function skipEncounter(){
+const e=encounter;if(!e||e.phase!=='drawing')return;
+e.skip=true;e.fx.wisp=null;e.fx.head=null;e.fx.blooms=[];if(e.fx.meet)e.fx.meet.instant=true;hideEncounterLine();if(e.wake)e.wake();jumpCamera();}
+// Reduced motion switched on while the light of a draw is still on: the draw ends like 略過動畫, and the light of a meeting that is still fading after the card appeared (thread, flash, sparks, the floating line) stops too.
+function calmEncounter(){const e=encounter;if(!e)return;skipEncounter();e.fx.wisp=null;e.fx.head=null;e.fx.blooms=[];if(e.fx.meet)e.fx.meet.instant=true;hideEncounterLine();}
+// The free sky for the three stars: not under the floating panel or the bottom sheet, the top bar, the left column or the zoom keys. A floating panel leaves three places (the side to its right, the side to its left, the band above it); a bottom sheet leaves the band above it.
+function encounterFreeRects(){
+const W=innerWidth,H=innerHeight,F=ENCOUNTER_FRAME,phone=W<=PHONE_MAX_WIDTH,top=phone?F.topPhone:F.topDesktop,bottom=H-F.bottom;
+const whole={l:phone?F.margin:F.left,t:top,r:W-F.margin,b:bottom};
+if(!basketOpen||panel.hidden)return [whole];
+const p=panel.getBoundingClientRect(),band={...whole,b:Math.min(bottom,p.top-F.gap)};
+if(compactQuery.matches)return [band];
+const col=document.querySelector('.searchbox'),colBottom=getComputedStyle(col).visibility==='hidden'?0:col.getBoundingClientRect().bottom+F.gap;   // the left column (search, filters) is in the way of the side to the left of the panel
+return [{l:p.right+F.gap,t:top,r:W-F.margin,b:bottom},{l:F.margin,t:Math.max(top,colBottom),r:p.left-F.gap,b:bottom},band].filter(z=>z.r-z.l>=F.sideMin&&z.b-z.t>=F.labelH*2);}
+// Camera for a set of stars. Candidates: the camera as it is and, when the three stars are too far apart to fit, a few other turns of it (ENCOUNTER_FRAME.turns, nearest to the present turn first). For each, in every free place, the nearest distance (from BIRTH_VIEW.min, farther by ENCOUNTER_FRAME.grow each step, up to ENCOUNTER_FRAME.far times the overview distance)
+// at which the stars, their labels and the line under their middle fit, and the focus that puts them in the middle of that place. The first candidate that fits within the overview distance wins (so the camera is turned only when it has to be); else the one that fits nearest; else the one that overflows least.
+function encounterFrame(ids){
+if(!projectWith)return null;
+const F=ENCOUNTER_FRAME,list=ids.map(id=>byId.get(id)),mid=[0,1,2].map(i=>list.reduce((s,n)=>s+n.p[i],0)/list.length),phone=innerWidth<=PHONE_MAX_WIDTH,labelW=phone?F.labelW.phone:F.labelW.desktop,pitch=state.tpitch,rects=encounterFreeRects();
+const turns=[0];for(let k=1;k<=F.turns/2;k++)turns.push(k*Math.PI*2/F.turns,-k*Math.PI*2/F.turns);if(F.turns%2===0)turns.pop();
+const results=[];
+for(const turn of turns){
+const yaw=state.tyaw+turn,sy=Math.sin(yaw),cy=Math.cos(yaw),sp=Math.sin(pitch),cp=Math.cos(pitch),right=[cy,0,sy],up=[sy*sp,cp,-cy*sp];
+const box=(distance,focus)=>{const cam={yaw,pitch,distance,focus},xs=[],ys=[],pts=list.map(n=>projectWith(n.p,cam)),c=projectWith(mid,cam);
+for(const q of pts){xs.push(q.x,q.x+12+labelW);ys.push(q.y-F.labelH/2,q.y+F.labelH/2);}
+xs.push(c.x-ENCOUNTER_LINE.reserve,c.x+ENCOUNTER_LINE.reserve);ys.push(c.y+ENCOUNTER_LINE.drop+14);
+return{l:Math.min(...xs),r:Math.max(...xs),t:Math.min(...ys),b:Math.max(...ys)};};
+for(const outer of rects){
+const rect={l:outer.l+F.pad,t:outer.t+F.pad,r:outer.r-F.pad,b:outer.b-F.pad},spill=b=>Math.max(0,rect.l-b.l)+Math.max(0,b.r-rect.r)+Math.max(0,rect.t-b.t)+Math.max(0,b.b-rect.b);let best=null;
+for(let d=BIRTH_VIEW.min;d<=MAX_DISTANCE*F.far*F.grow;d*=F.grow){
+const distance=Math.min(d,MAX_DISTANCE*F.far),k=2*Math.tan(FOV/2)*distance*cameraFraming()/innerHeight;let focus=[...mid],b=box(distance,focus);
+for(let i=0;i<F.tries;i++){const dx=(rect.l+rect.r)/2-(b.l+b.r)/2,dy=(rect.t+rect.b)/2-(b.t+b.b)/2;focus=clampFocus(focus.map((v,j)=>v-dx*k*right[j]+dy*k*up[j]));b=box(distance,focus);}   // the sky follows the pointer in panBy: moving the picture by (dx, dy) moves the focus the other way
+best={target:focus,distance,yaw,turn,over:spill(b),fits:spill(b)<=2};if(best.fits)break;}
+if(best)results.push(best);}}
+const near=results.filter(r=>r.fits&&r.distance<=MAX_DISTANCE*1.001),pool=near.length?near:results.filter(r=>r.fits);
+const pick=pool.length?pool.reduce((m,r)=>(near.length?Math.abs(r.turn)<Math.abs(m.turn)||Math.abs(r.turn)===Math.abs(m.turn)&&r.distance<m.distance:r.distance<m.distance)?r:m):results.reduce((m,r)=>r.over<m.over?r:m);
+return pick&&{target:pick.target,distance:pick.distance,yaw:pick.yaw};}
+// The disc of the cradle forms at the meeting (it did not exist before the three were together): 0 before it, then 0 to 1 over ENCOUNTER_TIME.disc; 1 when there is no ceremony.
+function encounterForm(){
+const e=encounter;if(!e)return 1;const mt=e.fx.meet;
+if(!mt)return e.phase==='drawing'&&encounterEffects(e)?0:1;
+if(mt.instant)return 1;
+const d=ENCOUNTER_TIME.disc;return clamp((performance.now()-mt.start-d[0])/(d[1]-d[0]),0,1);}
+// ----- Panel, step 1.
+function renderPools(){
+const box=$('#enc-pools');box.replaceChildren(...Object.entries(ENCOUNTER_POOLS).map(([key,p])=>{const b=text('button',p.label);b.type='button';b.setAttribute('role','radio');b.setAttribute('aria-checked',String(key===encounterPool));b.dataset.pool=key;return b;}));
+$('#enc-pool-tip').textContent=ENCOUNTER_POOLS[encounterPool].tip;}
+$('#enc-pools').addEventListener('click',ev=>{const b=ev.target.closest('button');if(!b||!b.dataset.pool)return;encounterPool=b.dataset.pool;renderPools();});
+const LOCK_SVG='<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="2" y="5.5" width="8" height="5.5" rx="1" fill="currentColor"/><path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+function encounterRow(slot,i,known,locks,lit){
+const li=document.createElement('li'),role=ENCOUNTER_ROLES[known?slot.why:slot.role],node=byId.get(slot.id);
+if(lit)li.className='lit';li.dataset.slot=String(i);
+li.append(text('span',numberOf(i),'no'),text('span',role.label,'role'),known?text('span',nodeName(node),'name'):text('span',ENCOUNTER_TEXT.wait,'name wait'));
+if(locks){const b=document.createElement('button');b.type='button';b.className='enc-lock';b.dataset.slot=String(i);b.setAttribute('aria-pressed',String(slot.locked));b.disabled=slot.role==='hero';b.insertAdjacentHTML('afterbegin',LOCK_SVG);b.append(slot.locked?ENCOUNTER_TEXT.locked:ENCOUNTER_TEXT.lock);li.append(b);}else li.append(document.createElement('span'));
+if(known)li.append(text('span',ENCOUNTER_TEXT.meta(groupTitleOf(node),role.why(groupTitleOf(node))),'enc-meta'));
+return li;}
+function renderEncounterLive(){const e=encounter;$('#enc-live').replaceChildren(...e.slots.map((s,i)=>encounterRow(s,i,e.revealed.has(i),false,e.lit===i)));}
+function renderEncounterCard(){
+const e=encounter,r=e.rar,tier=ENCOUNTER_TIERS[r.tier],T=ENCOUNTER_TEXT,badge=$('#enc-badge');
+badge.replaceChildren(T.badge(tier.name));if(tier.mark)badge.append(text('em',tier.mark));
+$('#enc-score').textContent=T.score(r.percent);
+const unknown=r.joined===0?0:r.joined===1?1:2,meters=[[T.meters[0],r.groups/3,T.span(r.groups)],[T.meters[1],[1,.5,.15][unknown],T.unknown[unknown]],[T.meters[2],Math.min(1,r.tens/2),T.tension(r.tens)],[T.meters[3],r.bridge?1:0,T.bridge(r.bridge?nodeName(r.bridge):'')]];
+$('#enc-meters').replaceChildren(...meters.map(([name,share,sentence])=>{const li=document.createElement('li'),bar=text('span','','enc-bar'),fill=document.createElement('i');fill.style.width=Math.round(clamp(share,0,1)*100)+'%';bar.append(fill);li.append(text('b',name),bar,text('span',sentence));return li;}));
+$('#enc-card-slots').replaceChildren(...e.slots.map((s,i)=>encounterRow(s,i,true,true,false)));
+const short=$('#enc-short');short.hidden=!e.short;short.textContent=e.short?T.short(e.short):'';
+$('#enc-seeds').replaceChildren(...suggestions.think.slice(0,2).map(s=>{const b=document.createElement('button');b.type='button';b.className='enc-seed';b.append(text('span',s.label,'q-dir'),s.text);b.onclick=()=>{ai.tab='think';ai.auto.think=false;ai.question.think=s.text;ai.edited.think=false;storeWrite();setStep(2);};return b;}));
+$('#enc-reroll').disabled=e.slots.every(s=>s.locked);syncFocusRows();}
+// ----- The card and the sky point at each other (D). The focus has four sources: `row` (the mouse over a row of the card), `key` (the keyboard in a row), `sky` (the pointer over a drawn star or its label) and `pin` (held: a touch on a row, the lock button, a first press on a drawn star in the sky); the mouse on a row wins, then the keyboard, then the sky, then the pin. Only the card phase has a focus. A change of the focus marks the labels, the row and the glow once (syncEncounter, syncFocusRows); nothing is looked up per frame.
+function setEncounterFocus(part,k){
+const e=encounter;if(!e||e[part]===k||k>=0&&e.phase!=='card')return;e[part]=k;
+const f=e.phase==='card'?e.row>=0?e.row:e.key>=0?e.key:e.sky>=0?e.sky:e.pin:-1;
+if(f===e.focus)return;e.focus=f;syncEncounter();syncFocusRows();}
+function syncFocusRows(){const f=encounter?encounter.focus:-1;for(const li of $('#enc-card-slots').children)li.classList.toggle('focus',f>=0&&Number(li.dataset.slot)===f);}
+function skyFocus(id){if(encounter)setEncounterFocus('sky',id?encSlot(id):-1);}
+// A plain press on a drawn star or its label in the card phase. With a mouse (or the keyboard) the star under the pointer is focused already, so the press opens its content card as before (the focus is read when the pointer went down, because pressing the sky lets the hover go). With a touch the first press holds the focus on it (its row lights up and comes into view, nothing opens) and the second, on the star that is held, opens it. Ctrl / ⌘ is the manual put-in / take-out and never comes here. Returns true when the press was used.
+function encounterTap(id){
+const e=encounter,k=e&&e.phase==='card'?encSlot(id):-1;if(k<0||(encPtr==='mouse'?e.focus===k||encDownFocus===k:e.pin===k))return false;
+setEncounterFocus('pin',k);const li=$('#enc-card-slots').children[k];if(li)li.scrollIntoView({block:'nearest',behavior:'instant'});return true;}
+let encPtr='mouse',encDownFocus=-1;   // the kind of the last pointer: a mouse over a row is a hover, a touch on a row holds it; the focus at the moment a pointer went down
+for(const type of ['pointerdown','pointermove'])addEventListener(type,ev=>{encPtr=ev.pointerType||'mouse';if(type==='pointerdown')encDownFocus=encounter?encounter.focus:-1;},true);
+const slotsBox=$('#enc-card-slots'),slotOf=ev=>{const li=ev.target.closest?ev.target.closest('li'):null;return li?Number(li.dataset.slot):-1;};
+slotsBox.addEventListener('pointerover',ev=>{if(ev.pointerType==='mouse')setEncounterFocus('row',slotOf(ev));});
+slotsBox.addEventListener('pointerleave',ev=>{if(ev.pointerType==='mouse'){setEncounterFocus('row',-1);setEncounterFocus('pin',-1);}});
+slotsBox.addEventListener('focusin',ev=>setEncounterFocus('key',slotOf(ev)));
+slotsBox.addEventListener('focusout',()=>setEncounterFocus('key',-1));
+slotsBox.addEventListener('click',ev=>{
+const e=encounter;if(!e)return;const b=ev.target.closest('.enc-lock');
+if(b){if(b.disabled)return;const k=Number(b.dataset.slot),s=e.slots[k];if(!s)return;s.locked=!s.locked;setEncounterFocus('pin',k);renderEncounterCard();syncEncounter();   // the lock shows on the star it belongs to
+if(!slotsBox.contains(document.activeElement)){setEncounterFocus('key',-1);if(ev.detail===0)slotsBox.children[k]?.querySelector('.enc-lock')?.focus({preventScroll:true});}return;}   // the pressed button was replaced, so no focusout came: the keyboard's hold is let go (the pin still holds it) and the keyboard stays on the new button
+if(encPtr!=='mouse'){const k=slotOf(ev);if(k>=0)setEncounterFocus('pin',e.pin===k?-1:k);}});
+$('#enc-skip').onclick=skipEncounter;
+function renderStepOne(){
+const n=basket.length,list=$('#basket-items'),e=encounter,mode=e?e.phase==='drawing'?'draw':'card':n?'list':'empty';
+$('#basket-empty').hidden=mode!=='empty';list.hidden=mode!=='list';$('#enc-start').hidden=mode!=='empty';$('#surprise').hidden=mode!=='empty';$('#enc-draw').hidden=mode!=='draw';$('#enc-card').hidden=mode!=='card';
+if(mode==='empty')renderPools();
+list.replaceChildren(...(mode==='list'?basket.map((id,i)=>{const node=byId.get(id),li=text('li','','basket-item'),x=document.createElement('button');li.dataset.tip=nodeName(node);li.dataset.nodeId=id;
+x.type='button';x.className='basket-remove';setIcon(x,'x');x.setAttribute('aria-label','移出搖籃：'+nodeName(node));x.onclick=()=>toggleBasket(id);li.append(text('span',numberOf(i),'no'),text('span',shortName(node),'name'),x);return li;}):[]));
+if(mode==='draw')renderEncounterLive();else if(mode==='card')renderEncounterCard();
+renderBridges();if(mode==='draw')$('#bridge-row').hidden=true;
+$('#bp-actions1').hidden=mode==='draw';
+const view=$('#basket-view');view.hidden=mode==='card';view.setAttribute('aria-pressed',String(basketView));view.disabled=n===0;
+$('#basket-clear').disabled=n===0;$('#enc-reroll').hidden=mode!=='card';$('#step-next').disabled=n===0;$('#step-next-text').textContent=mode==='card'?ENCOUNTER_TEXT.next:'下一步';syncClear();syncAgain();}
+// ----- 主角 (the star on the content card becomes the first star of a draw) and the buttons of the panel's step 1.
+function syncHero(){const b=$('#hero-draw'),armed=!!heroTimer;b.textContent=armed?ENCOUNTER_TEXT.heroAsk:ENCOUNTER_TEXT.hero;b.classList.toggle('armed',armed);}
+$('#hero-draw').onclick=()=>{
+const id=state.selected,n=id&&byId.get(id);if(!n||n.kind==='thought')return;
+if(basket.length&&!heroTimer){heroTimer=setTimeout(()=>{heroTimer=0;syncHero();},CLEAR_CONFIRM_MS);syncHero();return;}   // a cradle that is not empty is replaced: the second press within CLEAR_CONFIRM_MS
+clearTimeout(heroTimer);heroTimer=0;syncHero();drawEncounter({hero:id});};
+// "Draw again" replaces the stars, and the questions written for the old ones go with them: when the person has written one, the first press only says so (like "clear"), the second within CLEAR_CONFIRM_MS draws.
+function syncAgain(){const b=$('#enc-reroll'),armed=!!againTimer;b.classList.toggle('on',armed);b.lastChild.textContent=armed?ENCOUNTER_TEXT.rerollSure:ENCOUNTER_TEXT.reroll;}
+$('#surprise').onclick=()=>drawEncounter();
+$('#enc-reroll').onclick=()=>{
+const e=encounter;if(!e||e.phase!=='card')return;
+if(hasWrittenQuestion()&&!againTimer){againTimer=setTimeout(()=>{againTimer=0;syncAgain();},CLEAR_CONFIRM_MS);syncAgain();const m=ENCOUNTER_TEXT.rerollAsk;say(m);showTip($('#enc-reroll'),m,CLEAR_CONFIRM_MS);return;}
+clearTimeout(againTimer);againTimer=0;syncAgain();redrawEncounter();};
+// ----- Background incubation (③ 誕生). The page asks the local service (same origin, the page's token); nothing is sent anywhere else. `jobsMap` keeps the last answer for each job this page asked about.
+const cradleOn=()=>!!LOCAL_SYNC&&cradleAvail!==false;
+function jobsRead(){try{const v=JSON.parse(window.localStorage.getItem(CRADLE_JOBS_KEY)||'[]');return Array.isArray(v)?v.filter(x=>x&&typeof x.id==='string'&&/^CJ-\d{8}-\d{4}$/.test(x.id)).slice(0,CRADLE_JOBS_MAX).map(x=>({id:x.id,dismissed:!!x.dismissed,})):[];}catch{return [];}}
+function jobsWrite(){try{window.localStorage.setItem(CRADLE_JOBS_KEY,JSON.stringify(jobTracked));}catch{}}
+function jobTrack(id){jobTracked=[{id,dismissed:false},...jobTracked.filter(x=>x.id!==id)].slice(0,CRADLE_JOBS_MAX);jobsWrite();}
+const jobShownEntry=()=>cradleOn()?jobTracked.find(x=>!x.dismissed)||null:null;
+async function cradleCall(method,path,body){
+const headers={'X-Nebula-Token':LOCAL_SYNC.token};if(body!==undefined)headers['Content-Type']='application/json';
+const r=await fetch('/api/cradle/'+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});let data=null;try{data=await r.json();}catch{}
+return{ok:r.ok,status:r.status,data};}
+function renderJobPill(){
+const b=$('#job-pill'),T=CRADLE_TEXT.pill,text_=!cradleOn()?'':jobList.active>0?T.running(jobList.active):jobList.awaiting>0?T.pick(jobList.awaiting):'';
+b.hidden=!text_;b.textContent=text_;b.setAttribute('aria-label',text_);}
+$('#job-pill').onclick=()=>{jobViewOff=false;openBasket({focus:true,step:3});};
+function releaseDisk(){
+if(diskHold===null)return;diskHold=null;
+if(state.diskCollapse!==null){const now=performance.now(),held=CORE_DISK_COLLAPSE_MS+CORE_DISK_HOLD_MS;if(now-state.diskCollapse>held)state.diskCollapse=now-held;}}   // the recovery starts now, whatever the time the disc was held
+const jobEnded=job=>job&&job.status!=='queued'&&job.status!=='running';
+function jobNeedsPoll(){const e=jobShownEntry(),j=e&&jobsMap.get(e.id);return !jobList.seen||!!e&&!j||jobList.active>0||jobList.awaiting>0||!!j&&!jobEnded(j);}   // an unanswered list or an unanswered shown job (a failed ask) is not "nothing to wait for": only an answer can stop the polling
+function jobSchedule(){
+clearTimeout(jobPollTimer);jobPollTimer=0;if(!cradleOn()||!jobNeedsPoll())return;
+const gap=basketOpen?CRADLE_POLL_OPEN_MS:CRADLE_POLL_CLOSED_MS;jobPollTimer=setTimeout(()=>jobTick(),Math.max(0,jobLastTick+gap-Date.now()));}
+async function jobTick(first=false){
+if(!cradleOn())return;
+try{
+const list=await cradleCall('GET','jobs');
+if(list.status===404){cradleAvail=false;return;}   // this workspace has no cradle service: ③ stays the copy page
+if(!list.ok||!list.data||!Array.isArray(list.data.jobs))throw Error();
+cradleAvail=true;jobList={jobs:list.data.jobs,active:list.data.active||0,awaiting:list.data.awaiting_pick||0,runner:list.data.runner||null,seen:true};
+const entry=jobShownEntry();
+if(entry){const r=await cradleCall('GET','jobs/'+entry.id);if(r.ok&&r.data&&r.data.job_id===entry.id)jobsMap.set(entry.id,r.data);else if(r.status===404){entry.dismissed=true;jobsWrite();}}
+if(diskHold!==null){const j=jobList.jobs.find(x=>x.job_id===diskHold),k=jobsMap.get(diskHold);if(j&&jobEnded(j)||!j&&k&&jobEnded(k))releaseDisk();}
+if(first)jobFirstLook();
+}catch{/* a missed poll keeps the last view; the next tick tries again */}
+finally{jobLastTick=Date.now();renderJobPill();if(basketOpen&&ai.step===3)renderIncubate();if($('#ai-setup').open&&cradleAvail===false)renderAISetup();jobSchedule();}}   // only the face of step 3 is redrawn: a poll never clears the copy status
+// The first look at load: a job still running keeps the disc drawn in; a job that has just finished (the page reloaded itself when the star arrived) opens ③ once, so that the person sees 新星已誕生。 after the reload.
+function jobFirstLook(){
+const entry=jobShownEntry(),job=entry&&jobsMap.get(entry.id);
+if(!state.reduced&&!diskHold&&basket.length>=CORE_MIN_STARS){const act=jobList.jobs.find(j=>(j.status==='queued'||j.status==='running')&&jobTracked.some(t=>t.id===j.job_id));if(act){diskHold=act.job_id;state.diskCollapse=performance.now()-CORE_DISK_COLLAPSE_MS-CORE_DISK_HOLD_MS;}}
+const ended=job&&Date.parse(job.ended_at);
+if(job&&job.status==='done'&&job.kind!=='questions'&&Number.isFinite(ended)&&Date.now()-ended<=CRADLE_JUST_DONE_MS&&!state.ambient){jobViewOff=false;openBasket({step:3});}}
+function jobKeep(job){jobsMap.set(job.job_id,job);}
+async function startJob(){
+if(jobBusy||!cradleOn())return;jobBusy=true;jobError='';
+const kind=drafting()?'questions':ai.tab,body={kind,notes:thinkNotes().notes.map(n=>n.sourcePath),question:kind==='questions'?writtenQuestion(ai.tab):String(ai.question[ai.tab]||'').trim(),basket:[...basket]};
+if(kind==='questions')body.way=ai.tab;
+if(encounter&&encounter.rar)body.encounter={pool:encounter.pool,roles:encounter.slots.map(s=>s.why),tier:ENCOUNTER_TIERS[encounter.rar.tier].name,score:Math.round(encounter.rar.score*100)/100};
+await jobCreate(body,true);jobBusy=false;renderCommand();}
+async function jobCreate(body,fromPanel){
+try{
+const r=await cradleCall('POST','jobs',body);
+if(r.ok&&r.data&&r.data.job_id){
+if(body.from_questions){const old=jobTracked.find(x=>x.id===body.from_questions);if(old)old.dismissed=true;}   // the questions were picked: that job is used up
+jobTrack(r.data.job_id);jobKeep({job_id:r.data.job_id,kind:body.kind,way:body.way||null,status:'queued',step:null,round:0,eta_seconds:null,question:body.question,notes:body.notes,basket:body.basket,error:null,result:null,questions:null,surprising:null,picked:null,position:r.data.position});
+jobList={...jobList,active:jobList.active+1};jobViewOff=false;jobForceCopy=false;jobError='';jobPick=-1;
+if(fromPanel){flashCore();if(!state.reduced&&!state.ambient)diskHold=r.data.job_id;}   // the disc is drawn in to a point and held while the job is in the queue or at work
+renderJobPill();jobTick();return true;}
+jobError=(r.data&&r.data.error)||CRADLE_TEXT.failedAsk;}
+catch{jobError=CRADLE_TEXT.offline;}
+return false;}
+async function jobAction(id,action){
+try{const r=await cradleCall('POST',`jobs/${id}/${action}`);if(r.ok&&r.data){jobKeep(r.data);jobError='';}else jobError=(r.data&&r.data.error)||CRADLE_TEXT.failedAsk;}
+catch{jobError=CRADLE_TEXT.offline;}
+renderCommand();jobTick();return jobError==='';}
+function jobDismiss(id){const e=jobTracked.find(x=>x.id===id);if(e){e.dismissed=true;jobsWrite();}jobViewOff=false;jobError='';renderCommand();jobSchedule();}
+async function jobDraftLoad(id){
+try{const r=await cradleCall('GET',`jobs/${id}/draft`);jobDraft=r.ok&&r.data&&typeof r.data.markdown==='string'?{id,markdown:r.data.markdown,review:Array.isArray(r.data.review)?r.data.review:[]}:{id,missing:true};}
+catch{jobDraft={id,missing:true};}
+renderCommand();}
+// The job view: what the person sees of one job, state by state (CRADLE_TEXT has every sentence). It is rebuilt only when what it shows has changed, so that a poll never undoes an open fold or a half-pressed button.
+let jobViewKey='';
+function jobAhead(job){return Number.isInteger(job.position)&&job.position>0?job.position:0;}   // the service says how many jobs are ahead in its real queue order (a retried job goes to the back)
+function renderJob(box,entry,job){
+const T=CRADLE_TEXT,asked=jobStopTimer?1:0,key=JSON.stringify([job,jobPick,asked,jobError,jobDraft,jobAhead(job),jobList.active,byId.has(job.result&&job.result.star_id)]);
+if(key===jobViewKey&&box.childNodes.length)return;jobViewKey=key;
+const kids=[],line=(t,cls='job-line')=>kids.push(text('p',t,cls)),acts=[],btn=(label,fn,cls='again')=>{const b=text('button',label,cls);b.type='button';b.onclick=fn;return b;};
+const stop=()=>btn(jobStopTimer?T.stopSure:T.stop,()=>{if(!jobStopTimer){jobStopTimer=setTimeout(()=>{jobStopTimer=0;jobViewKey='';renderCommand();},CLEAR_CONFIRM_MS);jobViewKey='';renderCommand();return;}clearTimeout(jobStopTimer);jobStopTimer=0;jobAction(job.job_id,'cancel');},'again'+(jobStopTimer?' on':''));
+const again=()=>btn(T.again,()=>{jobViewOff=true;jobError='';renderCommand();}),finish=()=>btn(T.done,()=>jobDismiss(job.job_id)),back2=()=>btn(T.back2,()=>{jobViewOff=true;setStep(2);});
+if(job.status==='queued'){line(T.queued(jobAhead(job)));line(T.away,'job-sub');acts.push(stop(),again());}
+else if(job.status==='running'){const step=job.step||'prepare';line(step==='review'?T.steps.review(Math.max(1,job.round||1)):T.steps[step]||T.steps.prepare);if(job.eta_seconds!==null&&job.eta_seconds!==undefined)line(T.eta(Math.max(1,Math.ceil(job.eta_seconds/60))),'job-sub');line(T.away,'job-sub');acts.push(stop(),again());}
+else if(job.status==='done'&&job.kind==='questions'){
+const qs=job.questions||[];line(T.pickHead(qs.length));
+const list=text('div','','job-choices');qs.forEach((q,i)=>{const b=document.createElement('button');b.type='button';b.className='job-choice';b.setAttribute('aria-pressed',String(jobPick===i));const tags=text('span','','job-tags');tags.append(text('span',q.angle||'','job-angle'));if(job.surprising===i)tags.append(text('span',T.surprising,'job-surprise'));b.append(tags,text('span',q.question||'','job-q'),text('span',q.why||'','job-why'));b.onclick=()=>{jobPick=i;jobViewKey='';renderCommand();};list.append(b);});kids.push(list);
+const go=btn(T.pickGo,async()=>{if(jobPick<0||jobBusy)return;jobBusy=true;const q=qs[jobPick].question;const ok=await jobCreate({kind:job.way,notes:job.notes,question:q,basket:job.basket||[],from_questions:job.job_id},false);jobBusy=false;if(!ok){jobViewKey='';}renderCommand();},'primary');go.disabled=jobPick<0;
+acts.push(go,btn(T.pickNone,async()=>{await jobAction(job.job_id,'cancel');jobDismiss(job.job_id);setStep(2);}),finish());}
+else if(job.status==='done'){
+line(T.born);const id=job.result&&job.result.star_id;
+if(id){const see=btn(T.seeStar,()=>{if(byId.has(id)){select(id);return;}try{sessionStorage.setItem(CRADLE_GOTO_KEY+location.pathname,id);}catch{}remember();location.reload();},'again');acts.push(see);}
+if(job.result&&job.result.href){const a=text('a',T.openRecord,'again');a.href=job.result.href;a.target='_blank';a.rel='noopener';acts.push(a);}
+const seen=seenRead(),playing=state.birth&&state.birth.id===id;
+if(id&&byId.has(id)&&!playing&&!(seen&&seen.has(id)))acts.push(btn(BIRTH_TEXT.replay,()=>{closeBasket(false);replayBirth(id);}));
+acts.push(finish(),again());}
+else if(job.status==='failed'){
+const err=job.error||{};line(err.message||T.failedAsk,'job-err');
+for(const action of err.actions||[]){
+if(action==='retry'||action==='retry_later'||action==='refresh')acts.push(btn(T.actions[action],()=>jobAction(job.job_id,'retry')));
+else if(action==='copy')acts.push(btn(T.actions.copy,()=>{jobViewOff=true;jobForceCopy=true;renderCommand();}));
+else if(action==='edit_question')acts.push(btn(T.actions.edit_question,()=>{jobViewOff=true;setStep(2);}));
+else if(action==='draft')acts.push(btn(T.actions.draft,()=>jobDraftLoad(job.job_id)));}
+acts.push(finish(),again());
+if(jobDraft&&jobDraft.id===job.job_id){
+if(jobDraft.missing)line(T.draftMissing,'job-sub');
+else{kids.push(text('pre',jobDraft.markdown,'job-draft'));const revise=jobDraft.review.filter(r=>r.verdict==='revise');
+if(revise.length){line(T.reviewHead,'job-sub');const ul=document.createElement('ul');ul.className='job-review';for(const r of revise)ul.append(text('li',`${r.id}：${r.adjudication||''}`));kids.push(ul);}}}
+const det=document.createElement('details');det.className='fold';det.append(text('summary',T.detail),text('p',`${err.code||''}${err.detail?'\n'+err.detail:''}`,'job-detail'));kids.push(det);
+line(T.notSaved,'job-sub');}
+else if(job.status==='cancelled'){line(T.cancelled);acts.push(btn(T.restart,()=>jobAction(job.job_id,'retry')),btn(T.back2,()=>{jobViewOff=true;setStep(2);}),finish(),again());}
+if(jobError)line(jobError,'job-err');
+if(acts.length){const row=text('div','','job-actions');row.append(...acts);kids.push(row);}
+box.replaceChildren(...kids);}
+// Step 3: which of its two faces the page shows. On the page the local service serves, an approved usable runner lets thinking and connecting without 向外延伸 start a background job (開始孕育); the copy button, the notes line and the full text move into the fold 其他做法. Creating, 向外延伸 on and an offline page keep the copy button as the big one.
+const jobViewShown=()=>{const e=jobShownEntry(),j=e&&jobsMap.get(e.id);return !jobViewOff&&draftable(ai.tab)&&j?{entry:e,job:j}:null;};
+const usableRunner=()=>!!jobList.runner?.name&&jobList.runner.ready!==false;
+const incubating=()=>cradleOn()&&usableRunner()&&draftable(ai.tab)&&!ai.out&&!jobForceCopy;
+function renderIncubate(){
+const shown=jobViewShown(),inc=!shown&&incubating(),view=$('#job-view'),zone=$('#copy-zone');
+$('#ai-out-row').hidden=!draftable(ai.tab)||!!shown;
+view.hidden=!shown;if(shown)renderJob(view,shown.entry,shown.job);else jobViewKey='';
+$('#ai-start').hidden=!inc;$('#ai-other').hidden=!inc;
+zone.hidden=!!shown;
+const other=$('#ai-other');
+if(inc){const body=$('#ai-other-body');if(zone.parentNode!==body)body.append(zone);}else if(zone.parentNode!==other.parentNode)other.after(zone);
+const none=thinkNotes().notes.length===0,start=$('#ai-start'),label=jobList.active>0?CRADLE_TEXT.startQueued:CRADLE_TEXT.start;
+start.disabled=none||jobBusy;start.lastChild.textContent=label;
+const note=$('#ai-start-note');note.hidden=!(inc&&none);note.textContent=none?NO_NOTES_NOTE:'';
+const runnerNote=$('#ai-runner-note'),r=jobList.runner,showSetup=!shown&&cradleOn()&&draftable(ai.tab)&&!ai.out;
+runnerNote.hidden=!showSetup;
+runnerNote.querySelector('span').textContent=usableRunner()?AI_SETUP_TEXT.using(r.label):r?.name?AI_SETUP_TEXT.unavailable(r.label):AI_SETUP_TEXT.unset;
+runnerNote.querySelector('button').textContent=usableRunner()?AI_SETUP_TEXT.change:AI_SETUP_TEXT.setup;
+if(inc)start.after(runnerNote);else $('#ai-copy').after(runnerNote);
+const err=$('#job-start-error');err.hidden=!!shown||!jobError;err.textContent=jobError;}
+// One modal: opening reads the cached detection, and only the detect button asks for a fresh check.
+let aiSetupData=null,aiSetupPicked=null,aiSetupBusy=false,aiSetupDetecting=false,aiSetupError='',aiSetupFocus=null;
+function renderAISetup(){
+const T=AI_SETUP_TEXT,online=cradleOn(),box=$('#ai-setup');
+$('#ai-setup-title').textContent=T.title;$('#ai-setup-title').hidden=!online;
+box.setAttribute('aria-label',T.title);$('#ai-setup-back').textContent=T.back;
+$('#ai-setup-intro').textContent=online?T.intro:T.offline;$('#ai-setup-controls').hidden=!online;
+const detect=$('#ai-setup-detect');detect.textContent=aiSetupDetecting?T.detecting:T.detect;detect.disabled=aiSetupBusy;
+const rows=$('#ai-setup-runners');rows.setAttribute('aria-label',T.title);
+rows.replaceChildren(...(aiSetupData?.runners||[]).map(r=>{
+const row=text('label','','ai-runner'),radio=document.createElement('input'),info=text('span','','ai-runner-info'),head=text('span','','ai-runner-head');
+radio.type='radio';radio.name='ai-setup-runner';radio.value=r.name;radio.checked=aiSetupPicked===r.name;radio.disabled=!r.ready||aiSetupBusy;
+head.append(text('span',r.label));if(r.version)head.append(text('span',r.version,'ai-runner-version'));
+if(aiSetupData.runner===r.name)head.append(text('span',T.current,'ai-runner-current'));
+info.append(head,text('span',r.ready?T.ready:r.reason,'ai-runner-status'));row.append(radio,info);
+radio.onchange=()=>{aiSetupPicked=r.name;$('#ai-setup-approve').disabled=aiSetupBusy;};return row;}));
+const approve=$('#ai-setup-approve');approve.textContent=T.approve;approve.disabled=aiSetupBusy||!aiSetupData?.runners.some(r=>r.name===aiSetupPicked&&r.ready);
+const disable=$('#ai-setup-disable');disable.textContent=T.disable;disable.hidden=!aiSetupData?.runner;disable.disabled=aiSetupBusy;
+const err=$('#ai-setup-error');err.hidden=!aiSetupError;err.textContent=aiSetupError;}
+async function aiSetupRead(refresh=false){
+if(aiSetupBusy||!cradleOn())return;aiSetupBusy=true;aiSetupDetecting=refresh;aiSetupError='';renderAISetup();
+try{const r=await cradleCall('GET','runners'+(refresh?'?refresh=1':''));
+if(r.status===404){cradleAvail=false;}
+else if(r.ok&&Array.isArray(r.data?.runners)){aiSetupData=r.data;aiSetupPicked=r.data.runners.some(x=>x.name===r.data.runner&&x.ready)?r.data.runner:null;}
+else aiSetupError=r.data?.error||AI_SETUP_TEXT.failed;
+}catch{aiSetupError=AI_SETUP_TEXT.failed;}
+finally{aiSetupBusy=false;aiSetupDetecting=false;renderAISetup();}}
+async function aiSetupSave(name){
+if(aiSetupBusy||!cradleOn()||name!==null&&!aiSetupData?.runners.some(r=>r.name===name&&r.ready))return;
+aiSetupBusy=true;aiSetupError='';renderAISetup();
+try{const r=await cradleCall('POST','settings',{runner:name});
+if(r.ok&&Array.isArray(r.data?.runners)){aiSetupData=r.data;aiSetupPicked=name;await jobTick();}
+else aiSetupError=r.data?.error||AI_SETUP_TEXT.failed;
+}catch{aiSetupError=AI_SETUP_TEXT.failed;}
+finally{aiSetupBusy=false;renderAISetup();}}
+async function openAISetup(){
+const box=$('#ai-setup');if(box.open)return;aiSetupFocus=document.activeElement;aiSetupError='';renderAISetup();hideTip();closePops();box.showModal();
+(cradleOn()?$('#ai-setup-title'):$('#ai-setup-back')).focus({preventScroll:true});
+if(cradleAvail===null&&LOCAL_SYNC)await jobTick();
+await aiSetupRead();}
+$('#ai-runner-note button').onclick=openAISetup;
+$('#ai-setup-back').onclick=()=>$('#ai-setup').close();
+$('#ai-setup').addEventListener('keydown',e=>{if(e.key!=='Tab')return;const keys=[...$('#ai-setup').querySelectorAll('button,input')].filter(x=>!x.disabled&&x.checkVisibility()),i=keys.indexOf(document.activeElement);if(e.shiftKey&&i<=0||!e.shiftKey&&i===keys.length-1){e.preventDefault();keys[e.shiftKey?keys.length-1:0]?.focus();}});
+$('#ai-setup').addEventListener('close',()=>{const back=aiSetupFocus?.isConnected&&aiSetupFocus.checkVisibility({visibilityProperty:true,opacityProperty:true})&&aiSetupFocus.matches('button,a[href],input,[tabindex]')&&!aiSetupFocus.matches(':disabled')&&!aiSetupFocus.closest('[inert]')?aiSetupFocus:$('#basket-open');back.focus({preventScroll:true});});
+$('#ai-setup-detect').onclick=()=>aiSetupRead(true);
+$('#ai-setup-approve').onclick=()=>aiSetupSave(aiSetupPicked);
+$('#ai-setup-disable').onclick=()=>aiSetupSave(null);
+$('#ai-start').onclick=()=>startJob();
+// A star the person asked to see before the page had reloaded itself: the reload (see the job view) leaves its id here, and the first look after it selects the star.
+function gotoAfterReload(){try{const key=CRADLE_GOTO_KEY+location.pathname,id=sessionStorage.getItem(key);if(id){sessionStorage.removeItem(key);if(byId.has(id))select(id);}}catch{}}
+$('#enc-draw-head').textContent=ENCOUNTER_TEXT.drawHead;$('#enc-skip').textContent=ENCOUNTER_TEXT.skip;$('#enc-seeds-head').textContent=ENCOUNTER_TEXT.seeds;$('#enc-pools').setAttribute('aria-label',ENCOUNTER_TEXT.poolsLabel);$('#ai-other summary').textContent=CRADLE_TEXT.other;syncAgain();
 const growQuestion=()=>{const q=$('#ai-question');q.style.height='auto';q.style.height=q.scrollHeight+2+'px';};
 // Step 2. For thinking and connecting the first choice is "the AI drafts the question first" (selected by default: no question needs to be written); the page's own suggestions follow. Picking a suggestion shows the question box with that sentence (a dashed box with a pencil: it can be written in); the AI choice hides the box. Creating has no AI choice.
 const draftable=tab=>tab==='think'||tab==='gap',drafting=()=>draftable(ai.tab)&&ai.auto[ai.tab];
@@ -1087,7 +1588,7 @@ const tab=ai.tab,auto=drafting(),purpose=ai.purpose==='other'?ai.custom:ai.purpo
 const own=auto?writtenQuestion(tab):'';
 $('#ai-preview').value=buildInstruction(tab,ai.question[tab],{purpose,auto,own,out:ai.out});syncOut();
 const n=$('#ai-notes .n'),o=$('#ai-notes .o'),none=total===0;n.textContent=tab==='create'?`${total} 個來源`:`${total} 份筆記 · 預留 ${NOTE_RESERVE} 份給張力`+(auto?' · AI 先擬題'+(own?DRAFT_OWN_NOTE:''):'');o.hidden=!omitted&&!none;o.classList.toggle('warn',none&&!omitted);o.textContent=omitted?`另有 ${omitted} 份出處未附上`:none?tab==='create'?NO_SOURCE_NOTE:NO_NOTES_NOTE:'';   // nothing to read (a cradle of new stars only): the second line says so
-$('#ai-copy-status').textContent='';}
+$('#ai-copy-status').textContent='';renderIncubate();}
 for(const b of document.querySelectorAll('#ai-tabs [data-tab]')){b.onclick=()=>switchWay(b.dataset.tab);b.onkeydown=e=>{const tabs=[...document.querySelectorAll('#ai-tabs [data-tab]')],i=tabs.indexOf(b),step=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;if(!step)return;e.preventDefault();const next=tabs[(i+step+tabs.length)%tabs.length];switchWay(next.dataset.tab);next.focus();};}
 for(const b of document.querySelectorAll('#ai-purpose [data-purpose]'))b.onclick=()=>{ai.purpose=b.dataset.purpose;refreshForPurpose();renderAI();};
 $('#ai-question').addEventListener('input',e=>{ai.question[ai.tab]=e.target.value;ai.edited[ai.tab]=true;storeWrite();for(const b of document.querySelectorAll('#ai-suggest .ai-suggestion'))b.setAttribute('aria-pressed',String(b.querySelector('.q-ask').textContent===e.target.value));$('#step-next2').disabled=!e.target.value.trim();growQuestion();syncSheetHeight();});   // the box is only shown (and typed in) when the AI choice is off
@@ -1122,7 +1623,7 @@ const inView=!state.selected&&basketView&&basket.length>0;let pool=state.selecte
 if(!state.selected&&!inView&&sceneKind!=='all')pool=pool.filter(n=>n.kind===sceneKind);if(!state.selected&&!inView&&groupId!=='all')pool=pool.filter(n=>n.group===groupId||n.subgroup===groupId);
 // A relation filter also limits which nodes are shown: only nodes with at least one link of the chosen families.
 if(!state.selected&&!inView&&relFilter!=='all')pool=pool.filter(n=>adjacent(n.id).some(viaKeep));const size=DATA.limits.scene-(state.selected?1:0),items=state.selected?pool.slice(1):pool;const pages=Math.max(1,Math.ceil(items.length/size));scenePage=clamp(scenePage,0,pages-1);nodes=[...(state.selected?[pool[0]]:[]),...items.slice(scenePage*size,(scenePage+1)*size)];$('#scene-prev').disabled=scenePage===0;$('#scene-next').disabled=scenePage===pages-1;$('#scene-page').textContent=`${scenePage+1} / ${pages}`;$('#scene-kind').disabled=!!state.selected||inView;$('#scene-group').disabled=!!state.selected||inView;$('#clear-search').hidden=!state.query;const visible=new Set(nodes.map(n=>n.id));visibleEdges=sceneEdges(visible,keep);refreshEdges();layer.replaceChildren();
-for(const n of nodes){const b=text('button','','star '+(n.kind==='idea'?'idea ':'')+(n.kind==='thought'?'thought ':'')+(n.ideaType==='hub'?'hub':''));b.append(text('span',nodeKind(n),'node-type'),text('span',n.title,'node-name'),text('span',nearText(n),'node-copy'));n.fpx=0;n.deep=false;n.tight=0;b.dataset.nodeId=n.id;b.title=n.title;b.setAttribute('aria-label','探索 '+n.title);b.onclick=e=>e.ctrlKey||e.metaKey?toggleBasket(n.id):select(n.id);b.onpointerenter=()=>setHover(n.id);b.onpointerleave=()=>setHover(null);b.onfocus=()=>setHover(n.id);b.onblur=()=>setHover(null);layer.append(b);n.el=b;}
+for(const n of nodes){const b=text('button','','star '+(n.kind==='idea'?'idea ':'')+(n.kind==='thought'?'thought ':'')+(n.ideaType==='hub'?'hub':''));b.append(text('span',nodeKind(n),'node-type'),text('span',n.title,'node-name'),text('span',nearText(n),'node-copy'));n.fpx=0;n.deep=false;n.tight=0;b.dataset.nodeId=n.id;b.title=n.title;b.setAttribute('aria-label','探索 '+n.title);b.onclick=e=>e.ctrlKey||e.metaKey?toggleBasket(n.id):encounterTap(n.id)||select(n.id);b.onpointerenter=()=>setHover(n.id);b.onpointerleave=()=>setHover(null);b.onfocus=()=>setHover(n.id);b.onblur=()=>setHover(null);layer.append(b);n.el=b;}
 sceneGroups=new Map();for(const n of nodes)for(const key of [n.group,n.subgroup])if(key)sceneGroups.set(key,(sceneGroups.get(key)||0)+1);
 $('#scene-info').textContent=inView?`搖籃視圖 · 畫面 ${nodes.length} 個（搖籃、提示及相鄰節點）`:state.selected?`聚焦 ${pool.length} 個節點 · 第 ${scenePage+1} / ${pages} 區 · 畫面 ${nodes.length} 個`:`全庫 ${allNodes.length} 個 · 此範圍 ${pool.length} 個 · 第 ${scenePage+1} / ${pages} 區 · 畫面 ${nodes.length} 個`;markLabels();refreshTip();
 }
@@ -1154,7 +1655,7 @@ function syncContinue(){const b=$('#continue-cradle'),armed=!!continueTimer;b.te
 function renderThought(n){
 const isStar=n.kind==='thought',parents=isStar?(n.parents||[]).map(id=>byId.get(id)).filter(Boolean):[],insights=isStar?n.insights||[]:[],asks=isStar?n.openQuestions||[]:[];
 clearTimeout(continueTimer);continueTimer=0;syncContinue();
-$('#open-outcome').textContent=isStar?'開啟思考紀錄 ↗':'閱讀完整成果 ↗';$('#continue-cradle').hidden=!isStar;$('#replay-birth').hidden=!isStar;
+$('#open-outcome').textContent=isStar?'開啟思考紀錄 ↗':'閱讀完整成果 ↗';$('#continue-cradle').hidden=!isStar;$('#replay-birth').hidden=!isStar;clearTimeout(heroTimer);heroTimer=0;$('#hero-draw').hidden=isStar;syncHero();
 {const born=isStar?bornAt(n):null,line=$('#thought-born');line.hidden=!born;if(born)line.textContent=stampText(born);}$('#thought-from').hidden=!parents.length;$('#born-title').textContent=parents.length?(parents.length<=CIRCLED.length?`由 ${CIRCLED.slice(0,parents.length).join('')} 相遇而生`:`由 ${parents.length} 顆星相遇而生`):'';
 $('#born-parents').replaceChildren(...parents.map((p,i)=>{const b=text('button',`${numberOf(i)} ${shortName(p)} ›`,'chip');b.type='button';b.dataset.tip=nodeName(p);b.dataset.parentId=p.id;b.onclick=()=>select(p.id);return b;}));
 for(const [box,items] of [[$('#thought-insights'),insights],[$('#thought-asks'),asks]]){box.hidden=!items.length;box.querySelector('ul').replaceChildren(...items.map(t=>text('li',t)));}
@@ -1165,7 +1666,7 @@ const ids=[id,...(star.parents||[]).filter(p=>byId.has(p))].slice(0,BASKET_MAX),
 const replacing=basket.length>0&&!same,mine=hasWrittenQuestion();   // a replaced cradle, or a question the person wrote, is lost by this button: the first press asks
 if((replacing||mine)&&!continueTimer){continueAsk=replacing?mine?['搖籃裏已有星及你的問題，再按一次取代','取代搖籃內的星及你寫的問題，改放這顆新想法及它的母星']:['搖籃裏已有星，再按一次取代','取代搖籃內的星，改放這顆新想法及它的母星']:['你寫的問題會被清除，再按一次','清除你寫的問題，改從這顆新想法的未完問題開始'];continueTimer=setTimeout(()=>{continueTimer=0;syncContinue();},CLEAR_CONFIRM_MS);syncContinue();return;}
 clearTimeout(continueTimer);continueTimer=0;syncContinue();
-basket=ids;surprise=null;ai.tab='think';ai.auto.think=true;forgetQuestions();
+basket=ids;ai.tab='think';ai.auto.think=true;forgetQuestions();
 basketChanged();openBasket({step:2});say(`已放入搖籃：新想法及它的母星，共 ${basket.length} 顆。`);}
 $('#continue-cradle').onclick=()=>{if(state.selected)continueCradle(state.selected);};
 // Content card. The theme group is a small tag that opens that group; the tension counts are two coloured dots with numbers (full names in their tooltips); the clues are grouped by relation type.
@@ -1210,7 +1711,7 @@ $('#list').append(text('p','沒有符合的成果，請調整或清除搜尋。'
 const pager=text('div','','pager'),prev=text('button','上一頁'),next=text('button','下一頁'),pageLabel=text('span','');prev.id='list-prev';next.id='list-next';pageLabel.id='list-page';prev.onclick=()=>{listPage--;syncList();$('#list').scrollTop=0;};next.onclick=()=>{listPage++;syncList();$('#list').scrollTop=0;};pager.append(prev,pageLabel,next);const listControls=text('div','','list-controls'),listSelect=document.createElement('select');listSelect.id='list-kind';listSelect.setAttribute('aria-label','清單內容');for(const [value,label]of [['source','全部成果'],['idea','主題與概念'],['all','全部節點']]){const option=text('option',label);option.value=value;listSelect.append(option);}listSelect.onchange=()=>{listKind=listSelect.value;listPage=0;syncList();};const listRange=text('span','');listRange.id='list-range';listControls.append(listSelect,listRange,pager);$('#list').insertBefore(listControls,$('#list-grid'));syncList();rebuildScene();
 $('#search').addEventListener('input',()=>{state.query=$('#search').value.trim().toLowerCase();listPage=scenePage=0;syncList();if(!state.selected)rebuildScene();const box=$('#results');box.replaceChildren();box.hidden=!state.query||state.list;if(!state.query)return;const found=allNodes.filter(matches);if(!found.length)box.append(text('p','沒有找到成果。試試「學習」或「設計」。'));if(found.length>40)box.append(text('p',`找到 ${found.length} 個，先列 40 個；可輸入更完整文字。`));found.slice(0,40).forEach(n=>{const b=text('button',n.title);b.append(text('span',nodeKind(n),'node-type'));b.onclick=()=>select(n.id);box.append(b);});$('#status').textContent=`找到${found.length}個節點`;});
 $('#overview').onclick=()=>setList(false);$('#previous').onclick=()=>{const id=trail.pop();if(id)select(id,false);};$('#list-toggle').onclick=()=>setList(!state.list);$('#close').onclick=()=>state.gpu?(release(),syncList()):setList(true);$('#reset').onclick=reset;
-function syncMotion(){const button=$('#motion'),name=systemReduced?'系統已減少動態':state.reduced?'恢復動態':'減少動態';button.setAttribute('aria-pressed',String(state.reduced));button.disabled=systemReduced;setIcon(button,state.reduced?'play':'pause');button.setAttribute('aria-label',name);button._tip=()=>systemReduced?name+' · 請在系統的減少動態設定中調整':state.reduced?name+' · 減少動態已開啟':name;document.body.dataset.reduced=String(state.reduced);refreshTip();}syncMotion();$('#motion').onclick=()=>{if(systemReduced)return;applyReducedPreference(!state.reducedPreference);if(state.reduced){stopCameraTour();state.events=[];state.energy=state.zoomEnergy=0;}syncMotion();persistPreferences();};
+function syncMotion(){const button=$('#motion'),name=systemReduced?'系統已減少動態':state.reduced?'恢復動態':'減少動態';button.setAttribute('aria-pressed',String(state.reduced));button.disabled=systemReduced;setIcon(button,state.reduced?'play':'pause');button.setAttribute('aria-label',name);button._tip=()=>systemReduced?name+' · 請在系統的減少動態設定中調整':state.reduced?name+' · 減少動態已開啟':name;document.body.dataset.reduced=String(state.reduced);refreshTip();}syncMotion();$('#motion').onclick=()=>{if(systemReduced)return;applyReducedPreference(!state.reducedPreference);if(state.reduced){stopCameraTour();state.events=[];state.energy=state.zoomEnergy=0;calmEncounter();}syncMotion();persistPreferences();};   // reduced motion switched on during a draw ends the ceremony at once, like 略過動畫
 // ===== Camera: zoom around the cursor, pan, double tap. The focus is the point the camera looks at and turns around; panning moves it, so turning always happens around what is on screen. =====
 // The picture's centre is not the middle of the window (the left column and the content card take room); projShift says by how much, and matrix() uses the same numbers.
 function projShift(w,h){const a=state.attention,shift=state.viewShift;return[state.ambient?0:w>600?lerp(-.17,shift?shift[0]:.16,a):0,state.ambient?.28:w<=600?lerp(groupId!=='all'?.06:-.15,shift&&shift[1]!==null?shift[1]:-.32,a):lerp(.06,-.08,a)];}
@@ -1235,7 +1736,7 @@ function centerOn(p){setFocusByHand(p);zoom(Math.log(DOUBLE_ZOOM));}
 function wheelZoom(e){e.preventDefault();const dy=e.deltaY*(e.deltaMode===1?16:e.deltaMode===2?innerHeight:1);zoom(clamp(dy,-120,120)*.0017,{x:e.clientX,y:e.clientY});}
 $('#zoom-in').onclick=()=>zoom(-.19);$('#zoom-out').onclick=()=>zoom(.19);   // the keys zoom around the centre of the picture
 $('#search').addEventListener('keydown',e=>{if(e.key==='Enter'){const n=allNodes.find(matches);if(state.query&&n){e.preventDefault();select(n.id);}}if(e.key==='ArrowDown')$('#results button')?.focus();});
-document.addEventListener('keydown',e=>{if(state.ambient){if(e.key==='Escape'){e.preventDefault();const open=pops.find(p=>!p.pop.hidden);if(open){closePops();open.btn.focus({preventScroll:true});}else leaveAmbient();}return;}if(e.key==='Escape'){if($('#media-viewer').open)return;if(!tipBox.hidden)hideTip();const open=pops.find(p=>!p.pop.hidden);if(open){e.preventDefault();closePops();open.btn.focus({preventScroll:true});return;}if(hintShown){hideHint();return;}if(basketOpen){e.preventDefault();closeBasket();return;}if(consActive){e.preventDefault();consClear();return;}if(canRetreatGroup()){e.preventDefault();leaveGroup(parentGroup(groupId));return;}release();$('#results').hidden=true;if(!state.gpu)setList(true);else if(state.list)setList(false);}});
+document.addEventListener('keydown',e=>{if($('#ai-setup').open)return;if(state.ambient){if(e.key==='Escape'){e.preventDefault();const open=pops.find(p=>!p.pop.hidden);if(open){closePops();open.btn.focus({preventScroll:true});}else leaveAmbient();}return;}if(e.key==='Escape'){if($('#media-viewer').open)return;if(!tipBox.hidden)hideTip();const open=pops.find(p=>!p.pop.hidden);if(open){e.preventDefault();closePops();open.btn.focus({preventScroll:true});return;}if(hintShown){hideHint();return;}if(basketOpen){e.preventDefault();closeBasket();return;}if(consActive){e.preventDefault();consClear();return;}if(canRetreatGroup()){e.preventDefault();leaveGroup(parentGroup(groupId));return;}release();$('#results').hidden=true;if(!state.gpu)setList(true);else if(state.list)setList(false);}});
 function fallback(reason){$('#focus-ring').hidden=true;state.gpu=false;layer.hidden=true;gnameLayer.hidden=true;canvas.hidden=true;$('#overview').disabled=true;$('#motion').disabled=true;$('.zoom').hidden=true;setList(true);$('#instruction').textContent=reason+'；成果清單仍可使用。';$('#instruction').hidden=false;}
 canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();fallback('圖形顯示已中斷');});
 const gl= new URLSearchParams(location.search).has('no-gpu')?null:canvas.getContext('webgl',{alpha:false,antialias:false,powerPreference:'high-performance'});
@@ -1308,7 +1809,10 @@ const link=$('#all-stars');link.textContent=BIRTH_TEXT.allStars;link.href=DATA.t
 const next=BIRTH_STYLES.find(st=>!allThoughts.some(t=>t.style===st)),hint=$('#next-try');hint.hidden=!next;if(next)hint.textContent=next.next;}
 $('#recent-toggle').onclick=()=>{recentOpen=!recentOpen;renderBirths();};
 // The full birth dex as one small row (the operation help card): each style's shape, name and how many new stars have it; a style with none is dimmed. Counted from the data, never stored.
-function renderHintDex(){const title=$('#hint-dex-title'),ul=$('#hint-dex');title.hidden=ul.hidden=!allThoughts.length;if(ul.hidden)return;title.textContent=BIRTH_TEXT.dexTitle;
+function renderHintDex(){const title=$('#hint-dex-title'),ul=$('#hint-dex');
+{const d=dexRead(),et=$('#hint-enc-title'),eu=$('#hint-enc-dex');et.hidden=eu.hidden=false;et.textContent=ENCOUNTER_TEXT.dexTitle;   // the encounter dex: shown even when there is no new star yet
+eu.replaceChildren(...ENCOUNTER_TIERS.map((tier,i)=>{const li=text('li',ENCOUNTER_TEXT.dexCount(tier.name,d[i]),'dex-item'+(d[i]?' lit':''));li.dataset.tier=String(i);return li;}));}
+title.hidden=ul.hidden=!allThoughts.length;if(ul.hidden)return;title.textContent=BIRTH_TEXT.dexTitle;
 ul.replaceChildren(...BIRTH_STYLES.map(st=>{const n=allThoughts.filter(t=>t.style===st).length,li=text('li','','dex-item'+(n?' lit':''));li.dataset.style=st.id;li.dataset.tip=BIRTH_TEXT.dexTip(st.rule,n);
 li.insertAdjacentHTML('afterbegin',`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${st.icon}</svg>`);li.append(BIRTH_TEXT.dexCount(st.name,n));return li;}));}
 // The stars the page plays by itself at load: the newest unseen ones (at most NEW_STAR_LABELS); none when the memory cannot be kept, or when a restored reading position is on screen.
@@ -1366,7 +1870,7 @@ consDelArmed=false;clearTimeout(consDelTimer);const name=a.name,id=a.c.id;consCh
 // "Put the whole constellation into the cradle": what fits goes in (BASKET_MAX in all, the cradle's own stars stay); when more stars are waiting than the cradle has room for, the person picks which.
 function consPut(){const a=consActive;if(!a)return;const ids=a.ordered.filter(id=>!basketIndex.has(id)),room=BASKET_MAX-basket.length;if(!ids.length){consMsg(CONS_TEXT.putNone);return;}if(room<=0){consMsg(CONS_TEXT.putFull);return;}
 if(ids.length<=room){consPutIds(ids);return;}consPick(ids,room);}
-function consPutIds(ids){const known=new Set(basket),added=[];for(const id of ids)if(!known.has(id)){known.add(id);added.push(id);}const room=BASKET_MAX-basket.length;if(added.length>room){consMsg(CONS_TEXT.putChanged);return false;}if(!added.length){consMsg(CONS_TEXT.putNone);return false;}basket=[...basket,...added];surprise=null;basketChanged();openBasket();$('#cons-pick').hidden=true;consMsg(CONS_TEXT.putDone(added.length));return true;}
+function consPutIds(ids){const known=new Set(basket),added=[];for(const id of ids)if(!known.has(id)){known.add(id);added.push(id);}const room=BASKET_MAX-basket.length;if(added.length>room){consMsg(CONS_TEXT.putChanged);return false;}if(!added.length){consMsg(CONS_TEXT.putNone);return false;}basket=[...basket,...added];basketChanged();openBasket();$('#cons-pick').hidden=true;consMsg(CONS_TEXT.putDone(added.length));return true;}
 function consPick(ids,room){const box=$('#cons-pick'),chosen=new Set(ids.slice(0,room));box.hidden=false;
 const draw=()=>{const go=text('button',CONS_TEXT.pickGo(chosen.size));go.type='button';go.disabled=!chosen.size;go.onclick=()=>consPutIds(ids.filter(id=>chosen.has(id)));
 const list=document.createElement('ul');for(const id of ids){const li=document.createElement('li'),label=document.createElement('label'),box1=document.createElement('input');box1.type='checkbox';box1.checked=chosen.has(id);
@@ -1391,8 +1895,10 @@ memoryKept=remembered;renderBirths();
 if(fresh.length&&!remembered){showBirthNote(fresh[0]);return;}   // the memory cannot be kept: only the note (the light would repeat at every load), and nothing counts as missed
 if(queue.length){startBirth(queue[0],{queue:queue.slice(1),auto:true});return;}   // a restored reading position is not interrupted: the dot and the list keep the unseen stars
 checkAnniversaries();}
-async function bootstrap(){await loadPreferences();await consLoad();syncMotion();const restored=restore();rebuildScene();let automatic=false;try{const auto=JSON.parse(sessionStorage.getItem(memoryKey+':auto')||'null');sessionStorage.removeItem(memoryKey+':auto');automatic=!!auto;if(auto?.ambient)enterAmbient();else if(auto?.focus)document.getElementById(auto.focus)?.focus({preventScroll:true});}catch{}const birthQueueNow=birthQueueAtLoad();if(!automatic&&!hasSavedReadingPosition(restored)&&!birthQueueNow.length)startCameraTour();initBirth(birthQueueNow);try{const receipt=JSON.parse(sessionStorage.getItem(memoryKey+':sync')||'null');if(receipt&&LOCAL_SYNC)setSync(`${receipt.time} 已同步 · ${receipt.sources} 篇成果、${receipt.concepts} 個概念`+(receipt.warnings?` · ${receipt.warnings} 項資料提示`:''),'ok');}catch{}}
+async function bootstrap(){await loadPreferences();await consLoad();syncMotion();const restored=restore();rebuildScene();gotoAfterReload();let automatic=false;try{const auto=JSON.parse(sessionStorage.getItem(memoryKey+':auto')||'null');sessionStorage.removeItem(memoryKey+':auto');automatic=!!auto;if(auto?.ambient)enterAmbient();else if(auto?.focus)document.getElementById(auto.focus)?.focus({preventScroll:true});}catch{}const birthQueueNow=birthQueueAtLoad();if(!automatic&&!hasSavedReadingPosition(restored)&&!birthQueueNow.length)startCameraTour();initBirth(birthQueueNow);try{const receipt=JSON.parse(sessionStorage.getItem(memoryKey+':sync')||'null');if(receipt&&LOCAL_SYNC)setSync(`${receipt.time} 已同步 · ${receipt.sources} 篇成果、${receipt.concepts} 個概念`+(receipt.warnings?` · ${receipt.warnings} 項資料提示`:''),'ok');}catch{}}
 void bootstrap();initHint();
+if(location.hash==='#ai-setup'){history.replaceState(history.state,'',location.pathname+location.search);void openAISetup();}
+if(LOCAL_SYNC)void jobTick(true);   // one look at the jobs of this browser: the badge, the job view, a star that was finished while the page was away
 function startRenderer(){
 /*__SHADERS__*/
 function shader(src,type){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s;}
@@ -1410,8 +1916,10 @@ const I=()=>new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
 function mul(a,b){const o=new Float32Array(16);for(let c=0;c<4;c++)for(let r=0;r<4;r++)o[c*4+r]=a[r]*b[c*4]+a[4+r]*b[c*4+1]+a[8+r]*b[c*4+2]+a[12+r]*b[c*4+3];return o;}
 function perspective(f,a,n,z){const t=1/Math.tan(f/2);return new Float32Array([t/a,0,0,0,0,t,0,0,0,0,(z+n)/(n-z),-1,0,0,2*z*n/(n-z),0]);}
 function translation(x,y,z){const a=I();a[12]=x;a[13]=y;a[14]=z;return a;}function rx(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([1,0,0,0,0,c,s,0,0,-s,c,0,0,0,0,1]);}function ry(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([c,0,-s,0,0,1,0,0,s,0,c,0,0,0,0,1]);}
-function matrix(){const framing=cameraFraming(),proj=perspective(FOV,W/H,.1,100),[sx,sy]=projShift(W,H);proj[8]=sx;proj[9]=sy;const view=mul(translation(0,0,-state.distance*framing),mul(rx(state.pitch+state.orbitLift+state.pointer[1]*.025),mul(ry(state.yaw+state.pointer[0]*.025),translation(...state.focus.map(x=>-x)))));return mul(proj,view);}
+function matrixAt(yaw,pitch,distance,focus){const framing=cameraFraming(),proj=perspective(FOV,W/H,.1,100),[sx,sy]=projShift(W,H);proj[8]=sx;proj[9]=sy;const view=mul(translation(0,0,-distance*framing),mul(rx(pitch),mul(ry(yaw),translation(...focus.map(x=>-x)))));return mul(proj,view);}
+function matrix(){return matrixAt(state.yaw+state.pointer[0]*.025,state.pitch+state.orbitLift+state.pointer[1]*.025,state.distance,state.focus);}
 function project(p,m){const x=m[0]*p[0]+m[4]*p[1]+m[8]*p[2]+m[12],y=m[1]*p[0]+m[5]*p[1]+m[9]*p[2]+m[13],w=m[3]*p[0]+m[7]*p[1]+m[11]*p[2]+m[15];return{x:(x/w*.5+.5)*W,y:(.5-y/w*.5)*H,z:w};}
+projectWith=(p,cam)=>project(p,matrixAt(cam.yaw,cam.pitch,cam.distance,cam.focus));   // the same for a camera that is not the one drawn now (the framing of a draw)
 projectWorld=p=>project(p,matrix());   // world point -> screen {x,y,z} with the camera as drawn now (the inverse of planePoint)
 const overlap=(a,b,p=6)=>a.left<b.right+p&&a.right>b.left-p&&a.top<b.bottom+p&&a.bottom>b.top-p;
 let renderedNodes=0,glowCount=0,fxLineCount=0;
@@ -1425,32 +1933,37 @@ const zoomNow=MAX_DISTANCE/state.distance,deep=!on&&!!n.nearText&&!(n.tight&&per
 if(deep!==n.deep){n.deep=deep;b.classList.toggle('deep',deep);}}
 // Group names (the 'constellation names'). Overview: each main group's name and size at its centre. Middle layer: the sub-groups (and main groups that have none) in a smaller, fainter hand. Near layer: gone, the node labels take over. They sit at base positions, are placed before the node labels (the labels make room), and a name that does not fit is not shown. Reduced motion switches instead of fading.
 function placeGroupNames(m,blockers,placed){
-const z=MAX_DISTANCE/state.distance,hideAll=state.ambient||state.list,step=at=>state.reduced?(z>=at?1:0):ease(clamp((z-at)/LAYER_FADE+.5,0,1)),farOp=1-step(LAYER_MID),midOp=step(LAYER_MID)*(1-step(LAYER_NEAR));
+const z=MAX_DISTANCE/state.distance,hideAll=state.ambient||state.list||!!encounter,step=at=>state.reduced?(z>=at?1:0):ease(clamp((z-at)/LAYER_FADE+.5,0,1)),farOp=1-step(LAYER_MID),midOp=step(LAYER_MID)*(1-step(LAYER_NEAR));
 for(const d of gnames){
 const op=d.level==='far'?farOp:midOp,need=d.g.kind==='subgroup'?GNAME_MIN_NODES:1;let on=!hideAll&&op>.03&&(sceneGroups.get(d.g.id)||0)>=need;
 if(on){const q=project(d.g.center,m);on=q.z>0&&q.x>12&&q.x<W-12&&q.y>100&&q.y<H-60;if(on){d.el.style.left=q.x+'px';d.el.style.top=q.y+'px';if(d.op!==op){d.op=op;d.el.style.opacity=String(op);}}}
 d.el.hidden=!on;
 if(on){const rect=d.el.getBoundingClientRect();if(blockers.some(b=>overlap(rect,b,8))||placed.some(p=>overlap(rect,p,10)))d.el.hidden=true;else if(op>=.5)placed.push(rect);}}}
-function updateNodes(){const core=[],halo=[],glow=[],candidates=[];let maxCore=0,maxHalo=0,maxGlow=0;state.screen=[];state.starLevel=null;const m=matrix();const birth=birthFrame(state.birth),fxLines=[];for(const [index,n] of nodes.entries()){const breath=1+Math.sin(state.clock*(.00038+seed(index*17)*.0008)+seed(index*3)*6.28)*.085;const lp=livePos(n,state.motionClock),q=project(lp,m),on=n.id===state.selected,near=related(n)&&(!consActive||state.selected||consActive.ids.has(n.id)),hover=n.id===state.hover,fade=on||hover?1:nearFade(q.z),queryMatch=state.selected?near:matches(n),strength=(state.ambient?1.05:near?1.25:.12)*(state.ambient||queryMatch?1:.2)*fade*(birth&&n.id===birth.id?birth.gain:1),color=n.color.map(x=>x*strength*(hover?1.55:1)*breath),ratio=hubRatio(n),size=(n.kind==='thought'?NEW_STAR_CORE:n.kind==='idea'?58:44)*(1+HUB_CORE_GAIN*ratio)*(on?1.9:hover?1.45:1),room=Math.max(1,q.z),limit=px=>px*DPR*room,haloBase=n.kind==='thought'?NEW_STAR_HALO:n.kind==='idea'?175:125,coreSize=Math.min(size*DPR,limit(CORE_MAX_PX)),haloSize=Math.min((on?380:hover?245:haloBase)*(1+HUB_HALO_GAIN*ratio)*DPR*breath,limit(HALO_MAX_PX));core.push(...lp,...color,coreSize);halo.push(...lp,...(n.haloColor?n.haloColor.map(x=>x*strength*(hover?1.55:1)*breath):color),haloSize);
+function updateNodes(){const core=[],halo=[],glow=[],candidates=[];let maxCore=0,maxHalo=0,maxGlow=0;state.screen=[];state.starLevel=null;const m=matrix();const birth=birthFrame(state.birth),fxLines=[],wispHead=encounter&&encounter.fx.head;for(const [index,n] of nodes.entries()){const breath=1+Math.sin(state.clock*(.00038+seed(index*17)*.0008)+seed(index*3)*6.28)*.085;const lp=livePos(n,state.motionClock),q=project(lp,m),on=n.id===state.selected,near=related(n)&&(!consActive||state.selected||consActive.ids.has(n.id)),hover=n.id===state.hover,fade=on||hover?1:nearFade(q.z),queryMatch=state.selected?near:matches(n),strength=(state.ambient?1.05:near?1.25:.12)*(state.ambient||queryMatch?1:.2)*fade*(birth&&n.id===birth.id?birth.gain:1)*(wispHead?1+Math.max(0,1-Math.hypot(q.x-wispHead.x,q.y-wispHead.y)/ENCOUNTER_WISP.liftPx)*ENCOUNTER_WISP.lift:1),color=n.color.map(x=>x*strength*(hover?1.55:1)*breath),ratio=hubRatio(n),size=(n.kind==='thought'?NEW_STAR_CORE:n.kind==='idea'?58:44)*(1+HUB_CORE_GAIN*ratio)*(on?1.9:hover?1.45:1),room=Math.max(1,q.z),limit=px=>px*DPR*room,haloBase=n.kind==='thought'?NEW_STAR_HALO:n.kind==='idea'?175:125,coreSize=Math.min(size*DPR,limit(CORE_MAX_PX)),haloSize=Math.min((on?380:hover?245:haloBase)*(1+HUB_HALO_GAIN*ratio)*DPR*breath,limit(HALO_MAX_PX));core.push(...lp,...color,coreSize);halo.push(...lp,...(n.haloColor?n.haloColor.map(x=>x*strength*(hover?1.55:1)*breath):color),haloSize);
 if(q.z>0){maxCore=Math.max(maxCore,coreSize/DPR/room);maxHalo=Math.max(maxHalo,haloSize/DPR/room);}
 if(n.tension&&!state.ambient){const lift=relFilter==='tension'||hover||on,glowSize=Math.min(haloBase*GLOW_BASE*DPR,limit(GLOW_MAX_PX));glow.push(...lp,...EMBER.map(x=>x*(lift?GLOW_STRONG:GLOW_SOFT)*Math.min(1,strength)),glowSize);if(q.z>0)maxGlow=Math.max(maxGlow,glowSize/DPR/room);}
 if(n.kind==='thought'&&!state.ambient){const lift=n.fresh&&!state.reduced?1+NEW_STAR_BREATH*Math.sin(state.motionClock*Math.PI*2/NEW_STAR_BREATH_MS):1,glowSize=Math.min(haloBase*NEW_STAR_GLOW_SCALE*DPR,limit(GLOW_MAX_PX));glow.push(...lp,...NEW_STAR_GLOW.map(x=>x*NEW_STAR_GLOW_REST*(n.fresh?lift:NEW_STAR_OLD)*Math.min(1,strength)),glowSize);if(n.fresh)glowLevels.set(n.id,lift);if(q.z>0)maxGlow=Math.max(maxGlow,glowSize/DPR/room);if(n.fresh&&!state.starLevel)state.starLevel={id:n.id,lift};}   // a new star's own warm glow; one made within NEW_STAR_DAYS breathes
 bondGlow(n,lp,q,strength,limit,glow);
 const bi=basketIndex.get(n.id);if(!state.ambient&&(bi!==undefined||bridgeShown.has(n.id))){const lightSize=Math.min(haloBase*BASKET_GLOW_SCALE*DPR,limit(GLOW_MAX_PX));glow.push(...lp,...BASKET_SILVER.map(x=>x*(bi!==undefined?BASKET_GLOW:BRIDGE_GLOW)*Math.min(1,strength)),lightSize);if(q.z>0)maxGlow=Math.max(maxGlow,lightSize/DPR/room);}
-const visible=!state.ambient&&!state.list&&near&&q.z>0&&fade>.04&&q.x>12&&q.x<W-18&&q.y>100&&q.y<H-60;const b=n.el;b.hidden=!visible;b.classList.toggle('selected',on);if(visible){b.style.left=q.x+'px';b.style.top=q.y+'px';b.style.opacity=String((near?1:.28)*fade);b.style.zIndex=String(Math.round(100-q.z));styleLabel(n,b,q.z,on);candidates.push({n,q,on,near});}state.screen.push({n,q,r:Math.max(19,Math.min(32,size/Math.max(q.z,1)))});if(on){const ring=$('#focus-ring'),diameter=clamp(650/q.z,48,125);ring.style.left=q.x+'px';ring.style.top=q.y+'px';ring.style.width=diameter+'px';ring.style.height=diameter+'px';ring.style.opacity=String(state.attention*.8);}}
+if(encFocusId===n.id&&!state.ambient){const focusSize=Math.min(ENCOUNTER_LINK.glow.px*DPR,limit(GLOW_MAX_PX));glow.push(...lp,...BIRTH_COLOR.map(x=>x*ENCOUNTER_LINK.glow.gain*Math.min(1,strength)),focusSize);if(q.z>0)maxGlow=Math.max(maxGlow,focusSize/DPR/room);}   // the star the card points at
+const edge=!!encounter&&encMarked.has(n.id),visible=!state.ambient&&!state.list&&near&&q.z>0&&fade>.04&&(edge?q.x>0&&q.x<W&&q.y>0&&q.y<H:q.x>12&&q.x<W-18&&q.y>100&&q.y<H-60);/* a drawn star keeps its name anywhere on the screen (the label goes to another place, see drawnSpot) */const b=n.el;b.hidden=!visible;b.classList.toggle('selected',on);if(visible){b.style.left=q.x+'px';b.style.top=q.y+'px';b.style.opacity=String((near?1:.28)*fade);b.style.zIndex=String(Math.round(100-q.z));styleLabel(n,b,q.z,on);candidates.push({n,q,on,near});}state.screen.push({n,q,r:Math.max(19,Math.min(32,size/Math.max(q.z,1))),vis:visible});if(on){const ring=$('#focus-ring'),diameter=clamp(650/q.z,48,125);ring.style.left=q.x+'px';ring.style.top=q.y+'px';ring.style.width=diameter+'px';ring.style.height=diameter+'px';ring.style.opacity=String(state.attention*.8);}}
 // Star core: a faint silver-gold light at the centre of the basket stars drawn; "copy" flashes it once (not in reduced motion); ambient mode shows none. Birth light: from the centre of the parents to the new star.
 state.coreStats={shown:false};
 if(!state.ambient&&!state.list&&basket.length>=CORE_MIN_STARS){const at=nodes.filter(n=>basketIndex.has(n.id)).map(n=>livePos(n,state.motionClock));
 if(at.length>=CORE_MIN_STARS){const c=[0,1,2].map(i=>at.reduce((s,p)=>s+p[i],0)/at.length),qc=project(c,m);let env=0;if(state.coreFlash!==null&&!state.reduced){const t=(performance.now()-state.coreFlash)/CORE_FLASH_MS;if(t>=1)state.coreFlash=null;else env=Math.sin(Math.PI*t);}else state.coreFlash=null;
-const level=CORE_ALPHA*(1+CORE_FLASH_GAIN*env),size=Math.min(CORE_GLOW_BASE*(1+CORE_FLASH_GROW*env)*DPR,CORE_GLOW_MAX_PX*DPR*Math.max(1,qc.z));glow.push(...c,...CORE_COLOR.map(x=>x*level),size);state.coreStats={shown:true,level,env,size,at:c,disk:qc.z>0?cradleDisk(c,qc,at.length,glow,fxLines):null};}}
-if(birth)birthFx(birth,m,glow,fxLines);   // the birth moment of the playing style: soft points into the glow list, thin lines into fxLines
+const level=CORE_ALPHA*(1+CORE_FLASH_GAIN*env)*encounterForm(),size=Math.min(CORE_GLOW_BASE*(1+CORE_FLASH_GROW*env)*DPR,CORE_GLOW_MAX_PX*DPR*Math.max(1,qc.z));glow.push(...c,...CORE_COLOR.map(x=>x*level),size);state.coreStats={shown:true,level,env,size,at:c,disk:qc.z>0?cradleDisk(c,qc,at.length,glow,fxLines):null};}}
+if(birth)birthFx(birth,m,glow,fxLines);
+if(encounter)encounterFx(m,glow,fxLines);   // the light of a draw in front of the person   // the birth moment of the playing style: soft points into the glow list, thin lines into fxLines
 if(state.anniv&&!state.ambient){const a=state.anniv,t=(performance.now()-a.start)/ANNIV_MS;if(t>=1)state.anniv=null;else{const k=a.steady?Math.min(1,t*5,(1-t)*5):Math.sin(Math.PI*t);for(const [i,id] of a.ids.entries()){const nd=byId.get(id);if(!nd)continue;const lp=livePos(nd,state.motionClock),q=project(lp,m);if(q.z>0)glow.push(...lp,...NEW_STAR_GLOW.map(x=>x*ANNIV_GLOW*(i?ANNIV_PARENT:1)*k),ANNIV_PX*DPR*Math.max(1,q.z));}}}   // the anniversary light: the star, and its parents a little less
+placeRings();
 if(!state.selected||state.list)$('#focus-ring').style.opacity='0';
-const blockers=[...document.querySelectorAll('.brand,.tools,.searchbox,.footer,.zoom,.intro,#basket-panel,#detail,#hint-card,#birth-note,.pop')].filter(e=>!e.hidden&&getComputedStyle(e).visibility!=='hidden').map(e=>e.getBoundingClientRect());const placed=[],isBlocked=rect=>rect.right>W-12||blockers.some(b=>overlap(rect,b,8))||placed.some(p=>overlap(rect,p,7));
+const blockers=[...document.querySelectorAll('.brand,.tools,.job-pill,.searchbox,.footer,.zoom,.intro,#basket-panel,#detail,#hint-card,#birth-note,.pop')].filter(e=>!e.hidden&&getComputedStyle(e).visibility!=='hidden').map(e=>e.getBoundingClientRect());const placed=[],isBlocked=rect=>rect.right>W-12||blockers.some(b=>overlap(rect,b,8))||placed.some(p=>overlap(rect,p,7));
 const top=new Set(candidates.filter(v=>v.n.semanticDegree>0).sort((a,b)=>b.n.semanticDegree-a.n.semanticDegree||(a.n.id<b.n.id?-1:1)).slice(0,LABEL_PRIORITY).map(v=>v.n.id));
 const cap=labelCap();let shown=0,named=false;
-candidates.sort((a,b)=>Number(b.n.id===state.hover)-Number(a.n.id===state.hover)||Number(b.on)-Number(a.on)||Number(basketIndex.has(b.n.id))-Number(basketIndex.has(a.n.id))||Number(bridgeShown.has(b.n.id))-Number(bridgeShown.has(a.n.id))||Number(b.near)-Number(a.near)||Number(b.n.kind==='thought')-Number(a.n.kind==='thought')||Number(top.has(b.n.id))-Number(top.has(a.n.id))||Number(b.n.ideaType==='hub')-Number(a.n.ideaType==='hub')||Number(b.n.id===b.n.group)-Number(a.n.id===a.n.group)||Number(b.n.kind==='idea')-Number(a.n.kind==='idea')||a.q.z-b.q.z).forEach(v=>{const el=v.n.el,id=v.n.id,pinned=v.on||id===state.hover||basketIndex.has(id)||bridgeShown.has(id)||labelledStars.has(id);if(!pinned&&!named){named=true;placeGroupNames(m,blockers,placed);placeBirthStamp(blockers,placed);}   // the pointed, selected and basket labels come first, then the group names, then the other labels
-if(!pinned&&shown>=cap){el.hidden=true;return;}let rect=el.getBoundingClientRect(),blocked=isBlocked(rect);if(blocked&&v.n.deep){el.classList.remove('deep');v.n.deep=false;v.n.tight=performance.now();rect=el.getBoundingClientRect();blocked=isBlocked(rect);}   // no room for the text line: the title alone, and the line is tried again later
+candidates.sort((a,b)=>Number(!!encounter&&basketIndex.has(b.n.id))-Number(!!encounter&&basketIndex.has(a.n.id))||Number(b.n.id===state.hover)-Number(a.n.id===state.hover)||Number(b.on)-Number(a.on)||Number(basketIndex.has(b.n.id))-Number(basketIndex.has(a.n.id))||Number(bridgeShown.has(b.n.id))-Number(bridgeShown.has(a.n.id))||Number(b.near)-Number(a.near)||Number(b.n.kind==='thought')-Number(a.n.kind==='thought')||Number(top.has(b.n.id))-Number(top.has(a.n.id))||Number(b.n.ideaType==='hub')-Number(a.n.ideaType==='hub')||Number(b.n.id===b.n.group)-Number(a.n.id===a.n.group)||Number(b.n.kind==='idea')-Number(a.n.kind==='idea')||a.q.z-b.q.z).forEach(v=>{const el=v.n.el,id=v.n.id,drawn=!!encounter&&basketIndex.has(id),pinned=v.on||id===state.hover||basketIndex.has(id)||bridgeShown.has(id)&&(!encounter||bridgeOpen)||labelledStars.has(id)&&!encounter;if(!pinned&&!named){named=true;placeGroupNames(m,blockers,placed);placeBirthStamp(blockers,placed);}   // the pointed, selected and basket labels come first, then the group names, then the other labels
+if(!pinned&&(encounter||shown>=cap)){el.hidden=true;return;}   // during an encounter the sky names only the drawn stars, the one pointed at or selected, and (with the list open) the hints
+let rect=el.getBoundingClientRect(),blocked=isBlocked(rect);if(blocked&&v.n.deep){el.classList.remove('deep');v.n.deep=false;v.n.tight=performance.now();rect=el.getBoundingClientRect();blocked=isBlocked(rect);}   // no room for the text line: the title alone, and the line is tried again later
+if(blocked&&drawn){const spot=drawnSpot(el,v.q,rect,isBlocked);if(spot)rect=spot;blocked=false;}   // a drawn star is never left without its name: another place, else the first one
 el.hidden=blocked;if(!blocked){placed.push(rect);if(!pinned)shown++;}});if(!named){placeGroupNames(m,blockers,placed);placeBirthStamp(blockers,placed);}renderedNodes=core.length/7;glowCount=glow.length/7;state.sizeStats={core:maxCore,halo:maxHalo,glow:maxGlow};upload(nodeBuf,core);upload(haloBuf,halo);upload(glowBuf,glow);upload(fxLineBuf,fxLines);fxLineCount=fxLines.length/7;return m;}
 // ----- Birth moment, drawn: where the playing style (state.birth, see BIRTH_STYLES and the FX_ constants) goes through its phases, and what each style draws. The shapes are laid out in CSS pixels around the new star on the screen plane
 // and turned into world points with the camera's own screen axes (viewAxes), so they follow the camera and stay upright. Soft points go to the glow list, hairlines to fxLines (drawn with the line program, after the graph's lines).
@@ -1486,22 +1999,19 @@ const {right,up}=viewAxes(),room=Math.max(1,qc.z),wpp=2*Math.tan(FOV/2)/H*qc.z,R
 const P=(x,y)=>[0,1,2].map(i=>c[i]+(right[i]*x+up[i]*y)*wpp),ring=(r,al)=>{for(let i=0;i<CORE_DISK_SEGMENTS;i++)for(const a of [i,i+1]){const t=a/CORE_DISK_SEGMENTS*Math.PI*2;lines.push(...P(Math.cos(t)*r,Math.sin(t)*r*CORE_DISK_TILT),...CORE_DISK_MID,al);}};
 if(state.reduced){ring(R*CORE_DISK_STATIC_AT,CORE_DISK_STATIC);return{scale:1,point:0,still:true,radius:R,points:0};}   // reduced motion: one faint still ring
 let scale=1,point=0;const t=state.diskCollapse===null?-1:now-state.diskCollapse,span=CORE_DISK_COLLAPSE_MS+CORE_DISK_HOLD_MS+CORE_DISK_RECOVER_MS;
-if(t>=span)state.diskCollapse=null;else if(t>=0){if(t<CORE_DISK_COLLAPSE_MS){const u=ease(t/CORE_DISK_COLLAPSE_MS);scale=1-u;point=u;}else if(t<CORE_DISK_COLLAPSE_MS+CORE_DISK_HOLD_MS){scale=0;point=1;}else{const u=(t-CORE_DISK_COLLAPSE_MS-CORE_DISK_HOLD_MS)/CORE_DISK_RECOVER_MS;scale=ease(u);point=1-ease(Math.min(1,u*2.5));}}
+if(t>=span&&diskHold===null)state.diskCollapse=null;else if(t>=0){if(t<CORE_DISK_COLLAPSE_MS){const u=ease(t/CORE_DISK_COLLAPSE_MS);scale=1-u;point=u;}else if(t<CORE_DISK_COLLAPSE_MS+CORE_DISK_HOLD_MS||diskHold!==null){scale=0;point=1;}else{const u=(t-CORE_DISK_COLLAPSE_MS-CORE_DISK_HOLD_MS)/CORE_DISK_RECOVER_MS;scale=ease(u);point=1-ease(Math.min(1,u*2.5));}}
+scale*=settle(encounterForm());   // at the meeting of a draw the disc forms from nothing (1 outside a draw)
 const level=lerp(CORE_DISK_GAIN[0],CORE_DISK_GAIN[1],k),inner=lerp(CORE_DISK_IN[0],CORE_DISK_IN[1],k),boost=1+point*CORE_DISK_POINT_GAIN;
 if(scale>.02){for(let i=0;i<CORE_DISK_POINTS;i++){const f=(i*.6180339)%1,rr=inner+(1-inner)*Math.sqrt(f),heat=1-(rr-inner)/(1-inner),w=CORE_DISK_SPIN/1000/Math.pow(Math.max(rr,.25),1.4)*.9,a=i*2.39996+w*state.motionClock,rgb=(heat<.5?CORE_DISK_EDGE.map((e,j)=>lerp(e,CORE_DISK_MID[j],heat*2)):CORE_DISK_MID.map((e,j)=>lerp(e,CORE_DISK_HOT[j],(heat-.5)*2))).map(v=>v*CORE_DISK_BEAD_GAIN*level*boost);
 glow.push(...P(Math.cos(a)*rr*R*scale,Math.sin(a)*rr*R*scale*CORE_DISK_TILT),...rgb,Math.max(3,R*CORE_DISK_BEAD*(.5+.5*scale))*2*DPR*room);}
 ring(R*inner*scale,CORE_DISK_RING*level*Math.min(1,scale*2));ring(R*scale,CORE_DISK_RING*level*.6*Math.min(1,scale*2));}
 if(point>.01)glow.push(...c,...CORE_DISK_HOT.map(v=>v*point*CORE_DISK_POINT_GAIN*.6),R*(.35+.45*point)*2*DPR*room);   // the bright point of "conceiving"
 return{scale,point,still:false,radius:R,points:CORE_DISK_POINTS,level,inner,turn:CORE_DISK_SPIN/1000/Math.pow(Math.max(inner,.25),1.4)*.9*state.motionClock};}   // turn: how far the innermost point has gone round, for the checks
-function birthFx(b,m,glow,lines){
-const star=byId.get(b.id);if(!star)return;
-const lp=livePos(star,state.motionClock),q=project(lp,m),room=Math.max(1,q.z);
-if(b.phase==='static'){if(q.z>0){glow.push(...lp,...BIRTH_COLOR.map(v=>v*.8),BIRTH_STATIC_PX*DPR*room);b.stampAlpha=BIRTH_STAMP_ALPHA;}return;}   // reduced motion: a steady glow, nothing moves
-if(b.phase!=='play'||q.z<=0)return;
-const t=b.t;if(b.stamp){const f=BIRTH_STAMP_FADE;b.stampAlpha=BIRTH_STAMP_ALPHA*(t<f[0]?0:t<f[1]?(t-f[0])/(f[1]-f[0]):t<f[2]?1:t<f[3]?1-(t-f[2])/(f[3]-f[2]):0);}
-const {right,up}=viewAxes(),S=clamp(Math.min(W,H)/BIRTH_REF_PX,BIRTH_SCALE[0],BIRTH_SCALE[1]),unit=2*Math.tan(FOV/2)/H;   // unit: world length of one screen pixel at depth 1
-const wpp=unit*q.z*S,P=(x,y)=>[lp[0]+(right[0]*x+up[0]*y)*wpp,lp[1]+(right[1]*x+up[1]*y)*wpp,lp[2]+(right[2]*x+up[2]*y)*wpp];   // design pixel (x right, y up) around the star -> world point
-const spot=(world,rgb,k,px)=>{if(k>.004)glow.push(...world,...rgb.map(v=>v*k),px*S*DPR*room);};
+// The tools every drawing of a moment uses, around one point `lp` of the sky (screen position q): design pixels (x right, y up, scaled by the screen like the birth shapes) become world points with the camera's own screen axes; soft points go to the glow list, hairlines to the line list. `spot` takes the depth of the point as an optional fifth argument (the birth shapes lie around one star and use its depth).
+function fxKit(lp,q,m,glow,lines){
+const room=Math.max(1,q.z),{right,up}=viewAxes(),S=clamp(Math.min(W,H)/BIRTH_REF_PX,BIRTH_SCALE[0],BIRTH_SCALE[1]),unit=2*Math.tan(FOV/2)/H;   // unit: world length of one screen pixel at depth 1
+const wpp=unit*q.z*S,P=(x,y)=>[lp[0]+(right[0]*x+up[0]*y)*wpp,lp[1]+(right[1]*x+up[1]*y)*wpp,lp[2]+(right[2]*x+up[2]*y)*wpp];   // design pixel (x right, y up) around the point -> world point
+const spot=(world,rgb,k,px,z)=>{if(k>.004)glow.push(...world,...rgb.map(v=>v*k),px*S*DPR*(z===undefined?room:Math.max(1,z)));};
 const seg=(a,c,rgb,a0,a1)=>lines.push(...a,...rgb,a0,...c,...rgb,a1);
 // A polyline of design pixels; alphaAt(u) is the strength at u = 0 (first point) to 1 (last point); widen spreads the hairlines.
 const line=(pts,rgb,alphaAt,widen=1)=>{for(let i=0;i<pts.length-1;i++){const p=pts[i],r=pts[i+1],dx=r[0]-p[0],dy=r[1]-p[1],len=Math.hypot(dx,dy)||1,nx=-dy/len,ny=dx/len,a0=alphaAt(i/(pts.length-1)),a1=alphaAt((i+1)/(pts.length-1));if(a0<.004&&a1<.004)continue;
@@ -1515,6 +2025,51 @@ const chain=(pts,rgb,alphaAt,px,world=false,tip=1)=>{const sp=world?pts.map(p=>p
 const len=cum[cum.length-1]||1,n=clamp(Math.ceil(len/(px*.4)),1,BIRTH_CHAIN_MAX);for(let k=0;k<=n;k++){const d=len*k/n;let i=1;while(i<pts.length-1&&cum[i]<d)i++;const f=clamp((d-cum[i-1])/((cum[i]-cum[i-1])||1),0,1),a=pts[i-1],c=pts[i],u=d/len,at=world?[0,1,2].map(j=>lerp(a[j],c[j],f)):P(lerp(a[0],c[0],f),lerp(a[1],c[1],f));spot(at,rgb,alphaAt(u),px*lerp(1,tip,u));}};
 const ring=(r,rgb,al,widen,px)=>{const pts=[];for(let i=0;i<=BIRTH_RING_SEGMENTS;i++){const a=i/BIRTH_RING_SEGMENTS*Math.PI*2;pts.push([Math.cos(a)*r,Math.sin(a)*r]);}line(pts,rgb,()=>al,widen);chain(pts,rgb,()=>al*.6,px);};
 const spikes=g=>{if(g<=.02)return;for(let k=0;k<FX_SPIKE.count;k++){const a=Math.PI/2+k*Math.PI*2/FX_SPIKE.count,len=FX_SPIKE.length*g;line([[0,0],[Math.cos(a)*len,Math.sin(a)*len]],BIRTH_WHITE,u=>FX_SPIKE.alpha*(1-u)*g);}};
+return{right,up,S,unit,wpp,P,spot,seg,line,worldLine,chain,ring,spikes};}
+// The encounter's light (see ENCOUNTER_*): a warm wisp that drifts through a few candidates to the chosen star, the swell of the chosen star, then, at the meeting, a thread of light from each star to the middle, the soft flash with its spikes and sparks, and the one line that names the tier. Only the birth light (BIRTH_COLOR, BIRTH_WHITE) is used.
+const settle=t=>1-Math.pow(1-t,3);
+function crom(a,b,c,d,t){return .5*(2*b+(-a+c)*t+(2*a-5*b+4*c-d)*t*t+(-a+3*b-3*c+d)*t*t*t);}
+function along(pts,u){const n=pts.length-1,f=Math.min(n-1e-6,u*n),i=Math.floor(f),t=f-i,at=k=>pts[Math.max(0,Math.min(n,k))];return [0,1,2].map(j=>crom(at(i-1)[j],at(i)[j],at(i+1)[j],at(i+2)[j],t));}
+function encounterFx(m,glow,lines){
+const e=encounter,fx=e.fx,now=performance.now(),kit=fxKit(state.focus,project(state.focus,m),m,glow,lines),zOf=p=>project(p,m).z,starAt=id=>{const n=byId.get(id);return n?[...livePos(n,state.motionClock)]:null;};
+fx.head=null;
+if(fx.wisp){const w=fx.wisp,pts=w.ids.map(id=>id?starAt(id):[0,0,0]);
+if(pts.every(Boolean)){const u=settle(clamp((now-w.start)/ENCOUNTER_TIME.wisp,0,1)),head=along(pts,u),W_=ENCOUNTER_WISP;w.trail.push(head);if(w.trail.length>W_.trail)w.trail.shift();
+w.trail.forEach((p,i)=>kit.spot(p,BIRTH_COLOR,(i+1)/w.trail.length*W_.trailAlpha,lerp(W_.trailPx[0],W_.trailPx[1],i/w.trail.length),zOf(p)));
+kit.spot(head,BIRTH_WHITE,.95,W_.head,zOf(head));kit.spot(head,BIRTH_COLOR,.35,W_.halo,zOf(head));fx.head=project(head,m);}}
+const B=ENCOUNTER_BLOOM;fx.blooms=fx.blooms.filter(b=>now-b.start<ENCOUNTER_TIME.bloom);
+for(const b of fx.blooms){const q=(now-b.start)/ENCOUNTER_TIME.bloom,swell=q<B.rise?settle(q/B.rise):1-(q-B.rise)/(1-B.rise),p=starAt(b.id);if(!p)continue;const sq=project(p,m);if(sq.z<=0)continue;
+const k=fxKit(p,sq,m,glow,lines);k.spot(p,BIRTH_WHITE,.9*swell,lerp(B.px[0],B.px[1],swell));k.spikes(swell*B.spike);}
+const mt=fx.meet;if(!mt||mt.instant){return;}
+const T=ENCOUNTER_TIME,el=now-mt.start,tier=ENCOUNTER_TIERS[mt.tier];
+if(el>Math.max(T.line[1],T.flash[1],T.threadEnd)){const done=$('#enc-line');if(done.style.opacity!=='0')done.style.opacity='0';return;}   // the meeting is over: nothing left to draw
+const stars=mt.ids.map(starAt);
+if(!stars.every(Boolean))return;
+const c=[0,1,2].map(i=>stars.reduce((s,p)=>s+p[i],0)/stars.length),qc=project(c,m);if(qc.z<=0)return;
+const ck=fxKit(c,qc,m,glow,lines),TH=ENCOUNTER_THREAD;
+if(el<T.threadEnd)stars.forEach((A,j)=>{   // each star sends a fine thread along a gently bent curve to the middle
+const q=clamp(el/T.thread,0,1),fade=1-clamp((el-T.thread)/(T.threadEnd-T.thread),0,1),bend=(j%2?1:-1)*TH.bend,headU=ease(q),tailU=Math.max(0,headU-TH.tail),sa=project(A,m);
+const ox=(qc.y-sa.y)*bend,oy=-(qc.x-sa.x)*bend,unit=2*Math.tan(FOV/2)/H*(sa.z+qc.z)/2,ctrl=[0,1,2].map(i=>(A[i]+c[i])/2+(ck.right[i]*ox-ck.up[i]*oy)*unit);
+const n=clamp(Math.round(Math.hypot(qc.x-sa.x,qc.y-sa.y)*(headU-tailU)/TH.step),12,BIRTH_CHAIN_MAX);
+for(let k=0;k<=n;k++){const u=tailU+(headU-tailU)*k/n,a=(1-u)*(1-u),b=2*(1-u)*u,d=u*u,pt=[0,1,2].map(i=>a*A[i]+b*ctrl[i]+d*c[i]);ck.spot(pt,BIRTH_COLOR,lerp(TH.alpha[0],TH.alpha[1],k/n)*fade,lerp(TH.px[0],TH.px[1],k/n),zOf(pt));}});
+const F=ENCOUNTER_FLASH,f=el-T.flash[0],span=T.flash[1]-T.flash[0];
+if(f>0&&f<span){const q=f/span,rise=q<F.rise?q/F.rise:Math.pow(1-(q-F.rise)/(1-F.rise),F.power);
+ck.spot(c,BIRTH_COLOR,.9*rise,F.wide*tier.glow*(.6+.4*rise));ck.spot(c,BIRTH_WHITE,.85*rise,F.core*tier.glow);ck.spikes(rise*tier.spikes);}
+const SP=ENCOUNTER_SPARK;
+if(tier.sparks&&f>0)for(let k=0;k<tier.sparks;k++){const life=lerp(SP.life[0],SP.life[1],idHash(mt.key,500+k));if(f>=life)continue;
+const a=idHash(mt.key,600+k)*Math.PI*2,v=lerp(SP.speed[0],SP.speed[1],idHash(mt.key,700+k)),d=(1-Math.exp(-f/1000*SP.decay))/SP.decay;ck.spot(ck.P(Math.cos(a)*v*d,Math.sin(a)*v*d*SP.flat),BIRTH_WHITE,(1-f/life)*.9,SP.px);}
+const L=ENCOUNTER_LINE,line=$('#enc-line');   // the tier, said once and quietly under the middle: a DOM line, not canvas text
+if(el>T.line[0]&&el<T.line[1]){const a=Math.min(clamp((el-T.line[0])/T.lineIn,0,1),1-clamp((el-(T.line[1]-T.lineOut))/T.lineOut,0,1));
+if(line.dataset.key!==mt.key){line.dataset.key=mt.key;line.textContent=ENCOUNTER_TEXT.badge(tier.name)+(tier.mark?'  '+tier.mark:'');}
+line.style.left=qc.x.toFixed(1)+'px';line.style.top=(qc.y+L.drop+(1-a)*L.rise).toFixed(1)+'px';line.style.opacity=(a*.9).toFixed(2);}
+else if(line.style.opacity!=='0')line.style.opacity='0';}
+function birthFx(b,m,glow,lines){
+const star=byId.get(b.id);if(!star)return;
+const lp=livePos(star,state.motionClock),q=project(lp,m),room=Math.max(1,q.z);
+if(b.phase==='static'){if(q.z>0){glow.push(...lp,...BIRTH_COLOR.map(v=>v*.8),BIRTH_STATIC_PX*DPR*room);b.stampAlpha=BIRTH_STAMP_ALPHA;}return;}   // reduced motion: a steady glow, nothing moves
+if(b.phase!=='play'||q.z<=0)return;
+const t=b.t;if(b.stamp){const f=BIRTH_STAMP_FADE;b.stampAlpha=BIRTH_STAMP_ALPHA*(t<f[0]?0:t<f[1]?(t-f[0])/(f[1]-f[0]):t<f[2]?1:t<f[3]?1-(t-f[2])/(f[3]-f[2]):0);}
+const {right,up,S,unit,wpp,P,spot,seg,line,worldLine,chain,ring,spikes}=fxKit(lp,q,m,glow,lines);   // the drawing tools around the star (see fxKit)
 const pulse=(centre,wide)=>Math.sin(Math.PI*clamp((t-centre)/wide,0,1));   // 0 -> 1 -> 0 over `wide` of the time, starting at `centre`
 const flash=(F,g)=>{spot(lp,BIRTH_COLOR,.9*g,F.flashPx);spot(lp,BIRTH_WHITE,.85*g,F.corePx);};
 if(b.style.id==='ignite'){const F=FX_IGNITE,run=clamp(t/F.flash,0,1),p=Math.pow(run,F.accel),fade=t<F.flash?1:clamp(1-(t-F.flash)/F.afterglow,0,1);
@@ -1618,7 +2173,7 @@ canvas.addEventListener('pointerdown',e=>startDrag(e));
 for(const el of [layer,gnameLayer]){el.addEventListener('pointerdown',e=>{if(wantsPan(e))startDrag(e,true);});el.addEventListener('contextmenu',e=>e.preventDefault());}
 canvas.addEventListener('pointermove',e=>{state.mouse=[e.clientX/W*2-1,e.clientY/H*2-1];if(pointers.has(e.pointerId))pointers.set(e.pointerId,[e.clientX,e.clientY]);if(pointers.size===2){const a=[...pointers.values()],dist=Math.hypot(a[0][0]-a[1][0],a[0][1]-a[1][1]),mid=midpoint();if(pinchDistance>0&&dist>0)zoom(Math.log(pinchDistance/dist),{x:pinchMid[0],y:pinchMid[1]});panBy(mid[0]-pinchMid[0],mid[1]-pinchMid[1]);pinchDistance=dist;pinchMid=mid;return;}const d=state.drag;if(!d){const over=hit(e.clientX,e.clientY);setHover(over?.n.id||null);canvas.style.cursor=over?'pointer':'grab';return;}const dx=e.clientX-d.x,dy=e.clientY-d.y,elapsed=Math.max(8,performance.now()-d.time);d.total+=Math.abs(dx)+Math.abs(dy);if(d.pan){panBy(dx,dy);d.x=e.clientX;d.y=e.clientY;d.time=performance.now();return;}state.tyaw+=dx*.0045;state.tpitch=clamp(state.tpitch+dy*.0035,-1,1);state.vx=clamp(dx*.0045/elapsed,-.003,.003);state.vy=clamp(dy*.0035/elapsed,-.002,.002);d.x=e.clientX;d.y=e.clientY;d.time=performance.now();});
 canvas.addEventListener('pointerup',e=>{const d=state.drag;pointers.delete(e.pointerId);pinchDistance=0;if(pointers.size){const xy=[...pointers.values()][0];state.drag={x:xy[0],y:xy[1],total:100,time:performance.now()};return;}state.drag=null;if(d&&d.total<7&&e.button===0&&!d.fromLabel){const found=hit(e.clientX,e.clientY),now=performance.now();
-if(found){lastTap={time:now,x:e.clientX,y:e.clientY,node:true};if(e.ctrlKey||e.metaKey)toggleBasket(found.n.id);else select(found.n.id);}
+if(found){lastTap={time:now,x:e.clientX,y:e.clientY,node:true};if(e.ctrlKey||e.metaKey)toggleBasket(found.n.id);else if(!encounterTap(found.n.id))select(found.n.id);}
 else if(lastTap&&now-lastTap.time<DOUBLE_TAP_MS&&Math.hypot(e.clientX-lastTap.x,e.clientY-lastTap.y)<DOUBLE_TAP_PX){const spot=lastTap.point;const onNode=lastTap.node;lastTap=null;if(!onNode)centerOn(spot);}   // the second click of a double click on a node (the camera has already started to move) is part of that click: it neither closes the card nor centres the sky
 else{lastTap={time:now,x:e.clientX,y:e.clientY,point:planePoint(e.clientX,e.clientY)};if(state.selected&&!(e.ctrlKey||e.metaKey))release();else if(retreatArmed&&!d.pan&&!(e.ctrlKey||e.metaKey||e.shiftKey)&&canRetreatGroup())retreatSoon();}}   // the spot is taken before a card closes, so the second tap centres what the first one pointed at
 if(state.reduced)state.vx=state.vy=0;});

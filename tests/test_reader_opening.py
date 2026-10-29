@@ -334,7 +334,7 @@ def assert_generation_upgrade(package: Path, work: Path, environment: dict[str, 
         "--vault", "Upgrade Notes", "--display-name", "Reader upgrade", cwd=work)
     old_brain = upgrade_workspace / "tools" / "brain.py"
     old_home = run(str(old_brain), "open-home", cwd=upgrade_workspace, environment=environment)
-    new_brain = install_generation_fixture(upgrade_workspace, "knowledge-nebula-server-v7")
+    new_brain = install_generation_fixture(upgrade_workspace, "knowledge-nebula-server-v" + str(int(CURRENT_GENERATION.rsplit("-v", 1)[1]) + 1))
     upgraded_first, upgraded_second = run_parallel([(str(new_brain), "open-home"), (str(new_brain), "open-home")], cwd=upgrade_workspace, environment=environment)
     assert sorted((upgraded_first["service"], upgraded_second["service"])) == ["reused", "started"]
     assert upgraded_first["url"] == upgraded_second["url"] == old_home["url"]
