@@ -8,6 +8,7 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
+import stat
 from package_paths import assert_plain_path
 from package_inventory import load_inventory
 from setup_workspace import entry_contract, plain_child, skill_entry_payloads, workspace_config_bytes
@@ -163,15 +164,33 @@ def make_config(existing,vault_name,name,hashes,host_overrides=None):
         result["host_runtime_overrides"]={"schema":HOST_OVERLAY_SCHEMA,"files":files}
     result.update({"schema":CONFIG,"package_schema":PACKAGE_SCHEMA,"package_version":version(),"profile":"public-portable","display_name":name,"vault":vault_name,"vault_name":Path(vault_name).name,"runtime_python":str((existing or {}).get("runtime_python") or sys.executable),"managed_files":dict(sorted(hashes.items())),"entry_contract":entry_contract("public-portable"),"management":{"schema":SCHEMA,"control_directory":CONTROL,"package_binding":binding(),"private_exclusions":prefixes(vault_name)}})
     return result
+def is_link(meta):
+    # Kept here, not imported: an older installed updater has already loaded its own
+    # package_paths before this candidate manager runs, so new helpers there are absent.
+    return stat.S_ISLNK(meta.st_mode) or (bool(getattr(meta,"st_file_attributes",0)&0x400) and bool(getattr(meta,"st_reparse_tag",0)&0x20000000))   # name-surrogate: symlink, junction or third-party redirect
 def tree(p):
     if not p.exists(): return {"exists":False,"files":0,"sha256":""}
     plain(p)
     if p.is_file(): return {"exists":True,"files":1,"sha256":sha(p)}
-    rows=[]
-    for x in sorted(p.rglob("*"),key=lambda q:q.as_posix().casefold()):
-        plain(x)
-        if x.is_file(): rows.append(x.relative_to(p).as_posix()+":"+sha(x))
-    return {"exists":True,"files":len(rows),"sha256":sha_b("\n".join(rows).encode())}
+    # Private content is only proven unchanged, never written: a user's own link or
+    # junction inside it is recorded by its target and not followed, so it neither
+    # blocks an update nor pulls data from outside the workspace into the proof.
+    found=[]; stack=[p]
+    while stack:
+        with os.scandir(stack.pop()) as entries:
+            for e in entries:
+                x=Path(e.path)
+                if is_link(x.lstat()): found.append((x,"link"))
+                elif e.is_dir(follow_symlinks=False): found.append((x,"dir")); stack.append(x)
+                else: found.append((x,"file"))
+    rows=[]; files=0
+    for x,kind in sorted(found,key=lambda r:(r[0].as_posix().casefold(),r[0].as_posix())):   # exact name breaks case-fold ties (ß/ss)
+        if kind=="link":
+            try: target=os.readlink(x)
+            except OSError: target="reparse-tag:"+hex(getattr(x.lstat(),"st_reparse_tag",0))   # third-party redirect without a readable target
+            rows.append(x.relative_to(p).as_posix()+":link:"+sha_b(target.encode("utf-8","surrogatepass")))
+        elif kind=="file" and x.is_file(): rows.append(x.relative_to(p).as_posix()+":"+sha(x)); files+=1
+    return {"exists":True,"files":files,"sha256":sha_b("\n".join(rows).encode())}
 def research_records(workspace,vault_name):
     registry=child(workspace,vault_name)/"_registry"/"research-programs"; active=[]; invalid=[]; topics=[]; locks=[]
     if not registry.exists(): return {"topics":topics,"active":active,"uninspectable":invalid,"locks":locks}

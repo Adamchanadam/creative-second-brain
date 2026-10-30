@@ -1,6 +1,6 @@
 {
   "schema": "creative_second_brain_portable_profiles_v2",
-  "version": "1.9.24",
+  "version": "1.9.25",
   "profiles": {
     "public-portable": {
       "display_label": "Creative Second Brain Portable",

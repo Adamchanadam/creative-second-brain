@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -37,13 +38,15 @@ def _sha(path: Path) -> str:
 
 
 def _plain(path: Path) -> Path:
+    # Name-surrogate reparse points (symlinks, junctions, third-party redirects) redirect
+    # a path; cloud-sync placeholders lack that tag bit and are ordinary.
     for part in (path, *path.parents):
         try:
             meta = part.lstat()
         except FileNotFoundError:
             continue
-        if part.is_symlink() or bool(getattr(meta, "st_file_attributes", 0) & 0x400):
-            raise UpdateError("update path contains a link or junction")
+        if stat.S_ISLNK(meta.st_mode) or (bool(getattr(meta, "st_file_attributes", 0) & 0x400) and bool(getattr(meta, "st_reparse_tag", 0) & 0x20000000)):
+            raise UpdateError(f"update path contains a link or junction: {part}")
     return path
 
 
