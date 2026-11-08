@@ -14,8 +14,9 @@ from typing import Any
 try:
     from tools.obsidian_vault_adapter import retained_original_location
     from tools.outcome_page_generator import (
-        DEFAULT_VAULT,
+        REPO_ROOT,
         completed_v2_package_for_standard_outcome,
+        default_vault,
         list_value,
         read_markdown_record,
         single_match,
@@ -29,11 +30,13 @@ try:
         topic_source_bindings,
     )
     from tools.validation_manifest import build_embedded_manifest
+    from tools.workspace_paths import bind_process_vault
 except ModuleNotFoundError:
     from obsidian_vault_adapter import retained_original_location  # type: ignore
     from outcome_page_generator import (  # type: ignore
-        DEFAULT_VAULT,
+        REPO_ROOT,
         completed_v2_package_for_standard_outcome,
+        default_vault,
         list_value,
         read_markdown_record,
         single_match,
@@ -47,6 +50,7 @@ except ModuleNotFoundError:
         topic_source_bindings,
     )
     from validation_manifest import build_embedded_manifest  # type: ignore
+    from workspace_paths import bind_process_vault  # type: ignore
 
 
 SELECTOR_SCHEMA_VERSION = "0.1"
@@ -173,7 +177,7 @@ def main() -> int:
         description="Select answer materials from the Obsidian vault without relying on model memory."
     )
     parser.add_argument("--query", required=True, help="Question or topic to select materials for.")
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     parser.add_argument("--source-id", action="append", help="Optional source id filter. Can be used more than once.")
     parser.add_argument("--topic-id", action="append", help="Optional research topic filter. Can be used more than once.")
@@ -184,9 +188,14 @@ def main() -> int:
     if args.limit < 1:
         parser.error("--limit must be greater than 0")
 
+    try:
+        bind_process_vault(REPO_ROOT)
+        vault = args.vault if args.vault is not None else default_vault()
+    except ValueError as exc:
+        parser.error(str(exc))
     result = select_materials(
         query=args.query,
-        vault=args.vault,
+        vault=vault,
         limit=args.limit,
         source_ids=args.source_id,
         topic_ids=args.topic_id,
@@ -210,13 +219,14 @@ def main() -> int:
 def select_materials(
     *,
     query: str,
-    vault: Path = DEFAULT_VAULT,
+    vault: Path | None = None,
     limit: int = DEFAULT_LIMIT,
     source_ids: list[str] | None = None,
     topic_ids: list[str] | None = None,
     expansions: list[str] | None = None,
 ) -> dict[str, Any]:
     """Select materials for one query without retaining resolver state for later calls."""
+    vault = vault if vault is not None else default_vault()
     return _select_materials(
         query=query,
         vault=vault,
@@ -230,11 +240,11 @@ def select_materials(
 def select_materials_many(
     *,
     queries: list[str],
-    vault: Path = DEFAULT_VAULT,
+    vault: Path | None = None,
     limit: int = DEFAULT_LIMIT,
 ) -> list[dict[str, Any]]:
     """Select many independent queries while sharing one call-local vault index."""
-    vault = vault.resolve()
+    vault = (vault if vault is not None else default_vault()).resolve()
     index: SelectionIndex | None = None
     results: list[dict[str, Any]] = []
     for query in queries:

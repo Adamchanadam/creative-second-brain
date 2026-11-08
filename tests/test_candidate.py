@@ -106,7 +106,8 @@ def main() -> int:
     for command in COMMANDS:
         assert (workspace / ".agents" / "skills" / command / "SKILL.md").is_file()
     alias_skill = (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
-    assert "舊名相容" in alias_skill and "brain-think" in alias_skill
+    assert "tools/brain_lookup.py" in alias_skill and "answer_rules" in alias_skill and "舊名相容" not in alias_skill
+    assert "$brain-think <問題>" in alias_skill and "/brain-think <問題>" in alias_skill
     for key, expected in PROMPTS.items():
         metadata = workspace / ".agents" / "skills" / ("brain-" + key) / "agents" / "openai.yaml"
         assert metadata.is_file() and json.dumps(expected, ensure_ascii=False) in metadata.read_text(encoding="utf-8"), key

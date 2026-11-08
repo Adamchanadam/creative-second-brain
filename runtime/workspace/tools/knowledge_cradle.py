@@ -165,6 +165,16 @@ def mechanical(packet, answer):
     return errors, sha
 
 
+QUOTE_PROBLEM = re.compile(r"不在任何 evidence text 中原樣出現|premise quote must match")
+
+
+def mechanical_failure_message(errors):
+    """Plain-language reason for ``mechanical_unfixed``: the quote wording only when every problem is a quote problem."""
+    if errors and all(QUOTE_PROBLEM.search(error) for error in errors):
+        return "答案的引文與原文不符，修正兩次仍未通過。"
+    return "答案未通過格式核對，修正兩次仍未通過。"
+
+
 def check_questions(packet, way, value):
     """Format check of a questions.json; returns the list of problems (empty when valid)."""
     angles = [angle for angle, _ in WAYS[way]]
@@ -783,6 +793,19 @@ RUNNERS = {
 }
 
 
+def antigravity_command(settings):
+    found = shutil.which("agy")
+    return [found] if found else None
+
+
+# Registered but unsupported AIs.  Kept apart from RUNNERS on purpose: settings, approval and job routing only ever accept RUNNERS, so
+# nothing listed here can be chosen or run.  Detection only asks whether the program is installed and its version.
+NOTED_REASON = "已偵測到，但未能安全鎖緊（它會上網及讀資料夾外的檔案），暫不支援背景孕育；可改用「複製指令」。"
+NOTED_RUNNERS = {
+    "antigravity": {"label": "Antigravity", "resolve": antigravity_command},
+}
+
+
 class Cradle:
     """Job store, request validation and the single worker thread of one nebula server."""
 
@@ -1034,10 +1057,30 @@ class Cradle:
                     except (ValueError, JobFailure):
                         row.update(locked=False, ready=False, reason="Codex 的鎖緊測試未通過（讀得到資料夾外的檔案或連得上網絡），暫不可用。")
                 results[key] = row
+            for key, noted in (NOTED_RUNNERS.items() if name is None else ()):
+                try:  # an unsupported AI is only noted when installed; nothing here may disturb the usable rows
+                    prefix = noted["resolve"](settings)
+                except Exception:
+                    prefix = None
+                if not prefix:
+                    results.pop(key, None)
+                    continue
+                row = {"name": key, "label": noted["label"], "installed": True, "version": None, "login": "none",
+                       "locked": False, "supported": False, "ready": False, "reason": NOTED_REASON}
+                try:
+                    version = self._call(prefix, ["--version"], deadline)
+                    if version.returncode == 0:
+                        row["version"] = next((line.strip()[:80] for line in version.stdout.splitlines() if line.strip()), None)
+                except Interrupted:
+                    return self._runner_snapshot()
+                except (subprocess.TimeoutExpired, TimeoutError, OSError, ValueError, JobFailure):
+                    pass
+                results[key] = row
             with self.lock:
                 if self.closing:
                     return self._runner_snapshot()
-                self.runner_state = {"checked_at": now_text(), "runners": [results[key] for key in RUNNERS if key in results]}
+                self.runner_state = {"checked_at": now_text(),
+                                     "runners": [results[key] for key in (*RUNNERS, *NOTED_RUNNERS) if key in results]}
                 self.detection_epoch += 1
             return self._runner_snapshot()
         finally:
@@ -1583,7 +1626,7 @@ class Cradle:
             self._update(job, {"target_sha": sha, "round": job["rounds_done"] + 1, "rerun": False, "next": "review"})
             return
         if job["fixes"] >= settings["max_mechanical_fixes"]:
-            raise JobFailure("mechanical_unfixed", "答案的引文與原文不符，修正兩次仍未通過。", True, ["retry"], "; ".join(errors)[:200])
+            raise JobFailure("mechanical_unfixed", mechanical_failure_message(errors), True, ["retry"], "; ".join(errors)[:200])
         (folder / "mechanical_errors.txt").write_text("\n".join(errors), encoding="utf-8")
         files = self._common_files(job)
         files.update({"answer.json": folder / job["answer_path"], "mechanical_errors.txt": folder / "mechanical_errors.txt"})

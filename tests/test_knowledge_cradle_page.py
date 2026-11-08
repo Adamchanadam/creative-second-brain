@@ -23,6 +23,7 @@ if (ROOT / 'runtime' / 'workspace').is_dir():
 TESTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / 'tools'))
 sys.path.insert(0, str(TESTS))
+import knowledge_cradle as cradle_module
 import knowledge_nebula as nebula
 import knowledge_nebula_server as server_module
 import outcome_page_generator as generator
@@ -1212,6 +1213,13 @@ run(async browser => {
   await page.waitForFunction(() => ai.step === 2);
   result.none = await page.evaluate(() => ({ step: ai.step }));
   result.noneList = await until(page, async () => { const r = await fetch('/api/cradle/jobs', { headers: { 'X-Nebula-Token': LOCAL_SYNC.token } }); const j = await r.json(); return j.awaiting_pick === 0 && $('#job-pill').hidden ? j : false; }, 20000);
+  // a third questions job: "完成" tells the service the person is not going to pick, so the 待揀問題 mark leaves (other tabs as well)
+  await toStep3(page);
+  await page.click('#ai-start');
+  await viewHas(page, 'AI 擬了 5 條問題，揀一條開始孕育：');
+  result.waiting = await until(page, async () => { const r = await fetch('/api/cradle/jobs', { headers: { 'X-Nebula-Token': LOCAL_SYNC.token } }); const j = await r.json(); return j.awaiting_pick === 1 ? j.awaiting_pick : false; }, 20000);
+  await finish(page);
+  result.doneList = await until(page, async () => { const r = await fetch('/api/cradle/jobs', { headers: { 'X-Nebula-Token': LOCAL_SYNC.token } }); const j = await r.json(); return j.awaiting_pick === 0 && $('#job-pill').hidden ? j : false; }, 20000);
 });
 """
 
@@ -1425,7 +1433,12 @@ run(async browser => {
 class IncubationTests(PageCase):
     VAULT = 'vault'
 
-    def boot(self, timeouts=None, command=None, cradle=True, runner='claude', codex_scenario='success'):
+    def boot(self, timeouts=None, command=None, cradle=True, runner='claude', codex_scenario='success', noted_command=None):
+        # a real Antigravity on this machine must never show up here: the registry of unsupported AIs is empty unless a fake is given
+        noted = {'antigravity': {**cradle_module.NOTED_RUNNERS['antigravity'], 'resolve': lambda settings: noted_command}} if noted_command else {}
+        isolated = patch.dict(cradle_module.NOTED_RUNNERS, noted, clear=True)
+        isolated.start()
+        self.addCleanup(isolated.stop)
         vault_path = self.root / self.VAULT
         if vault_path.exists():
             shutil.rmtree(vault_path)
@@ -1551,6 +1564,10 @@ class IncubationTests(PageCase):
         self.assertEqual(r['none']['step'], 2)
         self.assertEqual([j['dismissed'] for j in r['noneList']['jobs']][:1], [True])     # "none fits" dismisses the job
         self.assertEqual((r['noneList']['awaiting_pick'], r['noneList']['active']), (0, 0))
+        self.assertEqual(r['waiting'], 1)                                              # an unpicked question set shows 待揀問題 until 完成
+        newest = sorted((j for j in r['doneList']['jobs'] if j['kind'] == 'questions'), key=lambda j: j['job_id'])[-1]
+        self.assertEqual((newest['status'], newest['dismissed'], newest['picked']), ('done', True, None))   # 完成 reached the service, not only this browser
+        self.assertEqual((r['doneList']['awaiting_pick'], r['doneList']['active']), (0, 0))
 
     def test_failures_and_their_buttons(self):
         r = self.run_jobs(FAIL_A_SCRIPT, self.boot(timeouts={'write': 4, 'other': 60}))
@@ -1816,7 +1833,7 @@ const setup = async page => {
   await page.click('#ai-runner-note button');
   await page.waitForFunction(() => !aiSetupBusy && aiSetupData);
 };
-const setupRows = page => page.evaluate(() => [...document.querySelectorAll('.ai-runner')].map(row => ({ name: row.querySelector('input').value, disabled: row.querySelector('input').disabled, text: row.innerText })));
+const setupRows = page => page.evaluate(() => [...document.querySelectorAll('.ai-runner')].map(row => ({ name: row.querySelector('input')?.value ?? null, disabled: row.querySelector('input')?.disabled ?? null, radio: !!row.querySelector('input'), label: row.tagName === 'LABEL', text: row.innerText })));
 """
 
 
@@ -1922,6 +1939,47 @@ run(async browser => {
         self.assertEqual((r['status'], r['shown']), (409, r['error']))
         self.assertEqual(r['shown'], 'Codex 未登入，請先打開 Codex 登入一次。')
         self.assertIsNone(r['jobs']['runner']['name'])
+
+    def test_unsupported_ai_row_has_no_radio_shows_its_sentence_and_can_never_be_approved(self):
+        fake = [sys.executable, '-B', '-c', 'print("agy-fake 9.9.9")']
+        r = self.run_setup(r"""
+run(async browser => {
+  const page = await startPage(browser);
+  await toStep3(page, OWN);
+  await setup(page);
+  result.rows = await setupRows(page);
+  result.radios = await page.locator('#ai-setup-runners input[type=radio]').count();
+  result.approveStart = await page.locator('#ai-setup-approve').isDisabled();
+  await page.check('input[value=codex]');
+  result.approveCodex = await page.locator('#ai-setup-approve').isDisabled();
+  const posts = [];
+  page.on('request', q => { if (q.url().endsWith('/api/cradle/settings')) posts.push(q.postData()); });
+  // a stale or forced choice of the unsupported row neither enables approval nor sends anything
+  await page.evaluate(() => { aiSetupPicked = 'antigravity'; renderAISetup(); });
+  result.approveForced = await page.locator('#ai-setup-approve').isDisabled();
+  await page.evaluate(async () => { await aiSetupSave('antigravity'); });
+  result.posts = posts;
+  // no readable version: only "detected" is shown
+  await page.evaluate(() => { aiSetupData.runners.find(r => r.name === 'antigravity').version = null; renderAISetup(); });
+  result.noVersion = (await setupRows(page)).find(row => row.name === null).text;
+});
+""", self.boot(runner=None, noted_command=fake))
+        self.assertEqual([row['label'] for row in r['rows']], [True, True, False])
+        claude, codex, note = r['rows']
+        self.assertEqual((claude['name'], codex['name']), ('claude', 'codex'))
+        self.assertTrue(all(row['radio'] and not row['disabled'] for row in (claude, codex)))
+        self.assertEqual((note['radio'], note['name']), (False, None))
+        self.assertEqual(r['radios'], 2)
+        self.assertIn('Antigravity', note['text'])
+        self.assertIn('agy-fake 9.9.9', note['text'])
+        self.assertIn('已偵測到，但未能安全鎖緊（它會上網及讀資料夾外的檔案），暫不支援背景孕育；可改用「複製指令」。', note['text'])
+        self.assertNotIn('可用', note['text'])
+        self.assertTrue(r['approveStart'])      # approval is enabled only for a usable row
+        self.assertFalse(r['approveCodex'])
+        self.assertTrue(r['approveForced'])
+        self.assertEqual(r['posts'], [])
+        self.assertIn('已偵測', r['noVersion'])
+        self.assertNotIn('agy-fake', r['noVersion'])
 
     def test_disable_switches_back_to_copy_without_reload(self):
         r = self.run_setup(r"""

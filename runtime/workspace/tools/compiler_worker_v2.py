@@ -61,9 +61,9 @@ except ModuleNotFoundError:
     )
 
 try:
-    from tools.ingest_plan_contract import RELATION_TYPES, VALID_ADOPTION_STATUSES, source_block_catalog
+    from tools.ingest_plan_contract import ATTRIBUTION_CONTRACT, RELATION_TYPES, VALID_ADOPTION_STATUSES, attribution_effect, source_block_catalog
 except ModuleNotFoundError:
-    from ingest_plan_contract import RELATION_TYPES, VALID_ADOPTION_STATUSES, source_block_catalog  # type: ignore
+    from ingest_plan_contract import ATTRIBUTION_CONTRACT, RELATION_TYPES, VALID_ADOPTION_STATUSES, attribution_effect, source_block_catalog  # type: ignore
 
 
 try:
@@ -72,9 +72,9 @@ except ModuleNotFoundError:
     from obsidian_vault_adapter import canonical_body_contains_anchor, project_concept_graph_for_sources  # type: ignore
 
 try:
-    from tools.workspace_paths import WorkspacePathError, vault_path, vault_relative_posix
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_posix, vault_path, vault_relative_posix
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, vault_path, vault_relative_posix  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_posix, vault_path, vault_relative_posix  # type: ignore
 
 try:
     from tools.reader_surface_guard import PERSONAL_LAYER_HEADING, matches_submitter_identity
@@ -3346,6 +3346,16 @@ def accepted_asset_mode(args: argparse.Namespace) -> str:
     return asset_mode
 
 
+def accepted_attribution_fields(args: argparse.Namespace) -> dict[str, str]:
+    """The claim-origin marker a new knowledge_only job's bundle carries (Compiler spec section 7.2 "主張歸屬").
+
+    Only ``rail start`` asks for it, for a job it issues now; a bundle written earlier is never given one.
+    """
+    if getattr(args, "attribution_contract", "") == ATTRIBUTION_CONTRACT and accepted_asset_mode(args) == ASSET_MODE_KNOWLEDGE:
+        return {"attribution_contract": ATTRIBUTION_CONTRACT}
+    return {}
+
+
 _TEXT_TITLE_MARKDOWN_IMAGE = re.compile(
     r"^\s*(?:!\[[^\]]*\]\([^)]*\)|\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\))(?:\s*\{[^}]*\})?\s*$"
 )
@@ -3418,7 +3428,7 @@ def command_accept_text(args: argparse.Namespace) -> int:
         title_source="user_supplied" if args.title else "source_derived",
         slug=slug,
         canonical_body=canonical_body,
-        source_fields={"source_content_sha256": source_hash, "source_retention_mode": "full_body_required", "source_profile": getattr(args, "profile", "article"), "asset_mode": accepted_asset_mode(args)},
+        source_fields={"source_content_sha256": source_hash, "source_retention_mode": "full_body_required", "source_profile": getattr(args, "profile", "article"), "asset_mode": accepted_asset_mode(args), **accepted_attribution_fields(args)},
         capture_metadata={
             "source_content_sha256": source_hash,
             "source_retention_mode": "full_body_required",
@@ -3679,6 +3689,7 @@ def command_accept_image(args: argparse.Namespace) -> int:
             "source_input_kind": "user_provided_image",
             "source_identity": source_identity,
             "asset_mode": accepted_asset_mode(args),
+            **accepted_attribution_fields(args),
             "source_image_sha256": source_hash,
             "source_image_mime": inspection.mime_type,
             "source_image_dimensions": {"width": inspection.width, "height": inspection.height},
@@ -3744,6 +3755,7 @@ def command_accept_image(args: argparse.Namespace) -> int:
         source_fields={
             "source_profile": getattr(args, "profile", "article"),
             "asset_mode": accepted_asset_mode(args),
+            **accepted_attribution_fields(args),
             "source_image_sha256": source_hash,
             "source_image_mime": mime,
             "source_image_dimensions": {"width": inspection.width, "height": inspection.height},
@@ -3944,6 +3956,7 @@ def command_accept_url(args: argparse.Namespace) -> int:
         "canonical_body_length": len(canonical_body),
         "anchors": anchors,
         **case_evidence_binding,
+        **accepted_attribution_fields(args),
     }
     write_json(out_dir / "input_bundle.json", input_bundle)
     if raw_html_bytes is not None:
@@ -5142,7 +5155,8 @@ def render_source_slice(kp: dict[str, Any], package: Path) -> str:
         "",
         "<!-- knowledge_semantics_json: " + json.dumps([
             {"kp_id": item["kp_id"], "title": item.get("title", ""),
-             **({"reusable_concept": item["reusable_concept"]} if "reusable_concept" in item else {})}
+             **({"reusable_concept": item["reusable_concept"]} if "reusable_concept" in item else {}),
+             **({"attribution": item["attribution"]} if item.get("attribution") else {})}
             for item in kp.get("knowledge", [])], ensure_ascii=False) + " -->",
         "",
         "| ID | 知識點 | 層級 | 可信度 | 來源證據 |",
@@ -5512,7 +5526,7 @@ def accepted_note_paths_in_chain(
     """
     by_path = dict(receipts)
     read_current = _overlay_read_current()
-    outcome_prefix = vault_relative_posix() + "/outcome-pages/"
+    outcome_prefix = configured_vault_relative_posix(root) + "/outcome-pages/"
     notes: list[str] = []
     seen: set[str] = set()
     path = predecessor
@@ -5745,7 +5759,7 @@ def _overlay_parent_context(root: Path, package: Path, kp: dict[str, Any]) -> di
             "revised": bool(change),
         }
 
-    outcome_path = f"{vault_relative_posix()}/outcome-pages/{completion.get('source_id')}_outcome.html"
+    outcome_path = f"{configured_vault_relative_posix(root)}/outcome-pages/{completion.get('source_id')}_outcome.html"
     outcome_expected = outcome_revision_hash(root, origin_package, completion, outcome_path) or manifest.get(outcome_path) or ""
     return {
         "origin_package": origin_package,
@@ -6076,7 +6090,7 @@ def _overlay_reviewed_assets(root: Path, package: Path, kp: dict[str, Any]) -> d
         ):
             raise CompilerWorkerV2Error("infographic overlay page is not the reviewed image of the child")
         destination = (
-            f"{vault_relative_posix()}/assets/{source_id.lower()}/"
+            f"{configured_vault_relative_posix(root)}/assets/{source_id.lower()}/"
             + adapter.vault_infographic_asset_filename(slice_target, source_id, asset_path, index, len(pages))
         )
         if destination in expected:
@@ -6146,7 +6160,7 @@ def verify_overlay_journal_content(
         raise CompilerWorkerV2Error("infographic overlay note changes more than the generated visual fields: " + str(exc)) from exc
     if replayed_source != staged["source"][1] or replayed_application != staged["application"][1]:
         raise CompilerWorkerV2Error("infographic overlay note changes more than the generated visual fields")
-    vault_prefix = vault_relative_posix() + "/"
+    vault_prefix = configured_vault_relative_posix(root) + "/"
     journal_assets = {str(item["path"])[len(vault_prefix):] for item in asset_items if str(item["path"]).startswith(vault_prefix)}
 
     def note_text(data: bytes) -> str:
@@ -6269,7 +6283,7 @@ def load_prepared_completed_infographic_overlay(
         "infographic_source_note": context["source_note"],
         "infographic_application_note": context["application_note"],
     }
-    asset_prefix = f"{vault_relative_posix()}/assets/{str(source.get('source_id')).lower()}/"
+    asset_prefix = f"{configured_vault_relative_posix(root)}/assets/{str(source.get('source_id')).lower()}/"
     seen_paths: set[str] = set()
     seen_kinds: dict[str, int] = {}
     items: list[dict[str, Any]] = []
@@ -7040,7 +7054,7 @@ def verified_knowledge_only_resume_parent_artifacts(
     try:
         adapter_readback = write_vault_and_readback(
             root=root,
-            vault=relative_to_root(root / vault_relative_posix(), root, "vault"),
+            vault=relative_to_root(root / configured_vault_relative_posix(root), root, "vault"),
             source_slice=matching_slices[0],
             knowledge_point_ids=knowledge_package_point_ids(kp),
             write=False,
@@ -7356,7 +7370,7 @@ def outcome_revision_hash(root: Path, package: Path, completion: dict[str, Any],
             or record.get("payload_sha256") != canonical_payload_sha256(record)
             or record.get("completion_payload_sha256") != completion.get("payload_sha256")):
         raise CompilerWorkerV2Error("invalid outcome projection revision binding")
-    expected_path = f"{vault_relative_posix()}/outcome-pages/{completion['source_id']}_outcome.html"
+    expected_path = f"{configured_vault_relative_posix(root)}/outcome-pages/{completion['source_id']}_outcome.html"
     if record.get("artifact_path") != expected_path or path != expected_path:
         return None
     previous = next((item["sha256"] for item in completion["artifact_manifest"] if item["path"] == path), None)
@@ -7395,7 +7409,7 @@ def refresh_completed_outcome(
         raise CompilerWorkerV2Error("outcome refresh requires a verified completion")
     original = read_json(bound_completion_path(root, package, kp_path, kp))
     source_id = original["source_id"]
-    portable = f"{vault_relative_posix()}/outcome-pages/{source_id}_outcome.html"
+    portable = f"{configured_vault_relative_posix(root)}/outcome-pages/{source_id}_outcome.html"
     target = relative_to_root(root / portable, root, "derived outcome page")
     prior = target.read_bytes()
     expected_hash = outcome_revision_hash(root, package, original, portable) or next(
@@ -7526,7 +7540,7 @@ def refresh_completed_outcome_shell(
         completion_path = bound_completion_path(root, package, kp_path, kp)
         provisional = read_json(completion_path)
         source_id = str(provisional["source_id"])
-        portable = f"{vault_relative_posix()}/outcome-pages/{source_id}_outcome.html"
+        portable = f"{configured_vault_relative_posix(root)}/outcome-pages/{source_id}_outcome.html"
         target = relative_to_root(root / portable, root, "derived outcome page")
         revision_path = package / "outcome_projection_revisions.json"
         candidate = target.with_name(f".{source_id}_outcome_shell_candidate.html")
@@ -7856,7 +7870,7 @@ def verified_completed_infographic_overlay(
                 raise CompilerWorkerV2Error("infographic overlay note scope is invalid")
         elif kind == "infographic_asset":
             source_id = str(completion.get("source_id") or "").lower()
-            if not path.startswith(f"{vault_relative_posix()}/assets/{source_id}/") or not path.endswith(".png"):
+            if not path.startswith(f"{configured_vault_relative_posix(root)}/assets/{source_id}/") or not path.endswith(".png"):
                 raise CompilerWorkerV2Error("infographic overlay asset scope is invalid")
             asset_paths.add(path)
         else:
@@ -7881,7 +7895,7 @@ def verified_completed_infographic_overlay(
     if validate_image_attempt_ledger(child_kp, child_kp_path.parent):
         raise CompilerWorkerV2Error("infographic overlay child image ledger is invalid")
     outcome = child_completion.get("outcome") if isinstance(child_completion.get("outcome"), dict) else {}
-    outcome_path = f"{vault_relative_posix()}/outcome-pages/{completion['source_id']}_outcome.html"
+    outcome_path = f"{configured_vault_relative_posix(root)}/outcome-pages/{completion['source_id']}_outcome.html"
     if str(outcome.get("current_page") or "") != outcome_path:
         raise CompilerWorkerV2Error("infographic overlay child outcome path is invalid")
     outcome_hash = child_manifest.get(outcome_path, "")
@@ -7998,7 +8012,7 @@ def completed_receipt_readback(
         if current_pointer and current_completion_path != this_completion_path
         else set()
     )
-    derived_outcome_path = f"{vault_relative_posix()}/outcome-pages/{completion['source_id']}_outcome.html"
+    derived_outcome_path = f"{configured_vault_relative_posix(root)}/outcome-pages/{completion['source_id']}_outcome.html"
     for item in completion.get("artifact_manifest") or []:
         if not isinstance(item, dict):
             raise CompilerWorkerV2Error("existing completion artifact manifest is invalid")
@@ -11656,6 +11670,7 @@ def command_project(args: argparse.Namespace) -> int:
         "completed_at": completed_at,
         "execution": ingest_execution_summary(job, completed_at=completed_at),
         "prior_knowledge_effect": prior_knowledge_effect_receipt(job, kp),
+        "attribution_effect": attribution_effect(kp, package),
         "knowledge_package_path": kp_path.relative_to(root).as_posix(),
         "knowledge_package_sha256": sha256_bytes(kp_path.read_bytes()),
         "source_slice_path": source_slice.relative_to(root).as_posix(),
@@ -11752,6 +11767,7 @@ def command_project(args: argparse.Namespace) -> int:
         "completion_receipt": str(completion_path),
         "execution": completion["execution"],
         "prior_knowledge_effect": completion["prior_knowledge_effect"],
+        "attribution_effect": completion["attribution_effect"],
         "coverage_audit": coverage_audit,
         "reader_quality_audit": reader_quality,
         "adapter": adapter_result,
@@ -11975,6 +11991,7 @@ def main() -> int:
 
     args = parser.parse_args()
     try:
+        bind_process_vault(args.root.resolve())
         if args.command in {
             "accept-job",
             "dispatch-job",

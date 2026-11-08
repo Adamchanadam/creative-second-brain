@@ -1,6 +1,6 @@
 # 可攜創造型 2nd Brain：規格入口
 
-本工作區以 Obsidian Vault 保存可追查來源、知識點、個人應用、想法與資產。完整日常入口是 `brain-think`、`brain-url`、`brain-text`、`brain-image`、`brain-grow`、`brain-create`、`brain-tidy`、`brain-guide`、`brain-nebula`、`brain-check`、`brain-resume`、`brain-fix` 和 `brain-research`；`brain-ask` 只保留為同一思考保存流程的相容別名。宿主是否把它們登記為 native slash command 要另行核對；HTML 只是導覽，不自行入庫。
+本工作區以 Obsidian Vault 保存可追查來源、知識點、個人應用、想法與資產。完整日常入口是 `brain-think`、`brain-url`、`brain-text`、`brain-image`、`brain-grow`、`brain-create`、`brain-tidy`、`brain-guide`、`brain-nebula`、`brain-check`、`brain-resume`、`brain-fix` 和 `brain-research`；`brain-ask` 是只讀快答：查詢並引用知識庫，不保存、不入庫、不修訂；要保存思考時請用 `brain-think`。宿主是否把它們登記為 native slash command 要另行核對；HTML 只是導覽，不自行入庫。
 
 `brain-guide` 要求首頁時會回傳已同步的本機 `index.html#prompts` URL；只問版本時只讀 `brain.json`。`brain-nebula` 用同一受限 loopback 服務回傳星雲 URL。兩者只重建可再生的目錄、portal 與星雲投影，不重新入庫、重做歷史成果頁或生成圖片。
 

@@ -20,11 +20,11 @@ from urllib.parse import quote
 
 try:
     from .obsidian_idea_retrieval import read_markdown, NOTE_LINK_RE
-    from .workspace_paths import vault_path
+    from .workspace_paths import bind_process_vault, configured_vault_path, vault_path
     from .knowledge_nebula_layout import arrange
 except ImportError:
     from obsidian_idea_retrieval import read_markdown, NOTE_LINK_RE
-    from workspace_paths import vault_path
+    from workspace_paths import bind_process_vault, configured_vault_path, vault_path
     from knowledge_nebula_layout import arrange
 
 ASSETS = Path(__file__).resolve().parents[1] / 'assets' / 'knowledge-nebula'
@@ -249,7 +249,7 @@ def collect(root, output_dir):
     root = plain(Path(root).absolute()).resolve()
     cfg = root/'brain.json'
     config = json.loads(cfg.read_text(encoding='utf-8-sig')) if cfg.exists() else {}
-    vault = vault_path(root, config.get('vault',os.environ.get('CREATIVE_SECOND_BRAIN_VAULT','knowledge-base-vault')))
+    vault = configured_vault_path(root)
     plain(vault)
     if not vault.is_dir(): raise ValueError('Configured vault does not exist')
     sources_file = inside(vault,'_registry/sources.jsonl')
@@ -618,6 +618,9 @@ def main():
     p.add_argument('--watch',action='store_true',help='Foreground local refresh; Ctrl+C stops. No server or scheduler.')
     p.add_argument('--interval',type=float,default=5);a=p.parse_args()
     if a.interval<1:p.error('interval must be at least 1 second')
+    try:bind_process_vault(a.root)
+    except ValueError as e:
+        print(json.dumps({'status':'blocked','reason':str(e)},ensure_ascii=False),flush=True);return 2
     try:
         while True:
             try: print(json.dumps(build(a.root,a.output),ensure_ascii=False),flush=True)

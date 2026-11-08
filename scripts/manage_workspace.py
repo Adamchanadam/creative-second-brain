@@ -11,6 +11,7 @@ else:
 import stat
 from package_paths import assert_plain_path
 from package_inventory import load_inventory
+from command_rules import COMMAND_ROLES, command_role
 from setup_workspace import entry_contract, plain_child, skill_entry_payloads, workspace_config_bytes
 from verify_package import verify
 
@@ -81,10 +82,10 @@ def inventory():
     entries=c["managed_entries"]
     registry=obj(PACKAGE/"spec"/"command-registry.json","command registry").get("commands")
     if not isinstance(registry,dict): raise ManagerError("command registry is invalid")
-    expected={key:("compatibility_alias" if definition.get("alias_for") else "canonical") for key,definition in registry.items() if isinstance(definition,dict) and isinstance(definition.get("menu_order"),int)}
+    expected={key:command_role(definition) for key,definition in registry.items() if isinstance(definition,dict) and isinstance(definition.get("menu_order"),int)}
     actual={entry.get("command"):entry.get("role") for entry in entries if isinstance(entry,dict)}
     if (any(not isinstance(x,dict) or not isinstance(x.get("skill"),str) or not x["skill"].startswith("brain-")
-            or x.get("role") not in {"canonical", "compatibility_alias"} for x in entries)
+            or x.get("role") not in COMMAND_ROLES for x in entries)
             or len(actual)!=len(entries) or len({x["skill"] for x in entries})!=len(entries)
             or actual!=expected): raise ManagerError("package daily entry inventory is invalid")
     return v

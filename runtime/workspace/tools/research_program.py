@@ -55,9 +55,9 @@ except ModuleNotFoundError:
     from obsidian_vault_adapter import AdapterStop, write_research_reuse_application  # type: ignore
 
 try:
-    from tools.workspace_paths import WorkspacePathError, vault_path
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, vault_path
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, vault_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, vault_path  # type: ignore
 
 try:
     from tools.knowledge_direction import DirectionError, compute_direction
@@ -2303,6 +2303,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     try:
+        bind_process_vault(args.root.resolve())
         if args.command not in {"preflight", "status", "next"}:
             assert_management_idle(args.root.resolve())
         return args.func(args)

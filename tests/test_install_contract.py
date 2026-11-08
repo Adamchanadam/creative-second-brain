@@ -19,6 +19,8 @@ from urllib.request import urlopen
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from command_rules import command_role, entry_kind, is_menu_command  # noqa: E402
 
 
 def run(python: Path, *args: str, cwd: Path, expected: int = 0, environment: dict | None = None) -> dict:
@@ -161,9 +163,10 @@ def main() -> None:
     registry = json.loads((extracted / "spec" / "command-registry.json").read_text(encoding="utf-8"))
     entries = registry["commands"]
     names = [name for name, entry in sorted(entries.items(), key=lambda item: item[1].get("menu_order", 999))
-             if "menu_order" in entry and not entry.get("alias_for")]
+             if "menu_order" in entry and is_menu_command(entry)]
     assert names == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update", "infographic"]
-    assert entries["ask"].get("alias_for") == "think"
+    assert entry_kind(entries["ask"]) == "read_only_query" and command_role(entries["ask"]) == "canonical" and "alias_for" not in entries["ask"]
+    assert entries["ask"]["entry"] == "<workspace>/tools/brain_lookup.py"
     capture = (extracted / "runtime" / "workspace" / "tools" / "case_reproduction_capture.js").read_text(encoding="utf-8")
     assert "lockedPlaywrightForCheck" in capture and "workspace-locked-chromium" in capture
     assert "Microsoft\\\\Edge\\\\Application" not in capture

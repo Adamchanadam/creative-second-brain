@@ -35,10 +35,14 @@ try:
 except ModuleNotFoundError:
     from image_source_contract import ImageSourceContractError, inspect_image
 
+try:
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, bound_vault_path, configured_vault_path, configured_vault_relative_posix
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, bind_process_vault, bound_vault_path, configured_vault_path, configured_vault_relative_posix  # type: ignore
+
 
 SCHEMA_VERSION = "source_ingest_job_v3"
 WORKER_ENVELOPE_VERSION = "source_ingest_worker_envelope_v3"
-DEFAULT_JOB_ROOT = Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")) / "_registry" / "source-ingest-jobs"
 PIPELINE = Path(__file__).with_name("firecrawl_obsidian_pipeline.py")
 JOB_TARGET_SECONDS = 600
 # Ten minutes is the product SLA target, not a completion kill-switch: a clean
@@ -92,10 +96,15 @@ class SourceIngestJobError(ValueError):
     """The source-ingest job request is stale, unsafe, or unverifiable."""
 
 
+def default_job_root(root: Path) -> Path:
+    """The ledger folder inside ``root``'s configured vault (relative to ``root``); resolved when used."""
+    return Path(configured_vault_relative_posix(root)) / "_registry" / "source-ingest-jobs"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Accept, resume, dispatch and verify one source-ingest background job.")
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="Project root.")
-    parser.add_argument("--job-root", type=Path, default=DEFAULT_JOB_ROOT, help="Durable job ledger root.")
+    parser.add_argument("--job-root", type=Path, default=None, help="Durable job ledger root; defaults to the configured vault's _registry/source-ingest-jobs.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     accept = subparsers.add_parser("accept", help="Accept one Terminal source-ingest request and return a durable job_id.")
@@ -214,14 +223,20 @@ def main() -> int:
         "internal_process_pollution", "cropped_content", "missing_footer",
     ), help="Explicitly request the sole failed-page gpt-image-2 repair; normal runs must omit this.")
     run_one.add_argument("--completion-report-out", type=Path, required=True)
-    run_one.add_argument("--vault", type=Path, default=Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")))
+    run_one.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to (and in an installed workspace must equal) the workspace's configured vault")
     run_one.add_argument("--max-kp", type=int, default=6)
     run_one.add_argument("--now", help="UTC ISO timestamp for deterministic tests.")
     run_one.add_argument("--json", action="store_true")
 
     args = parser.parse_args()
     root = args.root.resolve()
-    job_root = resolve_inside(root, args.job_root)
+    try:
+        bind_process_vault(root)
+        requested_job_root = args.job_root if args.job_root is not None else default_job_root(root)
+    except WorkspacePathError as exc:
+        print_json_or_text({"status": "failed", "message": str(exc), "write_performed": False}, getattr(args, "json", False))
+        return 1
+    job_root = resolve_inside(root, requested_job_root)
 
     try:
         if args.command == "accept":
@@ -1032,7 +1047,11 @@ def run_one_source_ingest(root: Path, job_root: Path, args: argparse.Namespace) 
     readback = worker_readback(root, job_root, envelope_args)
     source_slice = resolve_inside(root, args.source_slice)
     report_path = resolve_inside(root, args.completion_report_out)
-    vault = resolve_inside(root, args.vault)
+    try:
+        vault = (configured_vault_path(root) if args.vault is None
+                 else bound_vault_path(root, resolve_inside(root, args.vault)))
+    except WorkspacePathError as exc:
+        raise SourceIngestJobError(str(exc)) from exc
     job_id = str(readback["job_id"])
     claim = str(readback["worker_claim"])
     version = int(readback["work_version"])

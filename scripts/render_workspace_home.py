@@ -7,6 +7,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runtime" / "workspace" / "tools"))
+from command_rules import is_menu_command
 from workspace_home_renderer import render as render_portable_home
 
 
@@ -17,7 +18,7 @@ def public_entries() -> list[dict[str, str]]:
         for name, definition in registry.items()
         if isinstance(definition, dict)
         and isinstance(definition.get("menu_order"), int)
-        and not definition.get("alias_for")
+        and is_menu_command(definition)
     }
     if not skills:
         raise ValueError("public command registry has no daily entries")

@@ -35,6 +35,9 @@ def generation_after(steps=1):
 
 
 V7 = generation_after()
+REAL_NOTED = dict(cradle.NOTED_RUNNERS)   # the real registry, before any test isolates it
+AGY_SCRIPT = ("import json, os, sys; open(sys.argv[1], 'a').write(json.dumps({'args': sys.argv[2:], 'secrets': sorted(k for k in os.environ if k in "
+              "('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'OPENAI_API_KEY', 'CODEX_API_KEY'))}) + '\\n'); print('agy-fake 9.9.9')")
 
 
 class CradleCase(unittest.TestCase):
@@ -55,6 +58,8 @@ class CradleCase(unittest.TestCase):
         self.env = patch.dict(os.environ, {'CRADLE_FAKE_TRACE': str(self.trace), 'CRADLE_FAKE_SCENARIO': 'success',
                                           'CRADLE_FAKE_CODEX': 'success', 'CRADLE_FAKE_AUTH': 'claude.ai'})
         self.env.start()
+        self.noted_isolation = patch.dict(cradle.NOTED_RUNNERS, clear=True)   # a real Antigravity on this machine must not show up in any test
+        self.noted_isolation.start()
         self.servers = []
         self.cleanup_processes = []
         self.settings()
@@ -71,6 +76,7 @@ class CradleCase(unittest.TestCase):
                 process.kill()
             process.wait()
         self.reap_leftovers()
+        self.noted_isolation.stop()
         self.env.stop()
         self.trace_temp.cleanup()
         self.temp.cleanup()
@@ -1346,8 +1352,21 @@ class RunnerSetupTests(CradleCase):
         self.assertEqual(set(body), {'runner', 'checked_at', 'runners'})
         self.assertIsInstance(body['checked_at'], str)
         for row in body['runners']:
-            self.assertEqual(set(row), {'name', 'label', 'installed', 'version', 'login', 'locked', 'ready', 'reason'})
+            self.assertEqual(set(row), {'name', 'label', 'installed', 'version', 'login', 'locked', 'ready', 'reason'}
+                             | ({'supported'} if row['name'] in REAL_NOTED else set()))
         return {row['name']: row for row in body['runners']}
+
+    def noted(self, command=None, resolve=None):
+        """Pretend Antigravity is installed as `command` (None: not installed); the fake traces every call to agy-trace.jsonl."""
+        entry = {**REAL_NOTED['antigravity'], 'resolve': resolve or (lambda settings: command)}
+        return patch.dict(cradle.NOTED_RUNNERS, {'antigravity': entry}, clear=True)
+
+    def agy(self):
+        return [sys.executable, '-B', '-c', AGY_SCRIPT, str(self.trace / 'agy-trace.jsonl')]
+
+    def agy_calls(self):
+        path = self.trace / 'agy-trace.jsonl'
+        return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()] if path.exists() else []
 
     def test_fresh_settings_approval_returns_every_registry_runner(self):
         self.settings(runner=None)
@@ -1414,6 +1433,87 @@ class RunnerSetupTests(CradleCase):
         for name, label in [('claude', 'Claude Code'), ('codex', 'Codex')]:
             self.assertEqual(missing[name], {'name': name, 'label': label, 'installed': False, 'version': None,
                                             'login': 'none', 'locked': False, 'ready': False, 'reason': f'這部電腦找不到 {label}。'})
+
+    NOTED_SENTENCE = '已偵測到，但未能安全鎖緊（它會上網及讀資料夾外的檔案），暫不支援背景孕育；可改用「複製指令」。'
+
+    def test_noted_registry_is_separate_and_resolves_only_agy(self):
+        self.assertEqual(list(REAL_NOTED), ['antigravity'])
+        self.assertEqual(REAL_NOTED['antigravity']['label'], 'Antigravity')
+        self.assertFalse(set(REAL_NOTED) & set(cradle.RUNNERS))
+        with patch.object(cradle.shutil, 'which', return_value='X:/bin/agy.exe') as which:
+            self.assertEqual(REAL_NOTED['antigravity']['resolve']({}), ['X:/bin/agy.exe'])
+            which.assert_called_once_with('agy')
+        with patch.object(cradle.shutil, 'which', return_value=None):
+            self.assertIsNone(REAL_NOTED['antigravity']['resolve']({}))
+
+    def test_installed_unsupported_ai_gets_one_note_row_from_a_version_query_only(self):
+        with self.noted(self.agy()), patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'k', 'OPENAI_API_KEY': 'k', 'CODEX_API_KEY': 'k'}):
+            rows = self.runners()
+            self.assertEqual(list(rows), ['claude', 'codex', 'antigravity'])
+            self.assertEqual(rows['antigravity'], {'name': 'antigravity', 'label': 'Antigravity', 'installed': True, 'version': 'agy-fake 9.9.9',
+                                                   'login': 'none', 'locked': False, 'supported': False, 'ready': False,
+                                                   'reason': self.NOTED_SENTENCE})
+            self.assertTrue(rows['claude']['ready'] and rows['codex']['ready'])
+            self.assertEqual(self.agy_calls(), [{'args': ['--version'], 'secrets': []}])   # no login query, no probe, no task, no API key
+            self.assertEqual(self.api('GET', '/api/cradle/runners')[1]['runners'][2], rows['antigravity'])
+            # approving a usable AI re-detects only that one: the note row stays, and still nothing but the one version query ran
+            status, body = self.api('POST', '/api/cradle/settings', {'runner': 'codex'})
+            self.assertEqual((status, [row['name'] for row in body['runners']]), (200, ['claude', 'codex', 'antigravity']), body)
+            self.assertEqual(len(self.agy_calls()), 1)
+        with self.noted(None):   # uninstalled: the next full detection drops the row
+            self.assertEqual(list(self.runners()), ['claude', 'codex'])
+
+    def test_uninstalled_unsupported_ai_has_no_row(self):
+        with self.noted(None):
+            rows = self.runners()
+        self.assertEqual(list(rows), ['claude', 'codex'])
+        self.assertEqual(self.agy_calls(), [])
+
+    def test_unreadable_version_keeps_the_note_row_without_a_version(self):
+        failing = [sys.executable, '-B', '-c', 'import sys; print("boom"); sys.exit(3)']
+        for label, command in [('exit-code', failing), ('cannot-start', [str(self.root / 'missing-agy.exe')])]:
+            with self.subTest(label), self.noted(command):
+                rows = self.runners()
+                self.assertEqual(list(rows), ['claude', 'codex', 'antigravity'])
+                self.assertEqual((rows['antigravity']['installed'], rows['antigravity']['version'], rows['antigravity']['supported'],
+                                  rows['antigravity']['ready'], rows['antigravity']['reason']), (True, None, False, False, self.NOTED_SENTENCE))
+                self.assertTrue(rows['claude']['ready'] and rows['codex']['ready'])
+
+    def test_a_failing_note_never_disturbs_the_usable_rows(self):
+        def broken(settings):
+            raise RuntimeError('cannot look')
+        with self.noted(resolve=broken):
+            rows = self.runners()
+        self.assertEqual(list(rows), ['claude', 'codex'])
+        self.assertTrue(rows['claude']['ready'] and rows['codex']['ready'])
+
+    def test_unsupported_ai_can_never_be_approved_or_run(self):
+        path = self.root / '.reader-runtime/cradle/settings.json'
+        with self.noted(self.agy()):
+            self.runners()
+            before = path.read_bytes()
+            self.assertEqual(self.api('POST', '/api/cradle/settings', {'runner': 'antigravity'}),
+                             (400, {'error': 'AI 設置的要求格式不正確。'}))
+            self.assertEqual(path.read_bytes(), before)
+            # a hand-edited settings file naming it is invalid: it neither starts a job nor lets a later approval go through
+            self.settings(runner='antigravity')
+            edited = path.read_bytes()
+            job = self.wait(self.post_job(), 'failed')
+            self.assertEqual((job['error']['code'], job['error']['message']), ('settings_invalid', '搖籃設定檔格式不正確，沒有開始孕育。'))
+            self.assertEqual(self.api('POST', '/api/cradle/settings', {'runner': 'claude'}),
+                             (409, {'error': '搖籃設定檔格式不正確，沒有更改。'}))
+            self.assertEqual(path.read_bytes(), edited)
+            # a job somehow carrying it is refused before any program starts
+            self.settings()
+            with patch.object(self.server.cradle, '_ensure_worker'):
+                job_id = self.post_job()
+                self.server.cradle.jobs[job_id]['runner'] = 'antigravity'
+            self.server.cradle._ensure_worker()
+            job = self.wait(job_id, 'failed')
+            self.assertEqual(job['error']['code'], 'runner_not_ready')
+            self.assertEqual(self.traces(), [])
+            self.assertFalse([row for row in self.codex_traces() if row['step'] == 'exec'])   # detection queries only, never a task
+            self.assertEqual(self.agy_calls(), [{'args': ['--version'], 'secrets': []}])   # only the one detection query, never a task
 
     def test_settings_approve_refuse_disable_and_preserve_invalid_file(self):
         path = self.root / '.reader-runtime/cradle/settings.json'

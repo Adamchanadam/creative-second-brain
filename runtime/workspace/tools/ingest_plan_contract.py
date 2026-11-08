@@ -14,6 +14,12 @@ import re
 import unicodedata
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+
+try:
+    from tools.workspace_paths import WorkspacePathError, configured_vault_path
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, configured_vault_path  # type: ignore
 
 try:
     from tools.case_evidence_contract import ASSET_MODE_CASE, ASSET_MODE_FORMAL, ASSET_MODE_KNOWLEDGE, package_manifest
@@ -25,6 +31,8 @@ try:
     )
     from tools.obsidian_vault_adapter import (
         AdapterStop,
+        ATTRIBUTION_ORIGINS,
+        ATTRIBUTION_RELAY_READER_WORDS,
         KnowledgePoint,
         KnowledgeRelation,
         VALID_SOURCE_TYPES,
@@ -52,6 +60,8 @@ except ModuleNotFoundError:
     )
     from obsidian_vault_adapter import (  # type: ignore
         AdapterStop,
+        ATTRIBUTION_ORIGINS,
+        ATTRIBUTION_RELAY_READER_WORDS,
         KnowledgePoint,
         KnowledgeRelation,
         VALID_SOURCE_TYPES,
@@ -97,6 +107,19 @@ CONCEPT_RELATION_LINK_TYPES = ("supports", "extends")
 STRUCTURE_CANDIDATE_MIN_MEMBERS = 3
 STRUCTURE_DECISION_MIN_REASON_CHARS = 3
 STRUCTURE_DECISIONS = ("not_a_named_structure",)
+# Claim attribution (Compiler spec section 7.2 "主張歸屬" is the only rule owner).  The signal terms are
+# deliberately generic claim-origin words: they decide when a plan must record an explicit
+# all-source-author judgement, never which work or person is cited.
+ATTRIBUTION_SIGNAL_TERMS = (
+    "作者", "著作", "書中", "本書", "這本書", "呢本書", "書入面", "書裡", "書裏", "《",
+    "研究指出", "研究發現", "研究顯示", "研究團隊", "論文", "報告指出", "教授", "受訪", "引述", "引用",
+    "author", "book", "study", "studies", "paper", "according to", "professor", "researchers",
+)
+ATTRIBUTION_CONTRACT = "claim_origin_v1"
+ATTRIBUTION_RELAYS = tuple(ATTRIBUTION_RELAY_READER_WORDS)
+ATTRIBUTION_DECISION = "all_source_author"
+ATTRIBUTION_DECISION_MIN_REASON_CHARS = 6
+CITED_WORK_REASON_MIN_CHARS = 6
 
 
 def text_schema(*, values=None, empty=False):
@@ -149,6 +172,7 @@ def plan_schema():
                     "primary_work_status": text_schema(values=["primary", "none"]),
                     "primary_work_title": TEXT, "primary_work_evidence": TEXT,
                     "citation_evidence": citation, "retrieval_aliases": array(text_schema(empty=True))}, ["source_label", "source_type", "primary_work_status"])
+    metadata["properties"]["cited_works"] = cited_works_schema()
     claim = obj({"id": TEXT, "claim": TEXT, "evidence_anchor": TEXT, "confidence": CONFIDENCE})
     unit = obj({"id": TEXT, "text": TEXT, "source_evidence": TEXT,
                 "source_block_ids": TEXTS,
@@ -159,6 +183,7 @@ def plan_schema():
     knowledge = obj({"kp_id": TEXT, "title": TEXT, "claim": TEXT,
                      "layer": text_schema(values=LAYERS), "confidence": CONFIDENCE, "evidence_anchor": TEXT})
     knowledge["properties"]["reusable_concept"] = reusable_concept_schema()
+    knowledge["properties"]["attribution"] = attribution_schema(compiled=True)
     relation = obj({"source_kp": TEXT, "target_kp": TEXT, "relation": TEXT, "evidence_anchor": TEXT, "confidence": CONFIDENCE})
     application = obj({"knowledge_use": text_schema(values=VALID_KNOWLEDGE_USE),
         "adoption_status": text_schema(values=VALID_ADOPTION_STATUSES),
@@ -207,6 +232,7 @@ def plan_schema():
         "relations": array(relation), "application": application,
         "prior_knowledge": compiled_prior_knowledge_schema(),
         "structure_decisions": structure_decisions_schema(),
+        "attribution_decision": attribution_decision_schema(),
         "asset_mode": text_schema(values=[ASSET_MODE_FORMAL, ASSET_MODE_CASE, ASSET_MODE_KNOWLEDGE]),
         "case_evidence": case_evidence,
         "infographics": array(page),
@@ -239,6 +265,7 @@ def compact_plan_schema():
         "evidence_block_ids": array(TEXT, 1),
     })
     compact_knowledge["properties"]["reusable_concept"] = reusable_concept_schema()
+    compact_knowledge["properties"]["attribution"] = attribution_schema()
     compact_relation = obj({
         "source_index": {
             **TEXT,
@@ -267,6 +294,7 @@ def compact_plan_schema():
             "application": application,
             "prior_knowledge": prior_knowledge_schema(),
             "structure_decisions": structure_decisions_schema(),
+            "attribution_decision": attribution_decision_schema(),
         }, ["schema_version", "input_fingerprint", "summary", "knowledge"]),
     }
 
@@ -351,6 +379,49 @@ def structure_decisions_schema():
         "decision": text_schema(values=STRUCTURE_DECISIONS),
         "reason": TEXT,
     }, ["block_id", "decision", "reason"]))
+
+
+def cited_works_schema():
+    """Works or people the source names, in source wording; positions are 1-based.  Rules: Compiler spec section 7.2."""
+    return array(obj({
+        "label": {**TEXT, "description": "The name exactly as the source writes (or the caption says) it."},
+        "evidence_block_ids": {**array(TEXT, 1), "description": "Source block ids whose text contains the label."},
+        "verified_name": {**text_schema(empty=True),
+                          "description": "The correct name after an online check; never from memory. Needs verification; the label stays the source's wording."},
+        "verification": obj({
+            "url": {**text_schema(empty=True), "description": "https page that shows the name (publisher, catalogue, encyclopedia, author page)."},
+            "quote": {**text_schema(empty=True), "description": "Text copied verbatim from that page; it must contain verified_name."},
+            "retrieved_at": {**text_schema(empty=True), "description": "Date the page was read."},
+        }, []),
+        "unverified_reason": {**text_schema(empty=True),
+                              "description": "Instead of verified_name and verification: the substantive reason the name could not be confirmed."},
+    }, ["label", "evidence_block_ids"]))
+
+
+def attribution_schema(*, compiled=False):
+    """Who made a point's claim.  Every key may be blank in a draft; the checks in ``attribution_review`` decide.
+
+    ``label`` is compiler output (the resolved cited work), never an agent field.
+    """
+    properties = {
+        "origin": {**text_schema(values=("", *ATTRIBUTION_ORIGINS), empty=True),
+                   "description": "source_author = the source's own claim; cited_named = a work or person the source names; cited_unnamed = 'a book says' without a name; unclear = mixed."},
+        "cited_work": {**text_schema(empty=True),
+                       "description": "1-based position string in source_metadata.cited_works; required only for cited_named, otherwise leave empty."},
+        "relay": {**text_schema(values=("", *ATTRIBUTION_RELAYS), empty=True),
+                  "description": "Required unless origin is source_author: restates, interprets, illustrates or extends."},
+    }
+    if compiled:
+        properties["label"] = text_schema(empty=True)
+        properties["verified_name"] = text_schema(empty=True)
+    return obj(properties, [])
+
+
+def attribution_decision_schema():
+    return obj({
+        "decision": text_schema(values=("", ATTRIBUTION_DECISION), empty=True),
+        "reason": text_schema(empty=True),
+    }, [])
 
 
 def blank_prior_knowledge():
@@ -709,13 +780,18 @@ def precise_source_spans(canonical: str) -> list[dict]:
     return list({row["id"]: row for row in groups}.values())
 
 
-def semantic_response_schema(asset_mode: str, *, current: bool = True) -> dict:
-    """Return the narrow normal-route contract without changing explicit modes."""
+def semantic_response_schema(asset_mode: str, *, current: bool = True, attribution_required: bool = False) -> dict:
+    """Return the narrow normal-route contract without changing explicit modes.
+
+    ``attribution_required`` is true only for a job whose input bundle carries the claim-origin marker.
+    """
     result = compact_plan_schema() if asset_mode == ASSET_MODE_KNOWLEDGE else plan_schema()
     if current:
         result["required"] = list(result["required"]) + ["source_catalog_version"]
         item = result["properties"]["knowledge"]["items"]
         item["required"] = list(item["required"]) + ["reusable_concept"]
+        if attribution_required and asset_mode == ASSET_MODE_KNOWLEDGE:
+            item["required"] = list(item["required"]) + ["attribution"]
         if asset_mode == ASSET_MODE_KNOWLEDGE:
             result["properties"]["relations"]["items"]["properties"]["relation"] = text_schema(values=RELATION_TYPES)
     return result
@@ -837,6 +913,222 @@ def _with_legacy_knowledge_use_default(plan: dict) -> dict:
     return plan
 
 
+def _signal_pattern() -> re.Pattern:
+    parts = []
+    for term in ATTRIBUTION_SIGNAL_TERMS:
+        if term.isascii():
+            words = r"\s+".join(re.escape(word) for word in term.split())
+            parts.append(r"(?<![A-Za-z])" + words + r"(?![A-Za-z])")
+        else:
+            parts.append(re.escape(term))
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+
+_ATTRIBUTION_SIGNAL_RE = _signal_pattern()
+
+
+def attribution_signal_block_count(blocks: list[dict]) -> int:
+    """How many source blocks carry a claim-origin signal term (Compiler spec section 7.2)."""
+    return sum(1 for block in blocks if _ATTRIBUTION_SIGNAL_RE.search(str(block.get("text") or "")))
+
+
+def _attribution_key(value: object) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
+
+
+def _attribution_filled(item: object) -> bool:
+    value = item.get("attribution") if isinstance(item, dict) else None
+    return isinstance(value, dict) and any(str(value.get(key) or "").strip() for key in ("origin", "cited_work", "relay"))
+
+
+def attribution_scope(plan: dict, bundle: dict) -> tuple[bool, bool]:
+    """``(marked, opted_in)``: the job carries the claim-origin marker / some point already hands in an attribution."""
+    marked = bundle.get("attribution_contract") == ATTRIBUTION_CONTRACT
+    opted = any(_attribution_filled(item) for item in plan.get("knowledge") or [])
+    return marked, opted
+
+
+def _has_line_or_control_character(text: str) -> bool:
+    """Whether ``text`` holds a line break, control or invisible format character (category C*, or the line/paragraph separators).
+
+    Such a character is not stripped by the name comparison, but it breaks the one-line note frontmatter the name is saved in.
+    """
+    return any(unicodedata.category(character).startswith("C") or character in "  " for character in text)
+
+
+def cited_work_verification_issue(position: int, work: dict, *, transcript_archive: bool) -> str:
+    """The one verification problem of a cited work, or ``""`` (Compiler spec section 7.2 "主張歸屬" item 2a).
+
+    Structure only: the program never goes online; whether the page is trustworthy stays the agent's analysis.
+    """
+    where = f"source_metadata.cited_works position {position} ({str(work.get('label') or '')!r})"
+    name = str(work.get("verified_name") or "").strip()
+    given = work.get("verification")
+    given = given if isinstance(given, dict) else {}
+    fields = {key: str(given.get(key) or "").strip() for key in ("url", "quote", "retrieved_at")}
+    reason = str(work.get("unverified_reason") or "").strip()
+    offered = bool(name or any(fields.values()))
+    problems = []
+    if _has_line_or_control_character(str(work.get("label") or "").strip()):
+        problems.append("label must not contain a line break or control character")
+    if offered:
+        if _has_line_or_control_character(name):
+            problems.append("verified_name must not contain a line break or control character; write it on one line")
+        if reason:
+            problems.append("hand in either verified_name with verification or unverified_reason, not both")
+        if not name:
+            problems.append("verification needs verified_name")
+        absent = [key for key, value in fields.items() if not value]
+        if absent:
+            problems.append("verification needs " + ", ".join(absent) + (" (verified_name needs a verification)" if name and len(absent) == 3 else ""))
+        if fields["url"]:
+            try:
+                parts = urlsplit(fields["url"])
+                https_page = parts.scheme.lower() == "https" and bool(parts.netloc)
+            except ValueError:  # e.g. "https://[::1": the address cannot be parsed at all
+                https_page = False
+            if not https_page:
+                problems.append("verification.url must be an https page")
+        if name and fields["quote"] and _attribution_key(name) not in _attribution_key(fields["quote"]):
+            problems.append("verified_name is not found in verification.quote; copy the page's own words")
+        if problems:
+            return f"cited_work_verification_invalid: {where}: " + "; ".join(problems) + "."
+        return ""
+    if problems:  # only the label problem: nothing was offered for verification
+        return f"cited_work_verification_invalid: {where}: " + "; ".join(problems) + "."
+    if reason:
+        if sum(character.isalnum() for character in reason) < CITED_WORK_REASON_MIN_CHARS:
+            return (f"cited_work_unverified_reason_thin: {where} unverified_reason needs at least {CITED_WORK_REASON_MIN_CHARS} meaningful "
+                    "characters saying why the name could not be confirmed.")
+        return ""
+    if transcript_archive:
+        return (f"cited_work_verification_missing: {where} comes from a YouTube caption, so check the name online and hand in verified_name with "
+                "verification {url, quote, retrieved_at}, or hand in unverified_reason saying why it could not be confirmed.")
+    return ""
+
+
+def attribution_review(plan: dict, bundle: dict, blocks: dict[str, str], catalog_blocks: list[dict]) -> tuple[list[str], list[dict | None]]:
+    """Every claim-attribution gap of a plan at once, plus each point's compiled attribution.
+
+    Rules, scope and error codes: Compiler spec section 7.2 "主張歸屬" (the only owner).  The compiler proves
+    structure, that a cited name is found in its evidence, and that a signalled source got an explicit
+    all-source-author judgement; whether each origin is right stays the agent's analysis.
+    """
+    knowledge = plan.get("knowledge") or []
+    marked, opted = attribution_scope(plan, bundle)
+    decision = plan.get("attribution_decision")
+    decision = decision if isinstance(decision, dict) else {}
+    decision_value = str(decision.get("decision") or "").strip()
+    decision_reason = str(decision.get("reason") or "").strip()
+    decision_given = bool(decision_value or decision_reason)
+    if not marked and not opted:
+        if decision_given:
+            return ["attribution_decision_not_applicable: attribution_decision is only for a plan that hands in attribution; remove it."], [None] * len(knowledge)
+        return [], [None] * len(knowledge)
+
+    issues: list[str] = []
+    works = (plan.get("source_metadata") or {}).get("cited_works") or []
+    referenced: set[str] = set()
+    compiled: list[dict | None] = []
+    origins: list[str] = []
+    for index, item in enumerate(knowledge):
+        where = f"knowledge[{index}] (item {index + 1})"
+        value = item.get("attribution") if isinstance(item, dict) else None
+        value = value if isinstance(value, dict) else {}
+        origin = str(value.get("origin") or "").strip()
+        origins.append(origin)
+        if not origin:
+            issues.append(f"attribution_missing: {where} needs attribution {{origin, cited_work, relay}}; "
+                          f"origin is one of {', '.join(ATTRIBUTION_ORIGINS)}.")
+            compiled.append(None)
+            continue
+        relay = str(value.get("relay") or "").strip()
+        cited_work = str(value.get("cited_work") or "").strip()
+        if origin != "source_author" and not relay:
+            issues.append(f"attribution_relay_missing: {where} origin is {origin}, so relay must say how this source treats the claim: "
+                          f"{', '.join(ATTRIBUTION_RELAYS)}.")
+        label = ""
+        verified_name = ""
+        if origin == "cited_named":
+            if not cited_work:
+                issues.append(f"attribution_cited_work_missing: {where} is cited_named, so cited_work must be the 1-based position of its entry in source_metadata.cited_works.")
+            elif not (cited_work.isdigit() and 1 <= int(cited_work) <= len(works)):
+                issues.append(f"attribution_cited_work_invalid: {where} cited_work {cited_work!r} is not a position in source_metadata.cited_works "
+                              f"({'1..' + str(len(works)) if works else 'the list is empty'}).")
+            else:
+                referenced.add(str(int(cited_work)))
+                label = str(works[int(cited_work) - 1].get("label") or "").strip()
+                verified_name = str(works[int(cited_work) - 1].get("verified_name") or "").strip()
+        elif cited_work:
+            issues.append(f"attribution_cited_work_invalid: {where} origin is {origin}, so cited_work must be empty (it is only for cited_named).")
+        entry = {"origin": origin, "cited_work": cited_work if origin == "cited_named" else "", "relay": relay}
+        if label:
+            entry["label"] = label
+        if verified_name:
+            entry["verified_name"] = verified_name
+        compiled.append(entry)
+
+    transcript_archive = bundle.get("source_retention_mode") == TRANSCRIPT_ARCHIVE_MODE
+    for position, work in enumerate(works, start=1):
+        label = str(work.get("label") or "")
+        ids = [str(block_id) for block_id in work.get("evidence_block_ids") or []]
+        key = _attribution_key(label)
+        found = bool(key) and any(key in _attribution_key(blocks[block_id]) for block_id in ids if block_id in blocks)
+        if not found:
+            unknown = [block_id for block_id in ids if block_id not in blocks]
+            issues.append(f"cited_work_label_not_in_evidence: source_metadata.cited_works position {position} label {label!r} is not found in the text of its evidence block(s) "
+                          f"{', '.join(ids) or '(none)'}" + (f"; unknown block id(s): {', '.join(unknown)}" if unknown else "")
+                          + ". Write the name exactly as the source or caption wrote it, and cite the block that contains it.")
+        verification_issue = cited_work_verification_issue(position, work, transcript_archive=transcript_archive)
+        if verification_issue:
+            issues.append(verification_issue)
+        if str(position) not in referenced:
+            issues.append(f"cited_work_unreferenced: source_metadata.cited_works position {position} ({label!r}) is not the cited_work of any cited_named point; "
+                          "reference it or remove it.")
+
+    if all(origins):
+        all_source_author = all(origin == "source_author" for origin in origins)
+        signal_count = attribution_signal_block_count(catalog_blocks)
+        if all_source_author and signal_count:
+            if decision_value != ATTRIBUTION_DECISION:
+                issues.append(f"attribution_decision_missing: the source has {signal_count} block(s) that suggest other people's claims but every point is source_author; "
+                              f"hand in attribution_decision {{decision: \"{ATTRIBUTION_DECISION}\", reason}} saying why they are all the author's own claims, or correct the origins.")
+            elif sum(character.isalnum() for character in decision_reason) < ATTRIBUTION_DECISION_MIN_REASON_CHARS:
+                issues.append(f"attribution_decision_reason_thin: attribution_decision.reason needs at least {ATTRIBUTION_DECISION_MIN_REASON_CHARS} meaningful characters saying why every point is the source author's own claim.")
+        elif decision_given:
+            issues.append("attribution_decision_not_applicable: attribution_decision is only for a signalled source whose points are all source_author; "
+                          "remove it" + ("." if all_source_author else " (some point is not source_author)."))
+    return issues, compiled
+
+
+def attribution_effect(kp: dict, package: Path) -> dict:
+    """The completion receipt's ``attribution_effect`` (Compiler spec section 7.2)."""
+    bundle_path = package / "input_bundle.json"
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8")) if bundle_path.is_file() else {}  # a package without an accepted bundle is not a marked job
+    knowledge = [item for item in kp.get("knowledge") or [] if isinstance(item, dict)]
+    marked = bundle.get("attribution_contract") == ATTRIBUTION_CONTRACT
+    if not marked and not any(_attribution_filled(item) for item in knowledge):
+        return {"status": "not_applicable"}
+    catalog = source_block_catalog(package, version=kp.get("source_catalog_version") or None)
+    counts = {origin: 0 for origin in ATTRIBUTION_ORIGINS}
+    for item in knowledge:
+        origin = str((item.get("attribution") or {}).get("origin") or "") if isinstance(item.get("attribution"), dict) else ""
+        if origin in counts:
+            counts[origin] += 1
+    decision = kp.get("attribution_decision") if isinstance(kp.get("attribution_decision"), dict) else {}
+    works = [work for work in (kp.get("source") or {}).get("cited_works") or [] if isinstance(work, dict)]
+    verified = sum(1 for work in works if str(work.get("verified_name") or "").strip())
+    return {
+        "contract": ATTRIBUTION_CONTRACT if marked else "opted_in",
+        "signal_block_count": attribution_signal_block_count(catalog["blocks"]),
+        "cited_work_count": len((kp.get("source") or {}).get("cited_works") or []),
+        "verified_count": verified,
+        "unverified_count": len(works) - verified,
+        "origin_counts": counts,
+        "decision": str(decision.get("decision") or ""),
+    }
+
+
 def materialize_compact_plan(plan: dict, package: Path) -> dict:
     """Compile compact, source-block-bound analysis into the existing v1 KP plan."""
     plan = without_blank_prior_knowledge(plan)
@@ -917,6 +1209,7 @@ def materialize_compact_plan(plan: dict, package: Path) -> dict:
     if unknown_evidence_errors:
         raise ValueError("\n".join(unknown_evidence_errors))
 
+    attribution_issues, attribution_compiled = attribution_review(plan, bundle, blocks, catalog["blocks"])
     knowledge = []
     coverage_units = []
     claims = []
@@ -932,6 +1225,7 @@ def materialize_compact_plan(plan: dict, package: Path) -> dict:
             "confidence": item["confidence"],
             "evidence_anchor": anchor,
             **({"reusable_concept": copy.deepcopy(item["reusable_concept"])} if "reusable_concept" in item else {}),
+            **({"attribution": attribution_compiled[index - 1]} if attribution_compiled[index - 1] else {}),
         })
         claims.append({
             "id": f"C-{index:03d}",
@@ -999,6 +1293,7 @@ def materialize_compact_plan(plan: dict, package: Path) -> dict:
             "cross_links": compiled_links, "not_linked": copy.deepcopy(given.get("not_linked") or []),
         }
 
+    quote_errors.extend(attribution_issues)
     if quote_errors:
         raise ValueError("\n".join(quote_errors))
     metadata = _default_source_metadata(bundle)
@@ -1016,15 +1311,48 @@ def materialize_compact_plan(plan: dict, package: Path) -> dict:
         "relations": relations,
         "application": application,
         **({"prior_knowledge": prior_knowledge} if prior_knowledge is not None else {}),
+        **({"attribution_decision": copy.deepcopy(plan["attribution_decision"])}
+           if any(attribution_compiled) and isinstance(plan.get("attribution_decision"), dict)
+           and str(plan["attribution_decision"].get("decision") or "").strip() else {}),
         "asset_mode": ASSET_MODE_KNOWLEDGE,
         "infographics": [],
     }
+
+
+def non_compact_attribution_issues(plan: dict, bundle: dict) -> list[str]:
+    """Spec 7.2 "主張歸屬" item 1: attribution travels only in a compact plan.
+
+    Judged on the submitted format, so the v1 plan that ``materialize_compact_plan`` compiles (which already carries
+    compiled attribution) never reaches this check.  A marked knowledge_only job accepts nothing but a compact plan;
+    any other submitted plan may not carry ``attribution``, ``attribution_decision`` or ``source_metadata.cited_works``.
+    """
+    issues = []
+    if bundle.get("attribution_contract") == ATTRIBUTION_CONTRACT and bundle.get("asset_mode") == ASSET_MODE_KNOWLEDGE:
+        issues.append(f"semantic_plan_format: this job carries the {ATTRIBUTION_CONTRACT} claim-attribution contract, so hand in a compact plan "
+                      f"(schema_version \"{COMPACT_VERSION}\"); the full-format plan is not accepted for it.")
+    carried = []
+    for index, item in enumerate(plan.get("knowledge") or []):
+        if isinstance(item, dict) and item.get("attribution") not in (None, "", {}):
+            carried.append(f"knowledge[{index}].attribution")
+    if plan.get("attribution_decision") not in (None, "", {}):
+        carried.append("attribution_decision")
+    metadata = plan.get("source_metadata")
+    if isinstance(metadata, dict) and metadata.get("cited_works") not in (None, "", [], {}):
+        carried.append("source_metadata.cited_works")
+    if carried:
+        issues.append("semantic_plan_format: claim attribution can only be handed in through a compact plan "
+                      f"(schema_version \"{COMPACT_VERSION}\"); a full-format plan may not carry {', '.join(carried)}.")
+    return issues
 
 
 def build_kp(plan: dict, package: Path, *, root: Path) -> dict:
     semantic_plan_version = str(plan.get("schema_version") or "") if isinstance(plan, dict) else ""
     if semantic_plan_version == COMPACT_VERSION:
         plan = materialize_compact_plan(plan, package)
+    elif isinstance(plan, dict):
+        format_issues = non_compact_attribution_issues(plan, json.loads((package / "input_bundle.json").read_text(encoding="utf-8")))
+        if format_issues:
+            raise ValueError("\n".join(format_issues))
     plan = _with_legacy_knowledge_use_default(plan)
     bundle = json.loads((package / "input_bundle.json").read_text(encoding="utf-8"))
     errors = plan_errors_with_retrieval_aliases(plan, plan_schema(), str(bundle.get("title") or ""))
@@ -1081,6 +1409,7 @@ def build_kp(plan: dict, package: Path, *, root: Path) -> dict:
           "job_id": bundle["job_id"], "source": source,
           **{key: copy.deepcopy(plan[key]) for key in ("analysis", "coverage_units", "knowledge", "relations", "application", "infographics")},
           **({"prior_knowledge": copy.deepcopy(plan["prior_knowledge"])} if "prior_knowledge" in plan else {}),
+          **({"attribution_decision": copy.deepcopy(plan["attribution_decision"])} if "attribution_decision" in plan else {}),
           "projection": {"source_identity": source["source_identity"], "asset_mode": asset_mode}}
     normalize_knowledge_decisions(kp)
     source["asset_mode"] = asset_mode
@@ -1248,9 +1577,13 @@ def content_errors(kp: dict, package: Path, *, root: Path | None = None, strict=
             anchors = application.get("context_anchors", [])
             if application.get("compounding_insight_status") == "has_insight" and not anchors:
                 errors.append("application.context_anchors: insight needs a real existing note and quote")
+            try:
+                configured_vault = configured_vault_path(root) if root else None
+            except WorkspacePathError:
+                configured_vault = None
             for index, anchor in enumerate(anchors):
                 path = (root / anchor["path"]).resolve() if root else None
-                if not path or not path.is_relative_to((root / os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")).resolve()) or not path.is_file():
+                if not path or not configured_vault or not path.is_relative_to(configured_vault) or not path.is_file():
                     errors.append(f"application.context_anchors[{index}]: missing or outside Vault")
                 elif anchor["quote"] not in path.read_text(encoding="utf-8"):
                     errors.append(f"application.context_anchors[{index}]: quote not in note")

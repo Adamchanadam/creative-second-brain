@@ -15,7 +15,12 @@ except ModuleNotFoundError:
     from validation_manifest import build_embedded_manifest  # type: ignore
 
 try:
-    from tools.obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path  # type: ignore
+
+try:
+    from tools.obsidian_vault_adapter import attribution_reader_line, compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE
     from tools.source_identity import normalize_url as normalize_public_url
     from tools.reader_surface_guard import (
         has_reader_surface_internal_message,
@@ -24,7 +29,7 @@ try:
         reader_source_attribution_label,
     )
 except ModuleNotFoundError:
-    from obsidian_vault_adapter import compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE  # type: ignore
+    from obsidian_vault_adapter import attribution_reader_line, compounding_metadata_issues, frontmatter_fields, retained_note_body_section, TRANSCRIPT_ARCHIVE_MODE  # type: ignore
     from source_identity import normalize_url as normalize_public_url  # type: ignore
     from reader_surface_guard import (  # type: ignore
         has_reader_surface_internal_message,
@@ -35,11 +40,21 @@ except ModuleNotFoundError:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VAULT = REPO_ROOT / os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "outputs" / "outcome_pages"
-DEFAULT_VAULT_OUTPUT_DIR = DEFAULT_VAULT / "outcome-pages"
-DEFAULT_PORTAL = DEFAULT_VAULT / "成果頁總覽.md"
 DEFAULT_INDEX_PAGE_SIZE = 20
+
+
+def default_vault(root: Path = REPO_ROOT) -> Path:
+    """The configured vault of ``root``; resolved when used, never at import."""
+    return configured_vault_path(root)
+
+
+def default_vault_output_dir(root: Path = REPO_ROOT) -> Path:
+    return default_vault(root) / "outcome-pages"
+
+
+def default_portal(root: Path = REPO_ROOT) -> Path:
+    return default_vault(root) / "成果頁總覽.md"
 
 
 def main() -> int:
@@ -50,15 +65,25 @@ def main() -> int:
         "--incremental-source-id",
         help="Regenerate one source outcome page, then incrementally rebuild the index without regenerating historical outcome pages.",
     )
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--index", action="store_true", help="Generate outcome pages, an HTML index, and the Obsidian portal.")
     parser.add_argument("--refresh-index", action="store_true", help="Refresh the catalogue and thinking readers without rewriting existing source outcome pages.")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_VAULT_OUTPUT_DIR)
-    parser.add_argument("--portal", type=Path, default=DEFAULT_PORTAL)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--portal", type=Path, default=None)
     parser.add_argument("--page-size", type=int, default=DEFAULT_INDEX_PAGE_SIZE)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    try:
+        bind_process_vault(args.root)
+        if args.vault is None:
+            args.vault = default_vault(args.root)
+        if args.output_dir is None:
+            args.output_dir = default_vault_output_dir(args.root)
+        if args.portal is None:
+            args.portal = default_portal(args.root)
+    except WorkspacePathError as exc:
+        parser.error(str(exc))
 
     if args.refresh_index and (args.index or args.incremental_source_id or args.source_id or args.output):
         parser.error("--refresh-index cannot be combined with source generation options")
@@ -135,13 +160,15 @@ def generate_outcome_index(
     *,
     source_ids: list[str],
     vault: Path,
-    output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
-    portal: Path = DEFAULT_PORTAL,
+    output_dir: Path | None = None,
+    portal: Path | None = None,
     page_size: int = DEFAULT_INDEX_PAGE_SIZE,
     root: Path = REPO_ROOT,
 ) -> dict[str, object]:
     if page_size < 1:
         raise ValueError("page_size must be greater than 0")
+    output_dir = output_dir if output_dir is not None else default_vault_output_dir(root)
+    portal = portal if portal is not None else default_portal(root)
     vault = vault.resolve()
     output_dir = output_dir.resolve()
     portal = portal.resolve()
@@ -197,8 +224,8 @@ def generate_incremental_outcome(
     *,
     source_id: str,
     vault: Path,
-    output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
-    portal: Path = DEFAULT_PORTAL,
+    output_dir: Path | None = None,
+    portal: Path | None = None,
     page_size: int = DEFAULT_INDEX_PAGE_SIZE,
     root: Path = REPO_ROOT,
 ) -> dict[str, object]:
@@ -212,6 +239,8 @@ def generate_incremental_outcome(
     """
     if page_size < 1:
         raise ValueError("page_size must be greater than 0")
+    output_dir = output_dir if output_dir is not None else default_vault_output_dir(root)
+    portal = portal if portal is not None else default_portal(root)
     vault = vault.resolve()
     output_dir = output_dir.resolve()
     portal = portal.resolve()
@@ -283,13 +312,15 @@ def paused_nebula(value: object) -> dict[str, object] | None:
     return value if isinstance(value, dict) and value.get("status") == "paused" else None
 
 
-def refresh_outcome_index(*, vault: Path, output_dir: Path = DEFAULT_VAULT_OUTPUT_DIR,
-                          portal: Path = DEFAULT_PORTAL,
+def refresh_outcome_index(*, vault: Path, output_dir: Path | None = None,
+                          portal: Path | None = None,
                            page_size: int = DEFAULT_INDEX_PAGE_SIZE,
                            defer_nebula: bool = False) -> dict[str, object]:
     """Read existing source outcomes; only write catalogues, portal and thinking readers."""
     if page_size < 1:
         raise ValueError("page_size must be greater than 0")
+    output_dir = output_dir if output_dir is not None else default_vault_output_dir()
+    portal = portal if portal is not None else default_portal()
     vault, output_dir, portal = vault.resolve(), output_dir.resolve(), portal.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     portal.parent.mkdir(parents=True, exist_ok=True)
@@ -1658,7 +1689,7 @@ def render_html(
     <h2>🧠 知識點</h2>
     {case_method_learning_block(source_fields, method_verification)}
     <div class="kp-list">
-      {knowledge_point_cards(knowledge_points)}
+      {knowledge_point_cards(knowledge_points, transcript_archive=str(source_fields.get("source_retention_mode") or "") == TRANSCRIPT_ARCHIVE_MODE)}
     </div>
   </section>
 
@@ -1965,8 +1996,27 @@ def escape(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+CODE_BLOCK_OPEN = '<pre class="note-code"><code>'
+CODE_BLOCK_CLOSE = "</code></pre>"
+
+
 def strip_trailing_whitespace(text: str) -> str:
-    return "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
+    """Drop trailing whitespace from page lines, except lines that end inside a code block.
+
+    Code blocks carry note text verbatim (including the retained original source), so a
+    trailing space there is content, not layout.  Pages without code blocks are unchanged.
+    """
+    lines, inside = [], False
+    for line in text.splitlines():
+        position = 0
+        while True:
+            marker = CODE_BLOCK_CLOSE if inside else CODE_BLOCK_OPEN
+            found = line.find(marker, position)
+            if found < 0:
+                break
+            inside, position = not inside, found + len(marker)
+        lines.append(line if inside else line.rstrip())
+    return "\n".join(lines) + "\n"
 
 
 def infographic_gallery(asset_srcs: list[str], title: str, asset_mode: str = "formal_infographic") -> str:
@@ -2616,7 +2666,7 @@ def meaningful_category_text(text: str) -> bool:
     return not any(fragment in text for fragment in internal_status_fragments)
 
 
-def knowledge_point_cards(points: list[dict[str, object]]) -> str:
+def knowledge_point_cards(points: list[dict[str, object]], *, transcript_archive: bool = False) -> str:
     if not points:
         return '<p class="small">未記錄。</p>'
     cards = []
@@ -2634,10 +2684,15 @@ def knowledge_point_cards(points: list[dict[str, object]]) -> str:
             anchor_text = web_markdown_reader_text(str(anchor))
             if normalized_anchor:
                 seen_anchors.add(normalized_anchor)
+        attribution_line = attribution_reader_line(
+            point.get("attribution_origin"), point.get("attribution_label"), point.get("attribution_relay"),
+            transcript_archive=transcript_archive, verified_name=point.get("attribution_verified_name"),
+        )
         cards.append(
             f'<div class="panel kp" id="{escape(kp_fragment_id(kp_id))}">'
             f"<h3>{escape(title)}</h3>"
             f'<p class="small kp-meta"><span>{escape(kind)}</span><span>信心 {escape(confidence)}</span></p>'
+            + (f'<p class="small kp-attribution">{escape(attribution_line)}</p>' if attribution_line else "")
             + (
                 '<details class="kp-evidence">'
                 '<summary>查看原文依據</summary>'

@@ -15,6 +15,7 @@ from pathlib import Path
 from uuid import uuid4
 
 try:
+    from .workspace_paths import bind_process_vault, configured_vault_path
     from .obsidian_vault_adapter import retained_note_body_offsets
     from .knowledge_direction import established_tensions, source_ids_in_paths
     from .knowledge_material_selector import select_materials
@@ -22,6 +23,7 @@ try:
     from .source_identity import normalize_url
     from . import thought_analysis as thinking
 except ImportError:
+    from workspace_paths import bind_process_vault, configured_vault_path
     from obsidian_vault_adapter import retained_note_body_offsets
     from knowledge_direction import established_tensions, source_ids_in_paths
     from knowledge_material_selector import select_materials
@@ -318,7 +320,7 @@ def review_answer(packet: dict, answer: dict, review: dict | None = None) -> dic
     if "analysis" in answer:
         if web and not answer.get("web_reason"):
             raise ValueError("explain why web search followed local retrieval")
-        thinking.validate_analysis(answer["analysis"], lookup)
+        thinking.validate_analysis(answer["analysis"], lookup, new_answer=True)
         if review is not None:
             thinking.validate_review(packet, answer, review)
         return {**answer, "schema_version": SCHEMA, "status": "complete" if review else "review_required",
@@ -388,7 +390,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="問我的第二大腦：供當前 AI 執行的本地優先問答流程")
     parser.add_argument("action", choices=("prepare", "answer", "intake-handoff"))
     parser.add_argument("--question")
-    parser.add_argument("--vault", type=Path, default=ROOT / os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault"))
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to this workspace's configured vault")
     parser.add_argument("--packet", type=Path)
     parser.add_argument("--answer", type=Path)
     parser.add_argument("--review", type=Path, help="Substantive semantic review bound to the answer/evidence hash")
@@ -402,6 +404,9 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs/ask_second_brain")
     args = parser.parse_args()
     try:
+        bind_process_vault(ROOT)
+        if args.vault is None:
+            args.vault = configured_vault_path(ROOT)
         out = inside(ROOT, args.output_dir)
         if args.action == "prepare":
             clean_expansions, decision = cli_expansion_decision(

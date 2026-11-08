@@ -15,7 +15,7 @@ HOME_ALIAS_RELATIVE = "workspace/assets/guide/command-aliases.json"
 
 
 def compiled_home_alias_metadata(root: Path) -> bytes:
-    """Compile the one legacy home alias from the canonical command registry."""
+    """Compile the home-page hint shown under the think card from the command registry (`ask` entry)."""
     try:
         registry = json.loads((root / "spec" / "command-registry.json").read_text(encoding="utf-8"))
         alias = registry["commands"]["ask"]

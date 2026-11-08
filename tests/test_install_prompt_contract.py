@@ -5,9 +5,12 @@ import argparse
 import html
 import json
 import re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from command_rules import command_role, entry_kind, is_menu_command  # noqa: E402
 
 
 def text(path: Path) -> str:
@@ -29,7 +32,7 @@ def main() -> None:
 
     registry = json.loads(text(ROOT / "spec" / "command-registry.json"))["commands"]
     canonical = [name for name, entry in sorted(registry.items(), key=lambda item: item[1].get("menu_order", 999))
-                 if "menu_order" in entry and not entry.get("alias_for")]
+                 if "menu_order" in entry and is_menu_command(entry)]
     assert canonical == ["guide", "url", "text", "image", "think", "create", "grow", "research", "resume", "check", "fix", "tidy", "nebula", "update", "infographic"]
     rendered = re.findall(r'<textarea id="daily-([^\"]+)"[^>]*>(.*?)</textarea>', guide, flags=re.DOTALL)
     assert [name for name, _ in rendered] == canonical
@@ -37,7 +40,7 @@ def main() -> None:
     for name in canonical:
         assert f"$brain-{name}" in prompt
     assert "教學頁列出的 `$brain-*` 入口" in first_use
-    assert registry["ask"].get("alias_for") == "think"
+    assert entry_kind(registry["ask"]) == "read_only_query" and command_role(registry["ask"]) == "canonical" and "alias_for" not in registry["ask"]
     update_tool = delivery / "creative-second-brain" / "runtime" / "workspace" / "tools" / "brain_update.py"
     assert update_tool.is_file()
     for document in (prompt, first_use):
@@ -64,6 +67,12 @@ def main() -> None:
         assert phrase in prompt and phrase in guide
     assert "node node_modules/playwright/cli.js install chromium" in prompt
     assert "node node_modules/playwright/cli.js install chromium" in first_use
+    # the optional, consent-gated global read-only entry step (same facts in both documents)
+    for document in (prompt, first_use):
+        assert "要不要在其他專案也可以只讀查詢這個知識庫？" in document
+        assert "tools/global_entry.py install" in document and "global_entry.py remove" in document
+        assert "未經" in document and "明確同意" in document and "不改任何 AI 設定檔" in document
+        assert "相容別名" not in document
     print(json.dumps({"status": "passed", "coverage": ["four locked Python requirements including timezone data", "VTT-only policy", "package-location fail-closed prompt", "ImageGen missing exact label", "registry and generated 14-command parity"]}, ensure_ascii=False))
 
 

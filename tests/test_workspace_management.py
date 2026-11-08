@@ -204,7 +204,11 @@ def main() -> int:
     newer_version = ".".join(version_parts[:2] + [str(int(version_parts[2]) + 1)])
     assert {p.name for p in (fresh / ".agents" / "skills").iterdir() if p.is_dir()} == ENTRIES
     for entry in ENTRIES:
-        assert "tools/brain.py" in (fresh / ".agents" / "skills" / entry / "SKILL.md").read_text(encoding="utf-8")
+        skill_text = (fresh / ".agents" / "skills" / entry / "SKILL.md").read_text(encoding="utf-8")
+        if entry == "brain-ask":  # the read-only entry runs tools/brain_lookup.py and never routes through brain.py
+            assert "tools/brain_lookup.py" in skill_text and "tools/brain.py" not in skill_text
+        else:
+            assert "tools/brain.py" in skill_text
     home = (fresh / "index.html").read_text(encoding="utf-8")
     assert "$creative-second-brain" not in home and all("$" + entry in home for entry in ENTRIES)
     assert f"目前使用：創造型第二大腦 v{marker['package_version']}" in home and "介面 v1.0.0" not in home

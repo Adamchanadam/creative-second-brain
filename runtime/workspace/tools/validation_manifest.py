@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, bind_process_vault  # type: ignore
+
 
 MANIFEST_SCHEMA_VERSION = "0.2"
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -524,6 +529,12 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    try:
+        bind_process_vault(args.root)
+    except WorkspacePathError as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False, indent=2) if args.json
+              else f"status: blocked\nreason: {exc}")
+        return 1
     if args.list:
         result: dict[str, Any] = {
             "status": "ready",

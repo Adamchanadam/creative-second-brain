@@ -15,7 +15,7 @@ PROFILES = json.loads((ROOT / "profiles" / "profiles.json").read_text(encoding="
 PACKAGE_SCRIPTS = {
     "brain.py", "package_paths.py", "check_environment.py", "install_skill.py",
     "render_workspace_home.py", "render_install_guide.py", "setup_workspace.py", "manage_workspace.py", "sync_shared_surface.py", "verify_package.py", "verify_delivery.py", "delivery_contract.py",
-    "package_inventory.py",
+    "package_inventory.py", "command_rules.py",
 }
 
 

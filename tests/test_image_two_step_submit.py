@@ -38,7 +38,7 @@ class ImageTwoStepSubmitTests(unittest.TestCase):
 
     @staticmethod
     def semantic(version: str) -> dict:
-        return {"schema_version": contract.COMPACT_VERSION, "source_catalog_version": version, "summary": ["Fixture."], "knowledge": [{"title": "Fixture fact", "claim": "Fixture fact.", "layer": "原文主張", "confidence": "高", "evidence_block_ids": ["IMG-001"], "reusable_concept": {"status": "not_reusable", "reason": "Fixture."}}], "application": {"knowledge_use": "學習材料"}}
+        return {"schema_version": contract.COMPACT_VERSION, "source_catalog_version": version, "summary": ["Fixture."], "knowledge": [{"title": "Fixture fact", "claim": "Fixture fact.", "layer": "原文主張", "confidence": "高", "evidence_block_ids": ["IMG-001"], "reusable_concept": {"status": "not_reusable", "reason": "Fixture."}, "attribution": {"origin": "source_author", "cited_work": "", "relay": ""}}], "application": {"knowledge_use": "學習材料"}}
 
     def test_analysis_creates_a_separate_semantic_work_order(self) -> None:
         initial = self.start("IMG-TWO")

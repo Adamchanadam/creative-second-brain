@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
@@ -19,9 +20,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    from tools.workspace_paths import WorkspacePathError, managed_vault_path, vault_path, vault_relative_path
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path, managed_vault_path, vault_path, vault_relative_path
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, managed_vault_path, vault_path, vault_relative_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path, managed_vault_path, vault_path, vault_relative_path  # type: ignore
 
 try:
     from tools.reader_surface_guard import (
@@ -111,7 +112,6 @@ except ModuleNotFoundError:
 
 
 DEFAULT_SLICE = Path("inputs/source.md")
-DEFAULT_VAULT = vault_relative_path()
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INFOGRAPHIC_SPEC_PATH = REPO_ROOT / "docs" / "資訊圖生成規格.md"
 INDEX_FIELD_MARKERS = (
@@ -239,6 +239,49 @@ PNG_GENERATION_FORBIDDEN_MARKERS = (
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
+# Claim attribution (Compiler spec section 7.2 "主張歸屬"): the word lists the projections share.
+ATTRIBUTION_ORIGINS = ("source_author", "cited_named", "cited_unnamed", "unclear")
+ATTRIBUTION_RELAY_READER_WORDS = {
+    "restates": "照述", "interprets": "解讀及串連", "illustrates": "用例子說明", "extends": "延伸或回應",
+}
+ATTRIBUTION_UNNAMED_LABEL = "來源提及但未點名的作品或人物"
+ATTRIBUTION_UNCLEAR_LABEL = "來源未分清是誰的主張"
+ATTRIBUTION_UNVERIFIED_SUFFIX = "（照字幕所聞，未核實）"
+
+
+def _attribution_name_key(value: str) -> str:
+    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", value))
+
+
+def attribution_reader_line(origin: object, label: object, relay: object, *, transcript_archive: bool = False,
+                            verified_name: object = "") -> str:
+    """The one reader sentence under a point whose claim is not the source's own; empty for source_author or no attribution.
+
+    A verified name is shown in place of the source's wording (which is kept beside it when it differs);
+    only an unverified caption name carries the "heard from the caption" suffix.
+    """
+    origin_text = str(origin or "")
+    if origin_text == "cited_named":
+        name = str(label or "").strip()
+        if not name:
+            return ""
+        verified = str(verified_name or "").strip()
+        if verified:
+            shown = verified
+            if _attribution_name_key(verified) != _attribution_name_key(name):
+                shown += f"（字幕作「{name}」）" if transcript_archive else f"（原文作「{name}」）"
+        else:
+            shown = name + (ATTRIBUTION_UNVERIFIED_SUFFIX if transcript_archive else "")
+    elif origin_text == "cited_unnamed":
+        shown = ATTRIBUTION_UNNAMED_LABEL
+    elif origin_text == "unclear":
+        shown = ATTRIBUTION_UNCLEAR_LABEL
+    else:
+        return ""
+    treatment = ATTRIBUTION_RELAY_READER_WORDS.get(str(relay or ""), "")
+    return f"主張來源：{shown}" + (f"｜這段內容：{treatment}" if treatment else "")
+
+
 @dataclass(frozen=True)
 class KnowledgePoint:
     kp_id: str
@@ -251,6 +294,20 @@ class KnowledgePoint:
     reusable_concept_name: str = ""
     reusable_concept_reason: str = ""
     understanding_delta: str = ""
+    attribution_origin: str = ""
+    attribution_cited_work: str = ""
+    attribution_label: str = ""
+    attribution_relay: str = ""
+    attribution_verified_name: str = ""
+
+
+def knowledge_point_attribution(kp: "KnowledgePoint") -> dict[str, str]:
+    """The point's attribution object as the Knowledge Package and the registry carry it; empty when none was handed in."""
+    if not kp.attribution_origin:
+        return {}
+    return {"origin": kp.attribution_origin, "cited_work": kp.attribution_cited_work, "relay": kp.attribution_relay,
+            **({"label": kp.attribution_label} if kp.attribution_label else {}),
+            **({"verified_name": kp.attribution_verified_name} if kp.attribution_verified_name else {})}
 
 
 @dataclass(frozen=True)
@@ -357,7 +414,7 @@ class AdapterStop(Exception):
 def main() -> int:
     parser = argparse.ArgumentParser(description="Write a URL slice into the Obsidian vault.")
     parser.add_argument("--source-slice", type=Path, default=DEFAULT_SLICE)
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--max-kp", type=int, default=3)
     parser.add_argument("--write", action="store_true", help="Write files. Without this, only plan.")
     parser.add_argument("--verify", action="store_true", help="Verify existing or newly written files.")
@@ -377,6 +434,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        try:
+            bind_process_vault(Path.cwd().resolve())
+        except WorkspacePathError as exc:
+            raise AdapterStop("blocked", str(exc)) from exc
         return run(args)
     except AdapterStop as exc:
         result = failure_result(args, exc)
@@ -389,7 +450,11 @@ def main() -> int:
 
 def run(args: argparse.Namespace) -> int:
     root = Path.cwd().resolve()
-    vault = resolve_inside(root, args.vault)
+    try:
+        selected_vault = args.vault if args.vault is not None else configured_vault_relative_path(root)
+    except WorkspacePathError as exc:
+        raise AdapterStop("blocked", str(exc)) from exc
+    vault = resolve_inside(root, selected_vault)
     if args.vault_health:
         result = vault_health_report(root, vault)
         if args.json:
@@ -1015,10 +1080,16 @@ def parse_kp_rows(text: str) -> list[KnowledgePoint]:
                 raise AdapterStop("blocked", "invalid reusable concept decision")
             if concept.get("status") == "reusable" and (not concept.get("name") or not concept.get("reason")):
                 raise AdapterStop("blocked", "reusable concept lacks analysed name/reason")
+            attribution = item.get("attribution", {})
+            if not isinstance(attribution, dict) or (attribution and attribution.get("origin") not in ATTRIBUTION_ORIGINS):
+                raise AdapterStop("blocked", "invalid knowledge attribution")
             points.append(KnowledgePoint(cells[0], cells[1], cells[2], cells[3], cells[4],
                 str(item.get("title") or ""), str(concept.get("status") or "needs_review"),
                 str(concept.get("name") or ""), str(concept.get("reason") or ""),
-                str(concept.get("understanding_delta") or "")))
+                str(concept.get("understanding_delta") or ""),
+                str(attribution.get("origin") or ""), str(attribution.get("cited_work") or ""),
+                str(attribution.get("label") or ""), str(attribution.get("relay") or ""),
+                str(attribution.get("verified_name") or "")))
     if set(by_id) - {point.kp_id for point in points}:
         raise AdapterStop("blocked", "knowledge semantics references an unwritten point")
     return points
@@ -2334,6 +2405,7 @@ def build_plan(root: Path, vault: Path, source_slice: Path, data: SliceData) -> 
             source_note,
             duplicate_of_by_kp.get(kp.kp_id, ""),
             relations_by_source.get(kp.kp_id, []),
+            transcript_archive=data.source_retention_mode == TRANSCRIPT_ARCHIVE_MODE,
         )
         for kp in data.knowledge_points
     ]
@@ -4191,6 +4263,8 @@ def render_kp_note(
     source_note: Path,
     duplicate_of: str,
     outgoing_relations: list[KnowledgeRelation],
+    *,
+    transcript_archive: bool = False,
 ) -> str:
     source_record = source_note.stem
     related_records = [relation.target_kp_id for relation in outgoing_relations]
@@ -4205,6 +4279,9 @@ def render_kp_note(
         "reusable_concept_status": kp.reusable_concept_status,
         "reusable_concept_name": kp.reusable_concept_name,
         "reusable_concept_reason": kp.reusable_concept_reason,
+        **({"attribution_origin": kp.attribution_origin, "attribution_label": kp.attribution_label,
+            "attribution_relay": kp.attribution_relay} if kp.attribution_origin else {}),
+        **({"attribution_verified_name": kp.attribution_verified_name} if kp.attribution_verified_name else {}),
         "definition": kp.text,
         "knowledge_type": kp.kind,
         "source_note": source_record,
@@ -4221,6 +4298,8 @@ def render_kp_note(
         f"- {relation.relation}: `{relation.target_kp_id}` ({relation.confidence}; {relation.evidence})"
         for relation in outgoing_relations
     ) or "- 暫無已登記關係。"
+    attribution_line = attribution_reader_line(kp.attribution_origin, kp.attribution_label, kp.attribution_relay,
+                                               transcript_archive=transcript_archive, verified_name=kp.attribution_verified_name)
     return (
         render_frontmatter(frontmatter)
         + f"# {kp.kp_id} — {kp.text}\n\n"
@@ -4229,6 +4308,7 @@ def render_kp_note(
         + f"- Confidence: {kp.confidence}\n\n"
         + "## Definition\n\n"
         + kp.text
+        + (("\n\n" + attribution_line) if attribution_line else "")
         + "\n\n## Registered Relations\n\n"
         + relation_lines
         + "\n"
@@ -6340,6 +6420,8 @@ def write_knowledge_point_registry(plan: dict[str, object], *, render_only: bool
             "status": row_status,
             "updated": str(date.today()),
         }
+        if kp.attribution_origin:
+            existing[uid]["attribution"] = knowledge_point_attribution(kp)
         if kp.understanding_delta:
             existing[uid].update(
                 concept_name=kp.reusable_concept_name,

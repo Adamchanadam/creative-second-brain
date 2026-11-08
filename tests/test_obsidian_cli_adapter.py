@@ -136,6 +136,8 @@ def main() -> None:
         generated = setup_workspace.skill_entry_payloads("public-portable")
         skill_files = [content.decode("utf-8") for path, content in generated.items() if path.endswith("SKILL.md") and not path.endswith("brain-ask/SKILL.md")]
         assert len(skill_files) == 15
+        ask_entry = generated[".agents/skills/brain-ask/SKILL.md"].decode("utf-8")
+        assert "tools/brain_lookup.py" in ask_entry and "tools/brain.py obsidian" not in ask_entry  # read-only lookup entry, no Obsidian route
         assert all("tools/brain.py obsidian" in content and "Graph 保留原生 UI 手動入口" in content for content in skill_files)
     print(json.dumps({"status": "passed", "coverage": ["explicit vault ID and info=path verification", "read search open check only", "wrong vault, missing CLI, timeout, error and empty output", "traversal, link and injection rejection", "no writes and brain/setup consumer chain"]}, ensure_ascii=False))
 

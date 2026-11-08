@@ -764,6 +764,7 @@ CONTENT_REVISION_SEMANTIC_FIELDS = (
     'prior_knowledge',
     'application',
     'coverage_units',
+    'attribution_decision',
 )
 PRIMARY_WORK_TABLE_PREFIXES = (
     '| 主要作品判定 |',
@@ -969,10 +970,13 @@ def prepare_content_revision(root, kp_path, plan_path, *, authorization, reason)
     replacement_source = replacement.get('source') if isinstance(replacement.get('source'), dict) else {}
     source_metadata = plan.get('source_metadata') if isinstance(plan.get('source_metadata'), dict) else {}
     primary_fields = {'primary_work_status', 'primary_work_title', 'primary_work_evidence'}
+    # cited_works is the claim-attribution list the revised points point into (Compiler spec section 7.2 "主張歸屬").
     changed_non_primary = [
-        key for key in source_metadata if key not in primary_fields
+        key for key in source_metadata if key not in primary_fields and key != 'cited_works'
         and replacement_source.get(key) != before_source.get(key)
     ]
+    if 'cited_works' in source_metadata:
+        before_source['cited_works'] = copy.deepcopy(replacement_source.get('cited_works') or [])
     if changed_non_primary:
         raise ValueError('content revision cannot change source metadata: ' + ', '.join(sorted(changed_non_primary)))
     requested_primary = primary_fields & set(source_metadata)
@@ -1645,7 +1649,7 @@ def _derive_infographic_recovery(root, child_kp_path, evidence_transactions):
     except (ValueError, UnicodeDecodeError) as exc:
         raise ValueError('the picture overlay cannot be derived: ' + str(exc)) from exc
     child_adapter = child.get('adapter') or {}
-    vault_prefix = worker.vault_relative_posix() + '/'
+    vault_prefix = worker.configured_vault_relative_posix(root) + '/'
     assets = [str(value) for value in child_adapter.get('assets') or []]
     if not assets or any(not value.startswith(vault_prefix + 'assets/') or not value.lower().endswith('.png') for value in assets):
         raise ValueError('the child receipt lists no formal infographic images')

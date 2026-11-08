@@ -108,8 +108,9 @@ def main() -> int:
         assert metadata.is_file() and json.dumps(CONTRACT_PROMPTS[key], ensure_ascii=False) in content, skill
         assert "display_name: " + json.dumps(expected_title, ensure_ascii=False) in content, skill
         assert "display_name: " + json.dumps(registry[key]["home_title"], ensure_ascii=False) not in content, skill
-    alias = (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
-    assert "舊名相容" in alias and "brain-think" in alias
+    alias_skill = (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
+    assert "tools/brain_lookup.py" in alias_skill and "answer_rules" in alias_skill and "舊名相容" not in alias_skill
+    assert "$brain-think <問題>" in alias_skill and "/brain-think <問題>" in alias_skill
 
     print(json.dumps({"status": "passed", "coverage": [
         "15 fixed public entry prompts", "package guide fields", "installed workspace fields",

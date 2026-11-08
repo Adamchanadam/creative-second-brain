@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.workspace_paths import WorkspacePathError, vault_relative_path
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, vault_relative_path
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, vault_relative_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, vault_relative_path  # type: ignore
 
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[1]
@@ -324,6 +324,15 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
+    try:
+        bind_process_vault(DEFAULT_ROOT)
+    except WorkspacePathError as exc:
+        if args.json:
+            print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False, indent=2))
+        else:
+            print("status: blocked")
+            print(f"reason: {exc}")
+        return 2
     plan = build_qc_plan(
         source_kind=args.source_kind,
         profile=args.profile,

@@ -12,7 +12,7 @@ SCHEMA = "creative_second_brain_profile_build_v1"
 REQUIRED = {"SKILL.md", "index.html", "install-prompt.txt", "references/first-use.md",
             "scripts/install_skill.py", "scripts/verify_package.py", "scripts/verify_delivery.py", "scripts/delivery_contract.py", "scripts/check_environment.py",
             "scripts/setup_workspace.py", "scripts/manage_workspace.py", "scripts/sync_shared_surface.py", "scripts/package_paths.py", "scripts/brain.py",
-            "scripts/package_inventory.py",
+            "scripts/package_inventory.py", "scripts/command_rules.py",
             "scripts/render_workspace_home.py", "scripts/render_install_guide.py",
             "assets/install-guide-template.html", "profiles/profiles.json", "spec/command-registry.json",
             "spec/ownership.md", "spec/package-inventory.json", "spec/update-source.json", "runtime/snapshot-provenance.json", "runtime/workspace/requirements.txt"}

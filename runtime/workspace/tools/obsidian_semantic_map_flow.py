@@ -51,9 +51,12 @@ try:
 except ModuleNotFoundError:
     from tools.graph_preset import graph_settings_status  # type: ignore
 
+try:
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_posix
+except ModuleNotFoundError:
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_posix  # type: ignore
 
-DEFAULT_VAULT = Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault"))
-DEFAULT_MAP_ROOT = DEFAULT_VAULT / "maps"
+
 TOOL_PATH = "tools/obsidian_semantic_map_flow.py"
 NOTE_LINK_RE = re.compile(r"(?<!!)\[\[([^\]#|]+)(?:[#|][^\]]*)?\]\]")
 MACHINE_ID_LINK_RE = re.compile(r"(?<!!)\[\[((?:KP-|KS-|APP-|SRC-|REL-)[^\]#|]+)(?:[#|][^\]]*)?\]\]")
@@ -92,14 +95,18 @@ class IdeaBridgeNote:
     curation_note: str = ""
 
 
-GRAPH_ITEMS = (
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "sources/", "knowledge_source_layer", "原始來源與來源稽核", "由目錄索引讀起，不逐檔放入 graph"),
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "applications/", "application_layer", "採納、應用與個人化判斷", "用來連接知識與實際使用"),
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "knowledge-points/", "knowledge_point_record_layer", "知識點記錄層", "作查證記錄，不用機器 ID wikilink 進 graph"),
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "concepts/", "concept_layer", "語義概念層", "Obsidian graph 主視圖"),
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "maps/", "map_layer", "人用入口地圖", "由總索引和分層 map 進入"),
-    InventoryItem(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "outcome-pages/", "presentation_layer", "成果頁呈現層", "作呈現出口，不逐頁入 graph"),
-)
+def graph_items(root: Path | None = None) -> tuple[InventoryItem, ...]:
+    name = vault_name(root)
+    return (
+        InventoryItem(name + "sources/", "knowledge_source_layer", "原始來源與來源稽核", "由目錄索引讀起，不逐檔放入 graph"),
+        InventoryItem(name + "applications/", "application_layer", "採納、應用與個人化判斷", "用來連接知識與實際使用"),
+        InventoryItem(name + "knowledge-points/", "knowledge_point_record_layer", "知識點記錄層", "作查證記錄，不用機器 ID wikilink 進 graph"),
+        InventoryItem(name + "concepts/", "concept_layer", "語義概念層", "Obsidian graph 主視圖"),
+        InventoryItem(name + "maps/", "map_layer", "人用入口地圖", "由總索引和分層 map 進入"),
+        InventoryItem(name + "outcome-pages/", "presentation_layer", "成果頁呈現層", "作呈現出口，不逐頁入 graph"),
+    )
+
+
 GRAPH_EXCLUDED_ITEMS = (
     InventoryItem("AGENTS.md", "graph_excluded_workflow", "Agent 操作規則", "不進 Obsidian graph"),
     InventoryItem("dev/", "graph_excluded_workflow", "Agent 接力、規則包、索引、驗收與遷移資料", "不進 Obsidian graph"),
@@ -142,10 +149,15 @@ SCAN_EXCLUDED_DIR_NAMES = {
 SCAN_EXCLUDED_PREFIXES = ("validation_manifest_",)
 
 
+def vault_name(root: Path | None = None) -> str:
+    """The configured vault folder name, resolved when used; ``root`` defaults to the working directory this tool treats as its workspace."""
+    return configured_vault_relative_posix(Path.cwd() if root is None else root)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate and verify Obsidian semantic map drafts.")
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
-    parser.add_argument("--map-root", type=Path, default=DEFAULT_MAP_ROOT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
+    parser.add_argument("--map-root", type=Path, default=None, help="map folder; defaults to maps/ inside the configured vault")
     parser.add_argument("--updated-date", default="", help="YYYY-MM-DD. Defaults to existing map date, then today.")
     parser.add_argument("--write", action="store_true", help="Write generated map notes and idea bridge notes.")
     parser.add_argument("--write-missing-concepts", action="store_true", help="Write only missing concept notes. Existing concept notes are left untouched.")
@@ -158,8 +170,13 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
-    vault = resolve_inside(root, args.vault)
-    map_root = resolve_inside(root, args.map_root)
+    try:
+        bind_process_vault(root)
+        configured_vault = Path(vault_name(root))
+    except WorkspacePathError as exc:
+        raise SystemExit(str(exc)) from exc
+    vault = resolve_inside(root, args.vault if args.vault is not None else configured_vault)
+    map_root = resolve_inside(root, args.map_root if args.map_root is not None else configured_vault / "maps")
     updated = args.updated_date or existing_updated_date(map_root) or date.today().isoformat()
 
     concept_write_result: dict[str, object] = {"enabled": False, "written_count": 0, "written_files": [], "pruned_count": 0, "pruned_files": []}
@@ -252,7 +269,7 @@ def existing_updated_date(map_root: Path) -> str:
 
 def build_inventory(root: Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for item in (*GRAPH_ITEMS, *GRAPH_EXCLUDED_ITEMS):
+    for item in (*graph_items(root), *GRAPH_EXCLUDED_ITEMS):
         target = root / item.path.rstrip("/")
         row: dict[str, object] = {
             "path": item.path,
@@ -343,7 +360,7 @@ def build_graph_exclusions_and_gaps(root: Path, vault: Path) -> list[dict[str, o
     rows.append(
         {
             "type": "known_gap",
-            "path": os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "concepts/",
+            "path": vault_name(root) + "concepts/",
             "reason": "knowledge-point registry 未全部投影到 concept notes",
             "missing_count": len(missing_concepts),
             "examples": missing_concepts[:10],
@@ -352,7 +369,7 @@ def build_graph_exclusions_and_gaps(root: Path, vault: Path) -> list[dict[str, o
     rows.append(
         {
             "type": "known_gap",
-            "path": os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "concepts/",
+            "path": vault_name(root) + "concepts/",
             "reason": "首批 idea bridge 已落地，但 graph health 仍顯示多個 source-local 小團；下一批應按 orphan、過小 component、缺 hub / tension / taste signal 的主題繼續整理，不應把首批 MVP 說成已完成知識網",
         }
     )
@@ -589,7 +606,7 @@ def directory_items() -> tuple[DirectoryItem, ...]:
     return (
         DirectoryItem(
             "目錄索引 - knowledge-base-vault",
-            os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "",
+            vault_name() + "",
             "knowledge_vault",
             "`筆記庫/` 是 2nd Brain 的 Obsidian vault 內容位置。",
             (
@@ -609,7 +626,7 @@ def directory_items() -> tuple[DirectoryItem, ...]:
         ),
         DirectoryItem(
             "目錄索引 - sources 原始來源層",
-            os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "sources/",
+            vault_name() + "sources/",
             "knowledge_source_layer",
             "`sources/` 保存原始來源筆記、來源稽核、擷取內容與資訊圖鎖定稿。",
             ("File Index", "知識點 - 知識庫語義索引", "目錄索引 - knowledge-base-vault"),
@@ -617,7 +634,7 @@ def directory_items() -> tuple[DirectoryItem, ...]:
         ),
         DirectoryItem(
             "目錄索引 - applications 採納應用層",
-            os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "applications/",
+            vault_name() + "applications/",
             "application_layer",
             "`applications/` 保存採納、應用、個人化與後續行動判斷。",
             ("File Index", "目錄索引 - knowledge-base-vault"),
@@ -625,7 +642,7 @@ def directory_items() -> tuple[DirectoryItem, ...]:
         ),
         DirectoryItem(
             "目錄索引 - knowledge-points 知識點記錄層",
-            os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "knowledge-points/",
+            vault_name() + "knowledge-points/",
             "knowledge_point_record_layer",
             "`knowledge-points/` 保存每個來源拆出的 atomic knowledge point 記錄。",
             ("File Index", "知識點 - 知識庫語義索引", "目錄索引 - concepts 語義概念層"),
@@ -633,7 +650,7 @@ def directory_items() -> tuple[DirectoryItem, ...]:
         ),
         DirectoryItem(
             "目錄索引 - concepts 語義概念層",
-            os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") + "concepts/",
+            vault_name() + "concepts/",
             "concept_layer",
             "`concepts/` 保存人可閱讀、可追問的語義概念節點。",
             ("File Index", "知識點 - 知識庫語義索引"),
@@ -755,7 +772,7 @@ def render_file_index(updated: str, root: Path) -> str:
 | 範圍 | 類型 | 狀態 | 首讀建議 |
 | --- | --- | --- | --- |
 """
-    for item in GRAPH_ITEMS:
+    for item in graph_items(root):
         exists = "存在" if (root / item.path.rstrip("/")).exists() else "缺失"
         body += f"| `{item.path}` | {item.source_class} | {exists} | {item.first_read} |\n"
     body += """

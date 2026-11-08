@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from urllib.parse import quote
+from command_rules import is_menu_command
 from package_paths import assert_plain_path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ def render(root: Path, output: Path) -> None:
         raise ValueError("product version is missing")
     rows = []
     skills = [(key, "brain-" + key) for key, definition in registry["commands"].items()
-              if isinstance(definition, dict) and isinstance(definition.get("menu_order"), int) and not definition.get("alias_for")]
+              if isinstance(definition, dict) and isinstance(definition.get("menu_order"), int) and is_menu_command(definition)]
     if not skills:
         raise ValueError("command registry has no daily entries")
     for key, name in sorted(skills, key=lambda item: registry["commands"][item[0]]["menu_order"]):

@@ -17,11 +17,11 @@ from typing import Any, Iterable
 try:
     from tools.outcome_page_generator import read_markdown_record, resolve_application_note
     from tools.research_program import SCHEMA, ProgramError, direct_command_for_run, load_topic, safe_id, topic_evidence_contract, validate_topic_definition
-    from tools.workspace_paths import WorkspacePathError, vault_path
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, vault_path
 except ModuleNotFoundError:
     from outcome_page_generator import read_markdown_record, resolve_application_note  # type: ignore
     from research_program import SCHEMA, ProgramError, direct_command_for_run, load_topic, safe_id, topic_evidence_contract, validate_topic_definition  # type: ignore
-    from workspace_paths import WorkspacePathError, vault_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, vault_path  # type: ignore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -922,6 +922,11 @@ def main() -> int:
     resolve.add_argument("--work-id")
     resolve.add_argument("--target-ref", action="append")
     args = parser.parse_args()
+    try:
+        bind_process_vault(args.root)
+    except WorkspacePathError as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)}, ensure_ascii=False))
+        return 2
     if args.command == "list":
         result = list_research_topics(args.root)
     elif args.command == "inspect":

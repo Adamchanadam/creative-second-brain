@@ -243,7 +243,7 @@ HTML、Markdown 和目錄同用這份已覆核內容。背景及材料介紹預�
 |---|---|
 | id、title、kind、claim | 唯一 I 編號、短標題、hypothesis／deduction／design、精確判斷；不得把未證因果寫成既定事實 |
 | premises | 至少兩項 `{id, quote, contribution}`：證據 id、原文短引、該材料不可替代的作用；同一來源的 source／APP／KP 不算多源 |
-| baseline、delta | 原文已經說了甚麼；本次新暴露的問題／新增推導，不能同義重複 |
+| baseline、delta | 原文已經說了甚麼；本次新暴露的問題／新增推導，不能同義重複。直接寫內容，不以閱讀模板已有的標籤開頭（模板會自動加「材料原已說明」「新增判斷」「原先」「現在」）；`implication.before／after` 同樣適用。新答案送審時由共用答案驗證只按固定標籤字樣拒收（例如「原文已經說明：」「原已說明：」「新增判斷：」「原先：」），一次列出全部欄位；含否定或情態的正常句子（例如「這只能說明：」「仍無法判斷：」）不算標籤；已保存紀錄的完整性核對不套用此條 |
 | derivation | 有順序的推理文字清單，至少兩步；讓讀者指出哪一步可能跳躍 |
 | mechanism、assumptions | 拆到底層的因素／限制／因果環節，及其尚未成立的前提；必要時清楚保留根因未知 |
 | alternative、boundary | 能解釋同一現象的實質競爭解釋，及何時不可套用 |
@@ -280,6 +280,16 @@ HTML、Markdown 和目錄同用這份已覆核內容。背景及材料介紹預�
 新問題重新取材。選定外部材料入庫仍用 `intake-handoff`，suitability 的 taste／level／claims／novelty 各需 suitable 和理由，再走正式 Compiler Worker 全文及寫入流程。候選、answer 與短摘錄均不是來源全文，沒有正式完成憑證不稱已入庫。
 
 回歸入口：`tests/ask_second_brain.py`、`tests/thought_analysis.py`、`tests/test_thinking_archive.py`、`tests/test_thinking_map.py`；閱讀樣式與導航另見成果頁設計。
+
+#### 全域只讀查詢（`brain-ask`；欄位、入口、只讀邊界與安裝的唯一規則位置）
+
+用戶在知識庫工作區以外的其他專案，也可以叫 AI 讀、搜尋及引用知識庫，但只讀。`brain-ask` 是快答：不保存思考紀錄、不入庫、不修訂、不整理；要保存深入思考時，只回覆可在知識庫工作區執行的 `$brain-think <問題>`（Claude Code 為 `/brain-think`）命令，請用戶回到工作區做，因為保存須經來源綁定的 answer／review 流程。
+
+1. 查詢：`python <工作區>/tools/brain_lookup.py --question "<問題>" [--limit N] [--expand "<另一說法>"]... --json`，零寫入（不寫 vault、`outputs/`、收據或任何檔案）。沿用 `knowledge_material_selector` 取材，回傳每個候選的來源編號、標題、**絕對路徑**（來源筆記、應用筆記、命中知識點筆記）、原文保存區及知識點的摘錄（每項有字數上限）、證據片段、主張歸屬句（如有），以及成果頁的 `file://` 路徑；另帶 `answer_rules`（作答規則：只用回傳內容及其筆記作答，答案末尾列「引用：來源編號 · 筆記路徑 · 成果頁」，材料不足便如實說明，不得寫入知識庫，遇寫入要求只回覆工作區命令）。作答規則只在此工具定義一次，入口不重複。
+2. 全域入口：Claude Code 為使用者層 `~/.claude/skills/<名稱>/SKILL.md`，Codex 為使用者層 `~/.agents/skills/<名稱>/SKILL.md`（另附 `agents/openai.yaml`）。入口內容固定，只做三件事：讀使用者層登記表 `~/.creative-second-brain/workspaces.json` 找知識庫；執行該工作區的工具；照做工具回傳的規則。登記表每項 `{name, root, python}`，另有 `default`；`name` 預設為知識庫工作區資料夾名稱，可用參數另取，與其他已登記項同名時以白話說明並停止，請用戶另取名稱；只有一個便直接用，多於一個先請用戶揀；`root` 下找不到 `brain.json` 時提示回到知識庫工作區重新登記，不猜路徑。OPS 與 PUBLIC 只有一種呼叫方式：入口一律以登記表的 `python` 執行 `<root>/tools/brain_lookup.py`，不經 `brain.py`，所以入口內容在任何工作區及日後版本都不用改。
+3. 安裝與管理：`python <工作區>/tools/global_entry.py install|status|remove`。`install` 先列出全部目標再寫入並讀回；只寫登記表、`brain-ask` 的 Claude 及 Codex 全域入口，以及 Claude 的其他全域 `brain-*` 轉介入口（名稱取自 `brain.json` 的入口契約，不寫死；改為經登記表找工作區，不寫死路徑；找規則的次序固定為先 `<root>/.claude/skills/<名稱>/SKILL.md`，沒有才用 `<root>/.agents/skills/<名稱>/SKILL.md`，令 OPS 的本地補充及 PUBLIC 只有共用入口兩種工作區都適用；這些轉介入口仍會在知識庫工作區內執行原入口的寫入流程）。Codex 只裝只讀的 `brain-ask`，不裝會寫入的轉介入口：Codex 在其他專案寫入工作區以外的知識庫，每一步都要用戶審批，而且寫入流程應在知識庫工作區內做；這是刻意的只讀邊界，不是只支援單一 AI——兩個 AI 的只讀查詢能力相同，寫入一律回到知識庫工作區。既有同名入口先備份再覆寫。`remove` 只處理本工具寫過、內容可辨認的入口：備份內有安裝前的原件便還原原件，沒有才刪除，並列出備份位置；登記表只移除本工作區一項；登記表仍有其他工作區時，入口由它們共用，保留不動。寫入、還原或刪除前，目標的實際位置必須仍在使用者目錄之內（不跟隨指向外面的捷徑或連結），否則拒絕。登記表格式異常時以白話說明並停止，不覆蓋用戶資料。`status` 列出各入口及登記項是否有效。不改用戶的 AI 設定檔（例如 `settings.json`、`config.toml`）。入口呼叫查詢時，路徑一律加引號；問題文字用單引號原樣傳遞（PowerShell 內的單引號寫成兩個、Bash 寫成 `'\''`），不得令 shell 展開問題內的變數或命令。
+4. 驗收：在與知識庫無關的空白資料夾，以 Claude Code 及 Codex 各真實問一次庫內題材，讀回答案、引用及路徑存在；前後比較知識庫 git 狀態及 vault／outputs 樹雜湊必須相同；寫入要求只回覆命令；`remove` 後本工具的入口消失，安裝前原有的同名入口還原。
+5. PUBLIC：工作區內 `.agents/skills/brain-ask` 是只讀薄入口（執行本工作區 `tools/brain_lookup.py` 並照做 `answer_rules`，與 OPS `.claude/skills/brain-ask` 同義）；`spec/command-registry.json` 的 `ask` 以 `entry_kind: read_only_query` 標示為唯讀查詢，不再是 `think` 的別名；`tools/brain_lookup.py` 及 `tools/global_entry.py` 是套件的受管檔。安裝流程徵求用戶同意後才執行 `global_entry.py install`，用戶日後可用 `remove` 移除。
 
 ## 4. 探索回流與創作
 

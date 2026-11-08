@@ -23,14 +23,14 @@ try:
         AdapterStop, CROSS_SOURCE_SECTIONS, concept_projection_facts, read_knowledge_point_registry,
         read_source_registry_rows,
     )
-    from .workspace_paths import WorkspacePathError, vault_path
+    from .workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path
 except ImportError:
     from obsidian_idea_retrieval import concept_name_of, concept_notes_with_kp_uids  # type: ignore
     from obsidian_vault_adapter import (  # type: ignore
         AdapterStop, CROSS_SOURCE_SECTIONS, concept_projection_facts, read_knowledge_point_registry,
         read_source_registry_rows,
     )
-    from workspace_paths import WorkspacePathError, vault_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "knowledge_direction_v1"
@@ -245,7 +245,7 @@ def established_tensions(vault: Path, source_ids: set[str], *, limit: int = MAX_
 
 def resolve_vault(root: Path, vault: Path | None) -> Path:
     try:
-        target = vault.resolve() if vault else vault_path(root, os.environ.get("CREATIVE_SECOND_BRAIN_VAULT"))
+        target = vault.resolve() if vault else configured_vault_path(root)
     except WorkspacePathError as exc:
         raise DirectionError(str(exc)) from exc
     if not target.is_dir():
@@ -263,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="print JSON (the default is a short reading)")
     args = parser.parse_args(argv)
     try:
+        bind_process_vault(args.root)
         today = date.fromisoformat(args.today) if args.today else None
         result = compute_direction(resolve_vault(args.root, args.vault), top_n=args.top, today=today)
     except ValueError as exc:

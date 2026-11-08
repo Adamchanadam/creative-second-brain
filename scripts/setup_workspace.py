@@ -8,6 +8,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
+from command_rules import COMMAND_ROLES, command_role, entry_kind, is_menu_command
 from package_paths import assert_plain_path
 from render_workspace_home import render as render_home
 from check_environment import check as check_environment
@@ -27,7 +28,9 @@ _EXPECTED_MANAGED_ENTRIES = frozenset({
     ("infographic", "brain-infographic"),
     ("tidy", "brain-tidy"), ("nebula", "brain-nebula"), ("update", "brain-update"),
 })
-_EXPECTED_CANONICAL_ENTRIES = _EXPECTED_MANAGED_ENTRIES - {("ask", "brain-ask")}
+
+def command_registry() -> dict:
+    return json.loads((ROOT / "spec" / "command-registry.json").read_text(encoding="utf-8"))["commands"]
 
 
 TASK_PROGRESS_CARD_RULE = (
@@ -43,26 +46,34 @@ def managed_entries() -> list[tuple[str, str]]:
     result = []
     for item in entries:
         if (not isinstance(item, dict) or not isinstance(item.get("command"), str) or not isinstance(item.get("skill"), str)
-                or item.get("role") not in {"canonical", "compatibility_alias"}):
+                or item.get("role") not in COMMAND_ROLES):
             raise ValueError("package ownership inventory daily entry is invalid")
         result.append((item["command"], item["skill"]))
     if len({skill for _, skill in result}) != len(result) or len({command for command, _ in result}) != len(result):
         raise ValueError("package ownership inventory has duplicate daily entries")
     roles = {item["command"]: item["role"] for item in entries}
+    registry = command_registry()
     if set(result) != _EXPECTED_MANAGED_ENTRIES or roles != {
-        command: "compatibility_alias" if command == "ask" else "canonical"
-        for command, _ in _EXPECTED_MANAGED_ENTRIES
+        command: command_role(registry[command]) for command, _ in _EXPECTED_MANAGED_ENTRIES
     }:
         raise ValueError("package ownership inventory has an unexpected managed entry")
+    for command, _ in result:
+        entry_kind(registry[command])  # refuses an unknown entry kind
     return result
 
 
 def canonical_entries() -> list[tuple[str, str]]:
     contract = INVENTORY["daily_entry_contract"]
-    entries = [(item["command"], item["skill"]) for item in contract["managed_entries"] if item.get("role") == "canonical"]
-    if len(entries) != len(_EXPECTED_CANONICAL_ENTRIES) or set(entries) != _EXPECTED_CANONICAL_ENTRIES:
+    registry = command_registry()
+    try:
+        entries = [(item["command"], item["skill"]) for item in contract["managed_entries"]
+                   if item.get("role") == "canonical" and is_menu_command(registry[item["command"]])]
+        expected = {(command, skill) for command, skill in _EXPECTED_MANAGED_ENTRIES
+                    if is_menu_command(registry[command])}
+    except KeyError:
+        raise ValueError("package canonical entry inventory is invalid") from None
+    if len(entries) != len(expected) or set(entries) != expected:
         raise ValueError("package canonical entry inventory is invalid")
-    registry = json.loads((ROOT / "spec" / "command-registry.json").read_text(encoding="utf-8"))["commands"]
     try:
         ordered = sorted(entries, key=lambda entry: registry[entry[0]]["menu_order"])
     except (KeyError, TypeError):
@@ -120,6 +131,31 @@ def entry_contract(profile: str) -> list[dict[str, str]]:
             for key, skill in mapping]
 
 
+def read_only_query_entry(name: str, definition: dict) -> str:
+    """The thin, zero-write workspace entry for a ``read_only_query`` command (``brain-ask``).
+
+    It runs ``tools/brain_lookup.py`` of this workspace and follows the ``answer_rules`` that the
+    tool prints; it never routes through ``brain.py`` and never writes anything.  Both Codex and
+    Claude Code read this one file, so the save-instead reply names both host forms.
+    """
+    backslash = chr(92)
+    ps_quote, bash_quote = "''", "'" + backslash + "''"
+    return (
+        f"---\nname: {name}\ndescription: {definition['purpose']}\n---\n\n"
+        "這是唯讀快答，不是 `brain-think`：不保存思考紀錄、不入庫、不修訂、不整理。\n\n"
+        "1. 以 `brain.json` 的 `runtime_python` 在本工作區執行 `tools/brain_lookup.py`，這個命令零寫入。"
+        "引號規則：路徑一律加單引號；問題用單引號原樣傳遞，不要用雙引號包問題（shell 會展開問題內的 `$` 與反引號）；"
+        f"問題內若有單引號，PowerShell 內寫成兩個 `{ps_quote}`，Bash 內寫成 `{bash_quote}`。完整範例：\n\n"
+        f"   PowerShell：`& '<python>' 'tools{backslash}brain_lookup.py' --question '<用戶問題>' --json`\n\n"
+        "   Bash：`'<python>' 'tools/brain_lookup.py' --question '<用戶問題>' --json`\n\n"
+        "   問題有不同說法時可多加 `--expand '<另一說法>'`；候選不夠可加 `--limit N`（上限 20）。\n"
+        "2. 完全照做輸出內的 `answer_rules`（唯一的作答規則），並只用輸出內的內容及其所列筆記作答。\n"
+        "3. 用戶要求存入、入庫、修訂或保存思考時，不執行任何寫入命令，"
+        "只回覆 Codex 的 `$brain-think <問題>`（Claude Code 為 `/brain-think <問題>`），請用戶在本工作區用該命令處理。\n\n"
+        "使用者在指令後附帶的文字，就是該技能的輸入。\n"
+    )
+
+
 def skill_entry_payloads(profile: str) -> dict[str, bytes]:
     """Return the complete generated public entry set without writing it.
 
@@ -156,13 +192,8 @@ def skill_entry_payloads(profile: str) -> dict[str, bytes]:
     for key, name in skill_names.items():
         definition = registry[key]
         entry = definition["entry"]
-        if key == "ask":
-            entries[name] = (
-                "---\nname: brain-ask\ndescription: 舊名相容入口；請改用 brain-think。\n---\n\n"
-                "# brain-ask（舊名相容）\n\n"
-                "這是舊名稱的相容入口，不是另一套行為規則。先讀 `../brain-think/SKILL.md`，再使用同一條正式工具路由："
-                "`<workspace>/tools/brain.py think prepare --question <問題>`。新對話與首頁一律使用 `brain-think`；不得因這個別名跳過來源、answer、review、thinking archive 或讀回。\n"
-            )
+        if entry_kind(definition) == "read_only_query":
+            entries[name] = read_only_query_entry(name, definition)
             continue
         route_command = entry.removeprefix("<workspace>/")
         preflight = (

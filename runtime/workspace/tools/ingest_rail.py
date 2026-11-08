@@ -30,25 +30,25 @@ except ModuleNotFoundError:
 try:
     from tools import compiler_worker_v2 as worker
     from tools import obsidian_vault_adapter as vault_adapter
-    from tools.ingest_plan_contract import COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
+    from tools.ingest_plan_contract import ATTRIBUTION_CONTRACT, COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
     from tools.ingest_plan_contract import RELATION_TYPES, PRIOR_DECISIONS, CONCEPT_RELATIONS, CONCEPT_RELATION_LINK_TYPES, blank_prior_knowledge, caption_reading_chunks
     from tools.obsidian_idea_retrieval import PRIOR_LINK_MIN_SCORE, existing_concept_names, prior_registry_fingerprint, related_prior_candidates
     from tools.image_source_contract import inspect_image, validate_visual_analysis, visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
     from tools.infographic_prompt_contract import reader_page_payload, reader_page_sha256, visible_text_from_prompt
     from tools.outcome_page_generator import web_markdown_reader_text
     from tools.outcome_page_quality_audit import audit_source, content_repetition_issues, reader_surface_text_findings
-    from tools.workspace_paths import vault_path
+    from tools.workspace_paths import bind_process_vault, bound_vault_path, configured_vault_path, vault_path
 except ModuleNotFoundError:
     import compiler_worker_v2 as worker
     import obsidian_vault_adapter as vault_adapter
-    from ingest_plan_contract import COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
+    from ingest_plan_contract import ATTRIBUTION_CONTRACT, COMPACT_VERSION, VERSION, SOURCE_CATALOG_VERSION, SOURCE_CATALOG_VERSIONS, CURRENT_SOURCE_CATALOG_VERSION, SOURCE_EVIDENCE_FRAGMENT_SEPARATOR, TRANSCRIPT_ARCHIVE_MODE, build_kp, input_fingerprint, is_youtube_caption_transcript, plan_schema, semantic_response_schema, source_block_catalog
     from ingest_plan_contract import RELATION_TYPES, PRIOR_DECISIONS, CONCEPT_RELATIONS, CONCEPT_RELATION_LINK_TYPES, blank_prior_knowledge, caption_reading_chunks
     from obsidian_idea_retrieval import PRIOR_LINK_MIN_SCORE, existing_concept_names, prior_registry_fingerprint, related_prior_candidates
     from image_source_contract import inspect_image, validate_visual_analysis, visual_analysis_template, VISUAL_TYPES, ANCHOR_KINDS, COVERAGE_DISPOSITIONS
     from infographic_prompt_contract import reader_page_payload, reader_page_sha256, visible_text_from_prompt
     from outcome_page_generator import web_markdown_reader_text
     from outcome_page_quality_audit import audit_source, content_repetition_issues, reader_surface_text_findings
-    from workspace_paths import vault_path  # type: ignore
+    from workspace_paths import bind_process_vault, bound_vault_path, configured_vault_path, vault_path  # type: ignore
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -300,7 +300,7 @@ def _work_order(root, job_id):
                 "canonical_source": (package / "canonical_source.md").relative_to(root).as_posix(),
                 "accepted_source": bundle,
                 "source_blocks_canonical_body_sha256": catalog["canonical_body_sha256"],
-                "response_schema": semantic_response_schema(asset_mode),
+                "response_schema": semantic_response_schema(asset_mode, attribution_required=attribution_marked(bundle)),
                 "required_reads": [],
                 "instructions": (
                     "This accepted job is knowledge_only. The complete retained source is in the reading files listed in reading_files "
@@ -311,7 +311,8 @@ def _work_order(root, job_id):
                     "Cover each explicit numbered step, Then/Now transition, case or phase block shown in the source when present; other retained blocks are not automatically analysed. Source metadata, relations and application context are optional extensions: include them whenever the source itself supports a real provenance, use, adoption, relationship, compounding or taste judgement; leave unknown context as needs_context rather than inventing it. "
                     "Echo source_catalog_version and the bound input_fingerprint (the draft already carries both). Cite enough adjacent blocks to support complete claims and necessary context; preserve timestamps. In this same analysis, provide reusable_concept status/reason for each point and an analysed name only when it is reusable; the KP title is not a concept name. Absence of cross-source insight does not rule out a single-source reusable idea. "
                     "When a paragraph-catalog heading has three or more knowledge points beneath it, add a parent point that cites the heading, keeps its source name and relates to every member, or record a reasoned structure_decisions dismissal. "
-                    "The program owns identity, full-source retention, exact citations, IDs, coverage, zero-image status and conservative no-context defaults. "
+                    + (ATTRIBUTION_WORK_ORDER_NOTE if attribution_marked(bundle) else "")
+                    + "The program owns identity, full-source retention, exact citations, IDs, coverage, zero-image status and conservative no-context defaults. "
                     "Do not claim every source block was semantically analysed or covered, do not invent IDs, and do not read image or engineering specifications for this normal route."
                 ),
             })
@@ -541,10 +542,27 @@ def _differs(path, data):
     return not (path.is_file() and path.read_bytes() == data)
 
 
-def draft_plan_template(catalog_version, fingerprint, *, prior_knowledge=False):
+ATTRIBUTION_WORK_ORDER_NOTE = (
+    "Claim origin: give every knowledge item an attribution {origin, cited_work, relay}. List each work or person the source names in "
+    "source_metadata.cited_works (label exactly as the source or caption wrote it, with the evidence block ids that contain it) and point a "
+    "cited_named item to it by its 1-based position; use relay for anything that is not the source author's own claim. When the source shows "
+    "signs of relaying other people's claims but every item is source_author, hand in attribution_decision {decision: all_source_author, reason}. "
+    "For a YouTube caption source, check every cited work's correct name online (an https page, a verbatim quote that contains the name, and the date): "
+    "hand in verified_name and verification {url, quote, retrieved_at} on that cited_works entry, or unverified_reason saying why it could not be found; "
+    "label stays the caption's own wording. "
+)
+
+
+def attribution_marked(bundle):
+    """Whether this job's accepted input carries the claim-origin marker (Compiler spec section 7.2 "主張歸屬")."""
+    return isinstance(bundle, dict) and bundle.get("attribution_contract") == ATTRIBUTION_CONTRACT
+
+
+def draft_plan_template(catalog_version, fingerprint, *, prior_knowledge=False, attribution=False):
     """Blank compact plan: required parts only; optional sections stay out.
 
-    ``prior_knowledge`` adds the empty section only when the work order offers older knowledge.
+    ``prior_knowledge`` adds the empty section only when the work order offers older knowledge;
+    ``attribution`` adds the blank claim-origin record to the example item for a marked job.
     """
     return {
         "schema_version": COMPACT_VERSION,
@@ -555,6 +573,7 @@ def draft_plan_template(catalog_version, fingerprint, *, prior_knowledge=False):
             "title": "", "claim": "", "layer": "", "confidence": "",
             "evidence_block_ids": [],
             "reusable_concept": {"status": "needs_review", "reason": ""},
+            **({"attribution": {"origin": "", "cited_work": "", "relay": ""}} if attribution else {}),
         }],
         "structure_decisions": [],
         **({"prior_knowledge": blank_prior_knowledge()} if prior_knowledge else {}),
@@ -772,7 +791,8 @@ def deliver_semantic_work_order(root, job_id, package, base, catalog, extra):
                 if _differs(path, data):
                     worker.write_bytes(path, data)
             if not draft_path.is_file():  # never overwrite the agent's own draft
-                worker.write_json(draft_path, draft_plan_template(extra["source_catalog_version"], extra["input_fingerprint"], prior_knowledge=related_offered))
+                worker.write_json(draft_path, draft_plan_template(extra["source_catalog_version"], extra["input_fingerprint"], prior_knowledge=related_offered,
+                                                                  attribution=attribution_marked(extra["accepted_source"])))
             job = worker.read_json(worker.job_file(root, job_id))
             if not any(row.get("stage") == WORK_ORDER_ISSUED_STAGE for row in job.get("rail_events", [])):
                 if related_decided is not None and PRIOR_RC_JOB_KEY not in job:
@@ -1525,6 +1545,7 @@ def submit_image_analysis(root, job_id, response_path):
         image_file=package / bundle["original_image_path"], image_analysis_file=analysis_path,
         title=bundle.get("requested_title"), slug=package.name.split("_", 1)[1],
         profile=job.get("source_profile", "article"), asset_mode=bundle.get("asset_mode", worker.ASSET_MODE_FORMAL),
+        attribution_contract=bundle.get("attribution_contract", ""),
     )
     if semantic_plan is not None:
         _, accepted_package, _ = paths(root, job_id)
@@ -2104,7 +2125,7 @@ def rebind_uncompleted_case_source_id(root, job_id, response_path, vault):
 
 def next_source_id(root):
     ids = []
-    registry = root / os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault") / "_registry" / "sources.jsonl"
+    registry = vault_dir(root) / "_registry" / "sources.jsonl"
     if registry.is_file():
         for line in registry.read_text(encoding="utf-8").splitlines():
             if line.strip():
@@ -2181,6 +2202,9 @@ def start(args):
         "capture_mode": getattr(args, "capture_mode", worker.URL_CAPTURE_API_FIRST),
         "asset_mode": asset_mode,
         "case_evidence_file": case_evidence_file.relative_to(root).as_posix() if case_evidence_file else "",
+        # Only a job issued now, under the current analysis contract, carries the claim-origin marker.
+        **({"attribution_contract": ATTRIBUTION_CONTRACT}
+           if asset_mode == worker.ASSET_MODE_KNOWLEDGE and job.get("analysis_contract_version") == CURRENT_SOURCE_CATALOG_VERSION else {}),
     }
     existing_capture = job.get("rail_capture")
     if existing_capture:
@@ -3303,7 +3327,8 @@ def capture(root, job, youtube_capture=None):
     options = job.get("rail_capture", {})
     common = {"root": root, "source_id": job["source_id"], "job_id": job["job_id"],
               "title": options.get("title"), "slug": options.get("slug"), "profile": options.get("profile", "article"),
-              "asset_mode": options.get("asset_mode", worker.ASSET_MODE_FORMAL)}
+              "asset_mode": options.get("asset_mode", worker.ASSET_MODE_FORMAL),
+              "attribution_contract": options.get("attribution_contract", "")}
     kind = job["source_input_kind"]
     if kind == "url":
         case_evidence_file = options.get("case_evidence_file")
@@ -3377,12 +3402,17 @@ def main():
             sub.add_argument("--response-file", type=Path, required=True)
         if command == "rebind-recovery":
             sub.add_argument("--apply", action="store_true", help="move only proven stale partial artifacts into the job recovery package")
-        sub.add_argument("--vault", type=Path, default=Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")))
+        sub.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to (and in an installed workspace must equal) the workspace's configured vault")
     args = parser.parse_args()
     root = args.root.resolve()
     try:
+        bind_process_vault(root)
         if args.command not in {"schema", "inspect", "check-plan", "check-infographic-plan"} and not (args.command == "rebind-recovery" and not args.apply):
             assert_management_idle(root)
+        if hasattr(args, "vault"):
+            # One vault per workspace: the configured one, or an explicit --vault that brain.json agrees with.
+            args.vault = (configured_vault_path(root) if args.vault is None
+                          else bound_vault_path(root, args.vault if args.vault.is_absolute() else root / args.vault))
         if args.command == "schema":
             result = plan_schema()
         elif args.command == "inspect":

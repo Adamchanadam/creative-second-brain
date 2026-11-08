@@ -44,5 +44,27 @@ class KnowledgeUseRequiredTests(unittest.TestCase):
         self.assertEqual(contract.materialize_compact_plan(valid, self.package)["application"]["knowledge_use"], "學習材料")
 
 
+def setUpModule():
+    """Fixtures here predate the claim-origin marker, so their jobs run as legacy (unmarked) jobs.
+
+    The marked path is covered by tests/test_attribution_claim_origin.py.
+    """
+    import sys as _sys
+    from unittest import mock as _mock
+
+    global _LEGACY_UNMARKED_JOBS
+    _LEGACY_UNMARKED_JOBS = [
+        _mock.patch.object(module, "accepted_attribution_fields", return_value={})
+        for module in (_sys.modules.get("tools.compiler_worker_v2"), _sys.modules.get("compiler_worker_v2")) if module is not None
+    ]
+    for patcher in _LEGACY_UNMARKED_JOBS:
+        patcher.start()
+
+
+def tearDownModule():
+    for patcher in _LEGACY_UNMARKED_JOBS:
+        patcher.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

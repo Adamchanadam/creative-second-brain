@@ -5,7 +5,7 @@
   "daily_entry_contract": {
     "managed_entry_prefix": ".agents/skills/brain-",
     "managed_entries": [
-      {"command": "ask", "skill": "brain-ask", "role": "compatibility_alias", "canonical_command": "think"},
+      {"command": "ask", "skill": "brain-ask", "role": "canonical"},
       {"command": "think", "skill": "brain-think", "role": "canonical"},
       {"command": "check", "skill": "brain-check", "role": "canonical"},
       {"command": "create", "skill": "brain-create", "role": "canonical"}, {"command": "fix", "skill": "brain-fix", "role": "canonical"},

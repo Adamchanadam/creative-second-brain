@@ -766,7 +766,7 @@ actions:{retry:'重試',retry_later:'稍後重試',copy:'改用「複製指令�
 pill:{running:n=>`孕育中 ${n}`,pick:n=>`待揀問題 ${n}`},offline:'本機連線已關閉，請雙擊啟動檔重新開啟。',failedAsk:'孕育未能開始。'};
 // All AI setup words live here; runner labels, versions and refusal sentences come straight from the service.
 const AI_SETUP_TEXT={title:'AI 設置',intro:'背景孕育由你揀的一個 AI 在這部電腦上完成，只用你已登入的帳戶，不用 API key。',
-back:'返回',detect:'偵測',detecting:'正在偵測…',ready:'可用',current:'目前使用',approve:'批准使用',disable:'停用背景 AI',
+back:'返回',detect:'偵測',detecting:'正在偵測…',ready:'可用',detected:'已偵測',current:'目前使用',approve:'批准使用',disable:'停用背景 AI',
 offline:'要經本機閱讀服務打開星雲，才可以設定背景 AI；現在仍可用「複製指令」。',
 unset:'未設定背景 AI ·',unavailable:label=>`${label} 暫時用不到 ·`,using:label=>`背景 AI：${label} ·`,setup:'前往 AI 設置',change:'更改',failed:'未能讀取或保存 AI 設置，請稍後再試。'};
 // ===== Birth memorial and parent-child bonds. Every sentence is in BIRTH_TEXT; every number is here. =====
@@ -1447,7 +1447,7 @@ const T=CRADLE_TEXT,asked=jobStopTimer?1:0,key=JSON.stringify([job,jobPick,asked
 if(key===jobViewKey&&box.childNodes.length)return;jobViewKey=key;
 const kids=[],line=(t,cls='job-line')=>kids.push(text('p',t,cls)),acts=[],btn=(label,fn,cls='again')=>{const b=text('button',label,cls);b.type='button';b.onclick=fn;return b;};
 const stop=()=>btn(jobStopTimer?T.stopSure:T.stop,()=>{if(!jobStopTimer){jobStopTimer=setTimeout(()=>{jobStopTimer=0;jobViewKey='';renderCommand();},CLEAR_CONFIRM_MS);jobViewKey='';renderCommand();return;}clearTimeout(jobStopTimer);jobStopTimer=0;jobAction(job.job_id,'cancel');},'again'+(jobStopTimer?' on':''));
-const again=()=>btn(T.again,()=>{jobViewOff=true;jobError='';renderCommand();}),finish=()=>btn(T.done,()=>jobDismiss(job.job_id)),back2=()=>btn(T.back2,()=>{jobViewOff=true;setStep(2);});
+const again=()=>btn(T.again,()=>{jobViewOff=true;jobError='';renderCommand();}),finish=()=>btn(T.done,async()=>{if(job.kind==='questions'&&job.status==='done')await jobAction(job.job_id,'cancel');jobDismiss(job.job_id);}),back2=()=>btn(T.back2,()=>{jobViewOff=true;setStep(2);});
 if(job.status==='queued'){line(T.queued(jobAhead(job)));line(T.away,'job-sub');acts.push(stop(),again());}
 else if(job.status==='running'){const step=job.step||'prepare';line(step==='review'?T.steps.review(Math.max(1,job.round||1)):T.steps[step]||T.steps.prepare);if(job.eta_seconds!==null&&job.eta_seconds!==undefined)line(T.eta(Math.max(1,Math.ceil(job.eta_seconds/60))),'job-sub');line(T.away,'job-sub');acts.push(stop(),again());}
 else if(job.status==='done'&&job.kind==='questions'){
@@ -1511,6 +1511,8 @@ $('#ai-setup-intro').textContent=online?T.intro:T.offline;$('#ai-setup-controls'
 const detect=$('#ai-setup-detect');detect.textContent=aiSetupDetecting?T.detecting:T.detect;detect.disabled=aiSetupBusy;
 const rows=$('#ai-setup-runners');rows.setAttribute('aria-label',T.title);
 rows.replaceChildren(...(aiSetupData?.runners||[]).map(r=>{
+if(r.supported===false){const row=text('div','','ai-runner'),info=text('span','','ai-runner-info'),head=text('span','','ai-runner-head');
+head.append(text('span',r.label),text('span',r.version||T.detected,'ai-runner-version'));info.append(head,text('span',r.reason||'','ai-runner-status'));row.append(info);return row;}
 const row=text('label','','ai-runner'),radio=document.createElement('input'),info=text('span','','ai-runner-info'),head=text('span','','ai-runner-head');
 radio.type='radio';radio.name='ai-setup-runner';radio.value=r.name;radio.checked=aiSetupPicked===r.name;radio.disabled=!r.ready||aiSetupBusy;
 head.append(text('span',r.label));if(r.version)head.append(text('span',r.version,'ai-runner-version'));

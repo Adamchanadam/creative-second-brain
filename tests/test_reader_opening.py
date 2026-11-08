@@ -425,7 +425,7 @@ def main() -> int:
     nebula_page = fetch(nebula_repeat["url"])
     assert 'id="prompts"' in home_page
     assert "$brain-think [問題]" in home_page
-    assert "舊名相容" in home_page and "$brain-ask [問題]" in home_page
+    assert "只讀快答" in home_page and "$brain-ask [問題]" in home_page and "舊名相容" not in home_page
     assert "creative-second-brain-nebula-logo-v4.png" in home_page
     assert hashlib.sha256((workspace / "assets" / "brand" / "creative-second-brain-nebula-logo-v4.png").read_bytes()).hexdigest() == LOGO_SHA256
     assert home_page.count("創造型第二大腦 | Adam Chan") == 1
@@ -451,7 +451,7 @@ def main() -> int:
         "busy reuse waits once and retry remains bounded",
         "shared reader port policy preserves primary ports and adds bounded deterministic fallbacks",
         "package opener and server declare the same current reader generation",
-        "repeat home returns verified #prompts URL", "canonical think command and its legacy-only alias are visible", "fresh installed nebula logo hash and home path",
+        "repeat home returns verified #prompts URL", "canonical think command and the read-only quick-answer hint are visible", "fresh installed nebula logo hash and home path",
         "task-owned short-lived service closes",
     ]}
     (work / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

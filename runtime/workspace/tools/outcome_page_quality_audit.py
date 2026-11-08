@@ -45,8 +45,12 @@ except ModuleNotFoundError:
     )
 
 
+try:
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_path  # type: ignore
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_VAULT = REPO_ROOT / os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault")
 REQUIRED_PAGE_TEXTS = (
     "與你有何關係",
     "知識點",
@@ -58,6 +62,7 @@ SOURCE_OVERVIEW_HEADINGS = {
 }
 # Source kinds without a public URL: their page proves provenance with a named source line instead.
 DIRECT_SOURCE_KINDS = frozenset({"user_provided_text", "user_provided_image"})
+KP_ATTRIBUTION_LINE_RE = re.compile(r'<p class="[^"]*\bkp-attribution\b[^"]*">.*?</p>', re.S)
 PROVENANCE_LINE_RE = re.compile(r'<p class="[^"]*\bsource-provenance\b[^"]*"><span>[^<]+</span>(.*?)</p>', re.S)
 INTERNAL_LANGUAGE_TERMS = (
     "本項目",
@@ -142,12 +147,17 @@ AUDIT_CHECK_STAGES = {
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit generated outcome pages for reader-facing quality.")
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--source-id", help="Audit one current outcome and its entry; omit only for explicit whole-vault maintenance.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    try:
+        bind_process_vault(REPO_ROOT)
+        vault = args.vault if args.vault is not None else configured_vault_path(REPO_ROOT)
+    except WorkspacePathError as exc:
+        raise SystemExit(str(exc)) from exc
 
-    result = audit_source(args.vault, args.source_id) if args.source_id else audit_vault(args.vault)
+    result = audit_source(vault, args.source_id) if args.source_id else audit_vault(vault)
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
@@ -1045,7 +1055,10 @@ def reader_style_issues(text: str) -> list[str]:
 def content_repetition_issues(html_text: str) -> list[str]:
     # A provenance line may legitimately be the work title shown in the H1.
     # Exempt that line alone; all other reader-visible duplication still counts.
-    blocks = visible_blocks(PROVENANCE_LINE_RE.sub("", html_text))
+    # A claim-attribution line ("主張來源：...｜這段內容：...") is program-generated and
+    # legitimately identical when several knowledge points cite the same work and relay.
+    # Exempt that paragraph alone (spec 7.2 "主張歸屬" item 6).
+    blocks = visible_blocks(KP_ATTRIBUTION_LINE_RE.sub("", PROVENANCE_LINE_RE.sub("", html_text)))
     normalized_blocks = [
         block
         for block in (normalize_visible_block(text) for _, text in blocks)

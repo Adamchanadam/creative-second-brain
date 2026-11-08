@@ -68,17 +68,15 @@
       "menu_label": "製作資訊圖"
     },
     "ask": {
-      "alias_for": "think",
-      "entry": "<workspace>/tools/brain.py think prepare --question <問題>",
-      "writes": [
-        "explicit answer or export paths"
-      ],
-      "purpose": "舊名相容入口；請改用 brain-think 形成並保存可追溯的思考紀錄。",
-      "home_title": "舊名相容：問第二大腦",
+      "entry_kind": "read_only_query",
+      "entry": "<workspace>/tools/brain_lookup.py",
+      "writes": [],
+      "purpose": "唯讀查詢並引用知識庫，快答問題；不保存、不入庫、不修訂。",
+      "home_title": "只讀快答：問第二大腦",
       "host_prompt": "$brain-ask [問題]",
       "menu_order": 5,
-      "menu_group": "相容",
-      "menu_label": "舊名"
+      "menu_group": "使用",
+      "menu_label": "唯讀快答"
     },
     "think": {
       "entry": "<workspace>/tools/brain.py think prepare --question <問題>",

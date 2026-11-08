@@ -42,9 +42,13 @@ except ModuleNotFoundError:
         unique_preserve,
     )
 
+try:
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path
+except ModuleNotFoundError:
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path  # type: ignore
+
 
 SCHEMA_VERSION = "obsidian_semantic_maintenance_v1"
-DEFAULT_VAULT = Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault"))
 DEFAULT_OUTPUT_DIR = Path("outputs/obsidian_semantic_maintenance")
 TOOL_PATH = "tools/obsidian_semantic_maintenance.py"
 
@@ -93,7 +97,7 @@ def main() -> int:
     group.add_argument("--weekly-organize", action="store_true", help="Create the weekly organizing queue.")
     group.add_argument("--new-content-candidates", action="store_true", help="Create recent-content idea candidate receipts.")
     group.add_argument("--acceptance", action="store_true", help="Run weekly organizing, new-content coupling, and five-question retrieval checks.")
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--recent-limit", type=int, default=5)
     parser.add_argument("--max-review-items", type=int, default=50)
@@ -104,7 +108,12 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
-    vault = resolve_inside(root, args.vault)
+    try:
+        bind_process_vault(root)
+        selected_vault = args.vault if args.vault is not None else configured_vault_relative_path(root)
+    except WorkspacePathError as exc:
+        raise SystemExit(str(exc)) from exc
+    vault = resolve_inside(root, selected_vault)
     output_dir = resolve_inside(root, args.output_dir)
 
     if args.weekly_organize:

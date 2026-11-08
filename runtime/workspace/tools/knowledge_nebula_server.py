@@ -27,9 +27,10 @@ except ImportError:
 # The one "may the reader layer be rebuilt now?" answer lives in knowledge_nebula (refresh_installed asks it too); same names here.
 from knowledge_nebula import GUARD_DOCTOR_SECONDS, ProjectionPaused, doctor_python, projection_guard, record_projection_pause
 from reader_port_policy import candidate_ports, find_reader_state
+from workspace_paths import WorkspacePathError, bind_process_vault
 from reader_service_lease import ReaderLease
 
-SERVICE_GENERATION = "knowledge-nebula-server-v8"
+SERVICE_GENERATION = "knowledge-nebula-server-v9"
 PREFERENCE_SCHEMA = "knowledge_nebula_preferences_v1"
 DEFAULT_PREFERENCES = {"schema": PREFERENCE_SCHEMA, "palette": "violet", "reduced_motion": False, "entrance_enabled": True}
 PALETTE_IDS = {"violet", "aurora", "rose", "amber"}
@@ -702,6 +703,10 @@ def main():
     parser.add_argument('--require-generation', default='')
     args = parser.parse_args()
     root = nebula.plain(args.root.absolute()).resolve()
+    try:
+        bind_process_vault(root)
+    except WorkspacePathError as exc:
+        raise SystemExit(str(exc)) from exc
     identity = hashlib.sha256(str(root).casefold().encode()).hexdigest()[:20]
     config = json.loads((root / 'brain.json').read_text(encoding='utf-8-sig'))
     vault = nebula.vault_path(root, config.get('vault', 'knowledge-base-vault'))

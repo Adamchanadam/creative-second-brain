@@ -34,6 +34,35 @@ def normalized(value: str) -> str:
     return re.sub(r"[\W_]+", "", value).casefold()
 
 
+# The reading template writes the labels 材料原已說明／新增判斷／原先／現在 in front of these fields.  A value that opens
+# with one of those fixed label wordings shows the label twice.  Only the fixed wordings count, so ordinary sentences
+# such as 「這只能說明：」「仍無法判斷：」 pass; the wordings contain no negation or modal word on purpose.
+_COLON = r"[\s\*】\]」』）)]*[：:︰﹕∶]"
+_OPENING = r"^[\s\*【\[「『（(]*"
+_SUBJECT = r"(?:材料|原文|書摘|文章|來源|資料|筆記|本文)?"
+_READ = _SUBJECT + r"(?:原已|已經|已)(?:說明|說|指出|提到)|新增(?:判斷|推導)|新暴露的問題"
+LABEL_PREFIX = re.compile(_OPENING + "(?:" + _READ + ")" + _COLON)
+IMPLICATION_LABEL_PREFIX = re.compile(_OPENING + "(?:" + _READ + "|原先|現在)" + _COLON)
+
+
+def label_prefixed_fields(analysis: dict) -> list:
+    """Names (I1.baseline, I1.implication.before ...) of every labelled field, collected before any other check."""
+    hits = []
+    for index, item in enumerate(analysis.get("insights") or [], 1):
+        if not isinstance(item, dict):
+            continue
+        key = item["id"] if isinstance(item.get("id"), str) else "insight" + str(index)
+        for field in ("baseline", "delta"):
+            if isinstance(item.get(field), str) and LABEL_PREFIX.match(item[field]):
+                hits.append(key + "." + field)
+        implication = item.get("implication")
+        if isinstance(implication, dict):
+            for field in ("before", "after"):
+                if isinstance(implication.get(field), str) and IMPLICATION_LABEL_PREFIX.match(implication[field]):
+                    hits.append(key + ".implication." + field)
+    return hits
+
+
 def source_family(evidence: dict) -> str:
     # Source, application and KP copies of one record are not independent inputs.
     found = re.search(r"KS-[A-Z]+-\d+", evidence.get("path", ""))
@@ -49,13 +78,18 @@ def source_family(evidence: dict) -> str:
     return evidence.get("url") or ("body:" + fingerprint(body))
 
 
-def validate_analysis(analysis: dict, lookup: dict) -> dict:
+def validate_analysis(analysis: dict, lookup: dict, *, new_answer: bool = False) -> dict:
+    # new_answer is switched on only where a fresh answer is submitted for review; saved records are never re-judged by the label rule.
     if not isinstance(analysis, dict) or analysis.get("schema") != SCHEMA:
         raise ValueError("deep thinking requires analysis.schema=thinking_v2")
     text(analysis.get("thesis"), "thesis")
     insights = analysis.get("insights")
     if not isinstance(insights, list) or len(insights) > 3:
         raise ValueError("use at most three developed insights")
+    if new_answer:
+        labelled = label_prefixed_fields(analysis)
+        if labelled:
+            raise ValueError("這些欄位以標籤開頭：" + ", ".join(labelled) + "；直接寫內容，不要加標籤前綴（閱讀模板會自動加）")
     if not insights:
         text(analysis.get("no_increment_reason"), "no_increment_reason")
     ids = set()

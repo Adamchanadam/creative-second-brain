@@ -56,7 +56,9 @@ def main() -> int:
         assert skill.is_file()
         content = skill.read_text(encoding="utf-8")
         if entry == "brain-ask":
-            assert "舊名相容" in content and "../brain-think/SKILL.md" in content
+            assert "tools/brain_lookup.py" in content and "answer_rules" in content and "舊名相容" not in content
+            assert "$brain-think <問題>" in content and "/brain-think <問題>" in content
+            assert "tools/brain.py" not in content  # the read-only entry never routes through brain.py
         elif entry in SINGLE_PASS_ENTRIES:
             assert "不建立任務進度卡" in content and "🧭 任務進度卡" not in content and "execution" in content
         else:
@@ -93,7 +95,7 @@ def main() -> int:
     grow = json.loads(run(str(brain), "think", "prepare", "--question", "評估這個來源是否值得保存？", "--no-expand", "這是安裝驗收的固定問題", cwd=workspace))
     assert ask["status"] == "insufficient_evidence" and grow["status"] == "insufficient_evidence"
     assert alias["status"] == ask["status"]
-    assert "brain-think" in (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
+    assert "tools/brain_lookup.py" in (workspace / ".agents" / "skills" / "brain-ask" / "SKILL.md").read_text(encoding="utf-8")
     create = run(str(brain), "material", "--query", "比較", cwd=workspace, expected=1)
     assert "candidates: 0" in create
     tidy = json.loads(run(str(brain), "tidy", "--acceptance", "--check", "--json", cwd=workspace, expected=1))
@@ -157,7 +159,7 @@ def main() -> int:
     assert infographic["action"] == "select_infographic_source" and infographic["candidates"] == []
     assert "--source-id <知識頁ID>" in infographic_skill and "不自動畫" in infographic_skill
     report = {"status": "passed", "covered_entries": list(ENTRIES), "coverage": [
-        "URL route parser", "text work order", "image work order", "canonical think and legacy ask alias", "grow", "create", "tidy",
+        "URL route parser", "text work order", "image work order", "canonical think, the retained brain.py ask subcommand and the read-only brain-ask entry", "grow", "create", "tidy",
         "guide refresh", "nebula entry route", "check", "resume", "fix inspect", "optional infographic route", "research list and workflow route", "safe update route", "task-progress-card dry-run",
     ], "not_proven": ["live user-selected URL capture", "host skill discovery", "native Obsidian", "new image generation"]}
     (work / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

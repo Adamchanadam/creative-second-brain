@@ -1,6 +1,6 @@
 # 由 AI 完成首次安裝
 
-這是本包唯一的安裝執行指引。使用者入口為 `index.html` 的安裝 prompt；下列命令由代理執行，不交給新手。產品仍是 skill，沒有獨立 App 或常駐服務；需要閱讀時，`brain-guide` 與 `brain-nebula` 才會啟動或重用短暫、受限的本機 loopback 服務。本包完整提供 `brain-think`、`brain-url`、`brain-text`、`brain-image`、`brain-grow`、`brain-create`、`brain-tidy`、`brain-guide`、`brain-nebula`、`brain-check`、`brain-resume`、`brain-fix`、`brain-research`、`brain-update`；舊有 `brain-ask` 只保留為同一思考保存流程的相容別名。
+這是本包唯一的安裝執行指引。使用者入口為 `index.html` 的安裝 prompt；下列命令由代理執行，不交給新手。產品仍是 skill，沒有獨立 App 或常駐服務；需要閱讀時，`brain-guide` 與 `brain-nebula` 才會啟動或重用短暫、受限的本機 loopback 服務。本包完整提供 `brain-think`、`brain-url`、`brain-text`、`brain-image`、`brain-grow`、`brain-create`、`brain-tidy`、`brain-guide`、`brain-nebula`、`brain-check`、`brain-resume`、`brain-fix`、`brain-research`、`brain-update`；`brain-ask` 另設為只讀快答（查詢並引用知識庫，不保存、不入庫、不修訂）。
 
 ## 1. 安裝前一次收齊
 
@@ -74,7 +74,7 @@ macOS／Linux 先讀 [Python 對應平台官方文件](https://docs.python.org/3
 <python> -B <package>/scripts/install_skill.py --archive <ZIP> --apply
 ```
 
-安裝器預設複製完整套件到當前使用者 `.agents/skills/creative-second-brain`，同內容可安全重跑；衝突或中斷保留現場，不覆寫。這是產品與發行資料夾，日常工作只從每個 workspace 的 15 個 canonical `brain-*` 入口開始；`brain-ask` 只作相容別名。`--skills-root` 只供明示的測試／自訂位置，不證明真實全域辨識。預設位置按 [Codex 官方技能文件](https://learn.chatgpt.com/docs/build-skills) 核對；其他 Agent 宿主先驗其官方安裝與入口契約，不能把 Codex 路徑當通用標準。沒有已驗適配就報能力缺口，不宣称支援。
+安裝器預設複製完整套件到當前使用者 `.agents/skills/creative-second-brain`，同內容可安全重跑；衝突或中斷保留現場，不覆寫。這是產品與發行資料夾，日常工作只從每個 workspace 的 15 個 canonical `brain-*` 入口開始；`brain-ask` 是另設的只讀快答入口，不在這 15 個之內。`--skills-root` 只供明示的測試／自訂位置，不證明真實全域辨識。預設位置按 [Codex 官方技能文件](https://learn.chatgpt.com/docs/build-skills) 核對；其他 Agent 宿主先驗其官方安裝與入口契約，不能把 Codex 路徑當通用標準。沒有已驗適配就報能力缺口，不宣称支援。
 
 使用 installer 回傳的完整技能位置作 `<skill>`。建立與 workspace 分開、尚不存在的專用環境（例如同一父資料夾的獨立工具環境；具體位置已在前置資料確認），不改全域 Python 套件：
 
@@ -107,6 +107,14 @@ YouTube 只可用現有公開 VTT 字幕並以 `yt-dlp --skip-download` 取得�
 `.candidate-init.json` 表示未完成，保留並讀回現場；不能刪掉標記重跑。`brain.json` 記錄實際 runtime_python、相對 vault 和 display_name；新代理先依 workspace 的 AGENTS.md 接續。搬機或 Python 路徑失效時，核實新環境後使用其真實路徑，不依賴舊電腦。
 
 setup 建立完整 `brain-*` 技能入口。讓宿主開啟該 workspace，實際驗證技能清單辨識及明確調用；檔案存在不足以证明辨識。Codex CLI／IDE 可用 `/skills` 或教學頁列出的 `$brain-*` 入口；桌面按當前技能選擇器顯示，沒有出現時依官方指示刷新／重開。其他宿主未必支援 `$` 語法：必須在完成前說明，直接讀相應的 `brain-*` 技能後按其流程處理；自然語言替代句也必須包含技能名稱、操作和必要輸入，不能只留下「問題：」等半句。在驗收時仍須分清「直接讀技能檔執行」和「宿主已辨識」。
+
+### 4.1 選用：其他專案的全域只讀查詢
+
+setup 與 `doctor` 讀回 ready 後，用白話問用戶一個選用問題：「要不要在其他專案也可以只讀查詢這個知識庫？」並說明同意後會做甚麼：在使用者主目錄加入登記表 `~/.creative-second-brain/workspaces.json`、Claude Code 及 Codex 的全域 `brain-ask`（只讀），以及 Claude Code 的其他全域 `brain-*` 轉介入口（它們會把工作轉回這個知識庫工作區執行）；同名舊入口會先備份；不改任何 AI 設定檔。
+
+- 用戶明確同意才執行 `<runtime_python> <workspace>/tools/global_entry.py install`，再執行 `<runtime_python> <workspace>/tools/global_entry.py status` 讀回；不同意或沒有明確回答就跳過，安裝仍算完成。未經用戶明確同意，不得執行 install。
+- 向用戶說明日後可用 `global_entry.py remove` 移除，並還原備份的原件。
+- 這一步不影響整體裁決；做了或跳過都要在交付時如實說明。
 
 ## 5. 接上 Obsidian 及圖片能力
 

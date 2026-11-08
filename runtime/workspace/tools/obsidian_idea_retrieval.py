@@ -24,10 +24,14 @@ try:
 except ImportError:
     from obsidian_vault_adapter import concept_is_active, frontmatter_fields_from_text
 
+try:
+    from .workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path
+except ImportError:
+    from workspace_paths import WorkspacePathError, bind_process_vault, configured_vault_relative_path  # type: ignore
+
 
 SCHEMA_VERSION = "obsidian_idea_retrieval_receipt_v1"
 ACCEPTANCE_SCHEMA_VERSION = "obsidian_idea_retrieval_acceptance_v1"
-DEFAULT_VAULT = Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault"))
 DEFAULT_OUTPUT_DIR = Path("outputs/obsidian_idea_retrieval")
 TOOL_PATH = "tools/obsidian_idea_retrieval.py"
 
@@ -114,7 +118,7 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--query", help="Natural-language question to route through the idea graph.")
     group.add_argument("--five-question-acceptance", action="store_true", help="Run the five standard retrieval checks.")
-    parser.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    parser.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to the workspace's configured vault")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--write-receipts", action="store_true", help="Write JSON receipts under the output directory.")
     parser.add_argument("--check", action="store_true", help="Return non-zero unless the selected check is ready.")
@@ -122,7 +126,12 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path.cwd().resolve()
-    vault = resolve_inside(root, args.vault)
+    try:
+        bind_process_vault(root)
+        selected_vault = args.vault if args.vault is not None else configured_vault_relative_path(root)
+    except WorkspacePathError as exc:
+        raise SystemExit(str(exc)) from exc
+    vault = resolve_inside(root, selected_vault)
     output_dir = resolve_inside(root, args.output_dir)
 
     if args.five_question_acceptance:

@@ -36,9 +36,9 @@ except ModuleNotFoundError:
     from source_identity import normalize_url as normalize_capture_url
 
 try:
-    from tools.workspace_paths import WorkspacePathError, vault_path
+    from tools.workspace_paths import WorkspacePathError, bind_process_vault, bound_vault_path, configured_vault_path, vault_path
 except ModuleNotFoundError:
-    from workspace_paths import WorkspacePathError, vault_path  # type: ignore
+    from workspace_paths import WorkspacePathError, bind_process_vault, bound_vault_path, configured_vault_path, vault_path  # type: ignore
 
 try:
     from tools.validation_manifest import build_embedded_manifest
@@ -124,11 +124,11 @@ except ModuleNotFoundError:
     )
 
 try:
-    from tools.source_ingest_jobs import DEFAULT_JOB_ROOT as SOURCE_INGEST_JOB_ROOT
+    from tools.source_ingest_jobs import default_job_root as source_ingest_default_job_root
     from tools.source_ingest_jobs import latest_jobs as source_ingest_latest_jobs
     from tools.source_ingest_jobs import public_job as public_source_ingest_job
 except ModuleNotFoundError:
-    from source_ingest_jobs import DEFAULT_JOB_ROOT as SOURCE_INGEST_JOB_ROOT  # type: ignore
+    from source_ingest_jobs import default_job_root as source_ingest_default_job_root  # type: ignore
     from source_ingest_jobs import latest_jobs as source_ingest_latest_jobs  # type: ignore
     from source_ingest_jobs import public_job as public_source_ingest_job  # type: ignore
 
@@ -154,7 +154,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ADAPTER = REPO_ROOT / "tools" / "obsidian_vault_adapter.py"
 OUTCOME_GENERATOR = REPO_ROOT / "tools" / "outcome_page_generator.py"
 INFOGRAPHIC_VISUAL_QC = REPO_ROOT / "tools" / "infographic_visual_qc.py"
-DEFAULT_VAULT = Path(os.environ.get("CREATIVE_SECOND_BRAIN_VAULT", "knowledge-base-vault"))
 DEFAULT_TIMEOUT_MS = 60000
 CAPTURE_PROVIDERS = {"auto", "firecrawl", "tavily", "browser-file"}
 BLOCKED_MIN_MAIN_CHARS = 40
@@ -327,7 +326,7 @@ def main() -> int:
 
     ingest = subparsers.add_parser("ingest", help="Run a source-local adapter write/readback and incremental outcome update.")
     ingest.add_argument("--source-slice", type=Path, required=True)
-    ingest.add_argument("--vault", type=Path, default=DEFAULT_VAULT)
+    ingest.add_argument("--vault", type=Path, default=None, help="vault folder; defaults to this workspace's configured vault")
     ingest.add_argument("--max-kp", type=int, default=6)
     ingest.add_argument("--write", action="store_true")
     ingest.add_argument(
@@ -336,7 +335,7 @@ def main() -> int:
         help="Opt in to whole-vault health and duplicate scans; never required for one source completion.",
     )
     ingest.add_argument("--source-ingest-job-id", help="Optional durable Terminal/background job id to read back into completion_report.")
-    ingest.add_argument("--source-ingest-job-root", type=Path, default=SOURCE_INGEST_JOB_ROOT)
+    ingest.add_argument("--source-ingest-job-root", type=Path, default=None)
     ingest.add_argument("--completion-report-out", type=Path, help="Optional root-contained JSON file for the full ingest result.")
     ingest.add_argument("--json", action="store_true")
 
@@ -344,6 +343,10 @@ def main() -> int:
     root = args.root.resolve()
 
     try:
+        try:
+            bind_process_vault(root)
+        except WorkspacePathError as exc:
+            raise PipelineStop("blocked", str(exc)) from exc
         if args.command == "prepare":
             return prepare_command(root, args)
         if args.command == "image-review":
@@ -2132,7 +2135,14 @@ def validate_imagegen_attempts_for_ingest(root: Path, source_slice: Path) -> dic
 
 def ingest_command(root: Path, args: argparse.Namespace) -> int:
     source_slice = resolve_inside(root, args.source_slice)
-    vault = resolve_inside(root, args.vault)
+    try:
+        selected_vault = (configured_vault_path(root) if args.vault is None
+                          else bound_vault_path(root, args.vault if args.vault.is_absolute() else root / args.vault))
+        source_ingest_job_root = (args.source_ingest_job_root if args.source_ingest_job_root is not None
+                                  else source_ingest_default_job_root(root))
+    except WorkspacePathError as exc:
+        raise PipelineStop("blocked", str(exc)) from exc
+    vault = resolve_inside(root, selected_vault)
     dry_run = run_adapter(root, source_slice, vault, args.max_kp, "--json")
     dry_payload = parse_json_stdout(dry_run, "adapter dry-run")
     result: dict[str, object] = {
@@ -2186,7 +2196,7 @@ def ingest_command(root: Path, args: argparse.Namespace) -> int:
     if args.source_ingest_job_id:
         source_ingest_job = read_source_ingest_job_for_completion(
             root,
-            args.source_ingest_job_root,
+            source_ingest_job_root,
             args.source_ingest_job_id,
             write_payload,
         )
