@@ -20,6 +20,7 @@ from pathlib import Path, PureWindowsPath
 
 DEFAULT_VAULT = "knowledge-base-vault"
 _ENV_VAULT = "CREATIVE_SECOND_BRAIN_VAULT"
+_ENV_ROOT = "CREATIVE_SECOND_BRAIN_ROOT"
 
 
 class WorkspacePathError(ValueError):
@@ -165,6 +166,31 @@ def bind_process_vault(root: Path) -> Path:
     if _has_managed_marker(workspace):
         os.environ[_ENV_VAULT] = relative.as_posix()
     return relative
+
+
+def bind_lookup_process_vault(root: Path) -> Path:
+    """Bind the read-only lookup process to ``root``, whatever workspace its launcher was working on.
+
+    The global lookup entry is started from anywhere to read one named installed
+    workspace.  A vault or root value it inherited was exported by another
+    process for that process's own workspace (a background AI started from
+    workspace A that looks something up in workspace B), so it says nothing
+    about ``root``: both are replaced by ``root``'s own ``brain.json`` vault and
+    ``root`` itself, for this process and its children only.
+
+    Only for a process that never writes a vault.  Every other tool keeps
+    :func:`bind_process_vault`, which refuses a contradicting value before any
+    write.  A root without ``brain.json`` is not a lookup target and is left to
+    that same rule; an unusable ``brain.json`` is refused before anything is
+    replaced.
+    """
+    workspace = Path(root).resolve()
+    if not _has_managed_marker(workspace):
+        return bind_process_vault(workspace)
+    _contained_vault_path(workspace, _checked_relative_path(_declared_vault(workspace)))
+    os.environ.pop(_ENV_VAULT, None)
+    os.environ[_ENV_ROOT] = str(workspace)
+    return bind_process_vault(workspace)
 
 
 def bound_vault_path(root: Path, vault: Path) -> Path:

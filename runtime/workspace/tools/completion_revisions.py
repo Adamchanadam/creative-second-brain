@@ -30,6 +30,10 @@ def sha(data):
 
 def _rendered_registry_rows(data, key):
     """Rows from a candidate registry render, keyed like its live registry reader."""
+    try:  # imported when needed: the adapter imports this module in turn
+        from .obsidian_vault_adapter import registry_row_values
+    except ImportError:
+        from obsidian_vault_adapter import registry_row_values
     rows = {}
     for line_no, line in enumerate(data.decode("utf-8-sig").splitlines(), start=1):
         if not line.strip():
@@ -38,7 +42,7 @@ def _rendered_registry_rows(data, key):
         value = str(row.get(key) or "")
         if not value or value in rows:
             raise ValueError(f"candidate registry has invalid {key} at line {line_no}")
-        rows[value] = {str(name): str(item) for name, item in row.items()}
+        rows[value] = registry_row_values(row)
     return rows
 
 

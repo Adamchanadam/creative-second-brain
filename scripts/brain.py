@@ -465,7 +465,7 @@ def open_reader(target: str, *, resume_job: str | None = None) -> int:
                     command.extend(("--idle-seconds", idle_seconds))
                 options: dict = {"cwd": ROOT, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
                 if os.name == "nt":
-                    options["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    options["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 else:
                     options["start_new_session"] = True
                 try:

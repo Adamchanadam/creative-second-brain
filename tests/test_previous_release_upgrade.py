@@ -89,6 +89,12 @@ def complete_sample(workspace: Path) -> dict[str, str]:
     plan["knowledge"] = [{"title": KNOWLEDGE_TITLE, "claim": "番茄工作法把工作切成二十五分鐘的專注時段，每段之後休息五分鐘。",
                           "layer": "原文主張", "confidence": "高", "evidence_block_ids": [blocks[1]],
                           "reusable_concept": {"status": "not_reusable", "reason": "合成樣本只供升級驗收。"}}]
+    # Releases from 1.9.26 require a claim attribution on every point; older releases reject the unknown field.
+    # The previous release's own work order says which applies.
+    work_order = json.loads((workspace / order["work_order_file"]).read_text(encoding="utf-8")) if order.get("work_order_file") else {}
+    point_schema = work_order.get("response_schema", {}).get("properties", {}).get("knowledge", {}).get("items", {})
+    if "attribution" in point_schema.get("properties", {}):
+        plan["knowledge"][0]["attribution"] = {"origin": "source_author", "cited_work": "", "relay": ""}
     plan["application"] = {"knowledge_use": "學習材料"}
     draft.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     checked = run([brain, "rail", "check-plan", "--job-id", order["job_id"], "--response-file", order["draft_file"]], cwd=workspace)

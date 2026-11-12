@@ -3851,6 +3851,16 @@ def read_source_registry(vault: Path) -> dict[str, dict[str, str]]:
     return entries
 
 
+def registry_row_values(item: dict) -> dict[str, object]:
+    """The one rule for turning a registry JSON row into program values; every registry reader uses it.
+
+    A nested object or list (a point's attribution) is kept as it is: writers rewrite every row of a registry,
+    so a str() here would turn another source's object into Python repr text on disk.  Every other value keeps
+    its historical text form (None -> "None", 3 -> "3", True -> "True"), which callers compare as text.
+    """
+    return {str(key): value if isinstance(value, (dict, list)) else str(value) for key, value in item.items()}
+
+
 def read_source_registry_rows(vault: Path) -> list[tuple[int, dict[str, str]]]:
     path = source_registry_file(vault)
     if not path.exists():
@@ -3863,7 +3873,7 @@ def read_source_registry_rows(vault: Path) -> list[tuple[int, dict[str, str]]]:
             item = json.loads(line)
         except json.JSONDecodeError as exc:
             raise AdapterStop("needs_review", f"invalid registry JSON at {path}:{line_no}: {exc}") from exc
-        rows.append((line_no, {str(key): str(value) for key, value in item.items()}))
+        rows.append((line_no, registry_row_values(item)))
     return rows
 
 
@@ -3998,7 +4008,7 @@ def read_jsonl_rows(path: Path) -> list[tuple[int, dict[str, str]]]:
             item = json.loads(line)
         except json.JSONDecodeError as exc:
             raise AdapterStop("needs_review", f"invalid JSONL at {path}:{line_no}: {exc}") from exc
-        rows.append((line_no, {str(key): str(value) for key, value in item.items()}))
+        rows.append((line_no, registry_row_values(item)))
     return rows
 
 

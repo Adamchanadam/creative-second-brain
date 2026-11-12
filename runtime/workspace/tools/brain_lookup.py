@@ -32,7 +32,7 @@ from tools.obsidian_vault_adapter import (  # noqa: E402
     retained_original_location,
 )
 from tools.outcome_page_generator import read_markdown_record  # noqa: E402
-from tools.workspace_paths import WorkspacePathError, bind_process_vault  # noqa: E402
+from tools.workspace_paths import WorkspacePathError, bind_lookup_process_vault  # noqa: E402
 
 SCHEMA = "creative_second_brain_brain_lookup_v1"
 DEFAULT_LIMIT = 5
@@ -290,15 +290,18 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     root = (args.workspace or workspace_root_from_file()).resolve()
+
+    def report(result: dict[str, Any]) -> int:
+        print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render_text(result))
+        return 1 if result["status"] == "error" else 0
+
     try:
-        bind_process_vault(root)
+        # Read-only and started from anywhere: this workspace's own brain.json decides, never a value the launcher exported.
+        bind_lookup_process_vault(root)
     except WorkspacePathError as exc:
-        result = {"schema": SCHEMA, "read_only": True, "workspace_root": str(root), "question": args.question,
-                  "answer_rules": list(ANSWER_RULES), "status": "error", "message": str(exc), "candidate_count": 0, "candidates": []}
-    else:
-        result = lookup(root, args.question, args.limit, args.expand)
-    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else render_text(result))
-    return 1 if result["status"] == "error" else 0
+        return report({"schema": SCHEMA, "read_only": True, "workspace_root": str(root), "question": args.question,
+                       "answer_rules": list(ANSWER_RULES), "status": "error", "message": str(exc), "candidate_count": 0, "candidates": []})
+    return report(lookup(root, args.question, args.limit, args.expand))
 
 
 if __name__ == "__main__":

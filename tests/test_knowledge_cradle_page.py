@@ -599,10 +599,18 @@ run(async browser => {
     await waitCard(page);
     await page.waitForTimeout(300);
     const withLine = await rects();
+    // The camera glides onto the stars' frame in frame time (each frame advances at most 50 ms), so under CPU load it
+    // arrives later in wall time: the stars are read once the camera has actually arrived, never after a fixed wait.
+    // A glide that never arrives fails the test (settled stays false).
+    const settled = !!(await until(page, () => {
+      const d = state.tdistance, near = (a, b, tol) => Math.abs(a - b) <= tol;
+      return near(state.distance, d, .005 * d) && state.focus.every((v, i) => near(v, state.target[i], .005 * d)) && near(state.yaw, state.tyaw, .01) && near(state.pitch, state.tpitch, .01);
+    }, 20000));
+    const framed = await rects();
     await page.waitForTimeout(2500);
     const after = await rects();
     await page.screenshot({ path: opt.shots + `/cradle-draw-${name}.png` });
-    result.runs[name] = { during, withLine, after, shot: opt.shots + `/cradle-draw-${name}.png` };
+    result.runs[name] = { during, withLine, settled, framed, after, shot: opt.shots + `/cradle-draw-${name}.png` };
     await page.context().close();
   }
 });
@@ -681,7 +689,7 @@ class EncounterOtherTests(PageCase):
         for name, run in r['runs'].items():
             self.assertTrue(Path(run['shot']).is_file())
             print(f'screenshot {name}: {run["shot"]}')
-            for key in ('during', 'withLine', 'after'):
+            for key in ('during', 'withLine', 'framed', 'after'):
                 s = run[key]
                 W, H = s['W'], s['H']
                 panel = s['panel']
@@ -690,7 +698,8 @@ class EncounterOtherTests(PageCase):
                 self.assertFalse(meet(panel, s['brand']), (name, key))
                 self.assertLessEqual(s['scrollW'], W)
             # the three stars are in the free sky when the card shows (labels too, where they are shown), and so is the tier line
-            for key in ('withLine', 'after'):
+            self.assertTrue(run['settled'], (name, 'the camera reached the stars\' frame'))
+            for key in ('framed', 'after'):
                 s = run[key]
                 W, H = s['W'], s['H']
                 self.assertEqual(s['phase'], 'card')
@@ -905,21 +914,40 @@ run(async browser => {
     const page = await open(browser, w, h), run = {};
     await drawNow(page); await until(page, () => Math.abs(state.distance - state.tdistance) < .01, 30000); await page.waitForTimeout(500);   // the camera has settled: the star keeps still under the block
     run.base = await info(page);
-    // an interface block over the first place of the first drawn star's label (to the right of the star), leaving the place below the star free
-    const block = async (css) => page.evaluate(css => {
+    // The sky turns slowly, so where a drawn star sits differs from run to run.  Close to the card panel the places to the left of and below
+    // the star are taken by the panel, and the label rightly keeps its first place.  So the page's own per-frame answer to "was another place
+    // free for this label?" is recorded, and the block is tried on each drawn star until one has room to move.
+    await page.evaluate(() => {
+      const real = drawnSpot; window.__spots = {};
+      drawnSpot = function (el, q, rect, isBlocked) { const spot = real(el, q, rect, isBlocked); window.__spots[el.dataset.nodeId] = { free: !!spot, at: state.eventTime }; return spot; };
+    });
+    // an interface block over the first place of a drawn star's label (to the right of the star), leaving the place below the star free
+    const block = async (css, k) => page.evaluate(([css, k]) => {
       const old = document.getElementById('test-block'); if (old) old.remove(); clearInterval(window.__blockTimer);
-      const d = document.createElement('div'), at = () => state.screen.find(x => x.n.id === encounter.slots[0].id).q;
+      const d = document.createElement('div'), at = () => state.screen.find(x => x.n.id === encounter.slots[k].id).q;
       d.className = 'pop'; d.id = 'test-block'; document.body.append(d);
       const place = () => { const q = at(); d.setAttribute('style', css.replace(/X/g, q.x).replace(/Y/g, q.y)); };
       place(); window.__blockTimer = setInterval(place, 25);   // the block follows the star, which drifts a little
       const r = d.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom];
-    }, css);
-    run.rightBlock = await block('position:fixed;z-index:1;left:calc(Xpx + 6px);top:calc(Ypx - 92px);width:230px;height:84px;');
-    await page.waitForTimeout(500);
-    run.right = await info(page);
-    run.rightBlockNow = await page.evaluate(() => { const r = document.getElementById('test-block').getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; });
+    }, [css, k]);
+    // the label, the block and the page's answer of one and the same frame
+    const reading = k => page.evaluate(k => {
+      const s = encounter.slots[k], el = byId.get(s.id).el, v = state.screen.find(x => x.n.id === s.id), spot = window.__spots[s.id];
+      const box = e => { const r = e.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; }, tried = !!spot && spot.at === state.eventTime;
+      return { k, hidden: el.hidden, rect: el.hidden ? null : box(el), x: v.q.x, y: v.q.y, block: box(document.getElementById('test-block')), tried, room: tried && spot.free,
+        panel: box($('#basket-panel')), spots: ENCOUNTER_LINK.spots, gap: ENCOUNTER_LINK.gap, W: innerWidth, H: innerHeight };
+    }, k);
+    run.tries = [];
+    for (let k = 0; k < 3; k++) {
+      run.rightBlock = await block('position:fixed;z-index:1;left:calc(Xpx + 6px);top:calc(Ypx - 92px);width:230px;height:84px;', k);
+      await page.waitForTimeout(500);
+      run.right = await info(page);
+      run.tries.push(await reading(k));
+      run.k = k;
+      if (run.tries[k].room) break;
+    }
     // everything around the star blocked: the label is still shown, at its first place
-    run.allBlock = await block('position:fixed;z-index:1;left:calc(Xpx - 330px);top:calc(Ypx - 200px);width:660px;height:400px;');
+    run.allBlock = await block('position:fixed;z-index:1;left:calc(Xpx - 330px);top:calc(Ypx - 200px);width:660px;height:400px;', run.k);
     await page.waitForTimeout(500);
     run.all = await info(page);
     await page.evaluate(() => { clearInterval(window.__blockTimer); document.getElementById('test-block').remove(); });
@@ -934,6 +962,18 @@ run(async browser => {
 
 def overlap(a, b, gap=0):
     return a[0] < b[2] + gap and a[2] > b[0] - gap and a[1] < b[3] + gap and a[3] > b[1] - gap
+
+
+def other_places(reading):
+    """The other places of a drawn star's label (left of, above and below the star), from the label's size and the page's spot list."""
+    w, h = reading['rect'][2] - reading['rect'][0], reading['rect'][3] - reading['rect'][1]
+    x0, y0, gap = reading['x'], reading['y'], reading['gap']
+    places = []
+    for sx, sy in reading['spots']:
+        x = x0 - gap - w if sx < 0 else x0 + gap if sx > 0 else x0 - w / 2
+        y = y0 - gap - h if sy < 0 else y0 + gap if sy > 0 else y0 - h / 2
+        places.append([x, y, x + w, y + h])
+    return places
 
 
 def near_point(point, star, tolerance=3):
@@ -1105,15 +1145,27 @@ class EncounterLinkTests(PageCase):
             base = run['base']['stars'][0]
             self.assertFalse(base['hidden'], name)
             self.assertGreaterEqual(base['rect'][0], base['x'], name)                       # the first place is to the right of the star
-            right = run['right']['stars'][0]
+            tries, k = run['tries'], run['k']
+            for boxed in tries[:-1]:                                                         # a drawn star with no other free place (beside the card panel)
+                self.assertFalse(boxed['hidden'], (name, boxed))
+                self.assertGreaterEqual(boxed['rect'][0], boxed['x'], (name, boxed))          # it keeps its name, at the first place
+                # ... and that is not taken on the page's word: the label was blocked at its first place, and each other place is
+                # measured here to be under the test block or the card panel, or off the screen
+                self.assertTrue(boxed['tried'] and overlap(boxed['rect'], boxed['block'], 8), (name, boxed))
+                for place in other_places(boxed):
+                    taken = (overlap(place, boxed['block'], 8) or overlap(place, boxed['panel'], 8) or place[0] < 8 or place[1] < 8
+                             or place[3] > boxed['H'] - 8 or place[2] > boxed['W'] - 12)
+                    self.assertTrue(taken, (name, 'a free place was left unused', place, boxed))
+            right = tries[-1]
+            self.assertTrue(right['room'], (name, 'no drawn star had another free place for its label', tries))
             self.assertFalse(right['hidden'], name)
-            self.assertFalse(overlap(right['rect'], run['rightBlockNow']), (name, right['rect'], run['rightBlockNow']))
+            self.assertFalse(overlap(right['rect'], right['block']), (name, right['rect'], right['block']))
             self.assertLessEqual(right['rect'][0], right['x'] + 1, name)                    # moved to another place (left of the star, above or below it)
             for key in ('right', 'all', 'freed'):
                 self.assertTrue(all(not s['hidden'] for s in run[key]['stars']), (name, key))
-            allb = run['all']['stars'][0]
+            allb = run['all']['stars'][k]
             self.assertGreaterEqual(allb['rect'][0], allb['x'], name)                        # nowhere free: it stays at its first place
-            self.assertGreaterEqual(run['freed']['stars'][0]['rect'][0], run['freed']['stars'][0]['x'], name)
+            self.assertGreaterEqual(run['freed']['stars'][k]['rect'][0], run['freed']['stars'][k]['x'], name)
 
 
 class OfflinePageTests(PageCase):

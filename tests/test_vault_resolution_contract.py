@@ -11,7 +11,14 @@ The few helpers that build paths without a ``root`` in scope follow the process
 environment; so every tool that can be run directly calls
 ``workspace_paths.bind_process_vault(root)`` once, right after it reads its
 arguments, which checks ``brain.json`` against the environment and then exports
-the declared vault to this process and its child processes.
+the declared vault to this process and its child processes.  A tool may stop on
+a refused binding, never carry on past it.
+
+One entry is different: the read-only lookup (``brain_lookup``) is started from
+anywhere to read one named workspace, possibly by a program that works on
+another workspace and exported that one's vault.  It calls
+``workspace_paths.bind_lookup_process_vault(root)``, which replaces an inherited
+value by the named workspace's own ``brain.json``.  No other tool may call it.
 
 Run offline with the acceptance Python, no arguments needed:
 
@@ -44,6 +51,12 @@ NO_BIND_ALLOWED = {
     "global_entry": "writes the user-level registry under the home folder; it has no vault",
     "infographic_visual_qc": "inspects one PNG file; it has no workspace or vault",
 }
+# The only tool that may replace an inherited vault instead of refusing it, and why.
+LOOKUP_BIND = "bind_lookup_process_vault"
+LOOKUP_BIND_ALLOWED = {
+    "brain_lookup": "read-only lookup of a named workspace, started from anywhere; it never writes a vault",
+}
+ROOT_VARIABLE = "CREATIVE_SECOND_BRAIN_ROOT"
 # The modules whose vault default used to come from the variable; each must still import when
 # the workspace's brain.json is unusable (the default is resolved when used, never at import).
 FORMER_READERS = (
@@ -112,17 +125,64 @@ def main_guard(tree: ast.Module) -> ast.If | None:
     return None
 
 
+BIND_NAMES = ("bind_process_vault", LOOKUP_BIND)
+
+
 def is_bind_call(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and (
-        (isinstance(node.func, ast.Name) and node.func.id == "bind_process_vault")
-        or (isinstance(node.func, ast.Attribute) and node.func.attr == "bind_process_vault"))
+        (isinstance(node.func, ast.Name) and node.func.id in BIND_NAMES)
+        or (isinstance(node.func, ast.Attribute) and node.func.attr in BIND_NAMES))
+
+
+def lookup_bind_mentions(source: str, name: str = "<source>") -> list[int]:
+    """Lines that use the lookup-only binding: as a name, an attribute, or an import (aliased or not)."""
+    tree = ast.parse(source, name)
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == LOOKUP_BIND:
+            found.add(node.lineno)
+        elif isinstance(node, ast.Attribute) and node.attr == LOOKUP_BIND:
+            found.add(node.lineno)
+        elif isinstance(node, ast.alias) and LOOKUP_BIND in (node.name, node.asname):
+            found.add(getattr(node, "lineno", 0))
+    return sorted(found)
+
+
+# `try ... except*` (ast.TryStar, Python 3.11+) can swallow a refused binding exactly like `try ... except`.
+TRY_NODES = (ast.Try, ast.TryStar) if hasattr(ast, "TryStar") else (ast.Try,)
+
+
+def handler_leaves(handler: ast.ExceptHandler) -> bool:
+    """True when the handler ends by leaving the entry: ``raise``, ``return``, ``parser.error(...)`` or ``sys.exit(...)``."""
+    last = handler.body[-1]
+    if isinstance(last, (ast.Raise, ast.Return)):
+        return True
+    call = last.value if isinstance(last, ast.Expr) and isinstance(last.value, ast.Call) else None
+    func = call.func if call is not None else None
+    return (isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name)
+            and (func.value.id, func.attr) in {("parser", "error"), ("sys", "exit")})
+
+
+def swallowed_bind_lines(body: list[ast.stmt]) -> list[int]:
+    """Lines of ``except`` handlers that could carry on after a refused binding.
+
+    Every handler of every ``try`` around an unconditional bind call must leave the entry.  ``except ...: pass``,
+    a handler that only prints or logs, and one that falls through to the code after the ``try`` are all refused:
+    the tool would go on with a vault that was never checked.
+    """
+    lines: list[int] = []
+    for statement in body:
+        if isinstance(statement, TRY_NODES) and unconditional_bind_lines(statement.body):
+            lines.extend(handler.lineno for handler in statement.handlers if not handler_leaves(handler))
+            lines.extend(swallowed_bind_lines(statement.body))
+    return sorted(lines)
 
 
 def unconditional_bind_lines(body: list[ast.stmt]) -> list[int]:
     """Lines of bind calls that always run: plain statements of the body, or of a ``try`` body, never inside a branch or loop."""
     lines: list[int] = []
     for statement in body:
-        if isinstance(statement, ast.Try):
+        if isinstance(statement, TRY_NODES):
             lines.extend(unconditional_bind_lines(statement.body))
         elif isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith, ast.FunctionDef,
                                     ast.AsyncFunctionDef, ast.ClassDef, ast.Match)):
@@ -152,6 +212,10 @@ def entry_binding_issues(source: str, name: str = "<source>") -> tuple[bool, lis
                        if isinstance(inner, ast.Attribute) and inner.attr == "vault" and inner.lineno < binds[0])
         if early:
             return True, [f"{entry_name} reads .vault (line {early[0]}) before bind_process_vault (line {binds[0]})"]
+        swallowed = swallowed_bind_lines(body)
+        if swallowed:
+            return True, [f"{entry_name} can carry on after a refused bind_process_vault: the except at line {swallowed[0]} "
+                          "does not end in raise, return, parser.error or sys.exit"]
         return True, []
     return True, [f"{' / '.join(entry_name for entry_name, _, _ in entries)} never calls bind_process_vault unconditionally"]
 
@@ -172,6 +236,12 @@ def check_entry_binding(tools: Path) -> dict[str, object]:
         if problems:
             failures[path.name] = problems
     assert not failures, f"every directly runnable tool must call workspace_paths.bind_process_vault(root) right after its arguments: {failures}"
+    # Replacing an inherited vault instead of refusing it is for the read-only lookup alone.
+    misuse = {path.name: lines for path in sorted(tools.glob("*.py")) if path.name != "workspace_paths.py" and path.stem not in LOOKUP_BIND_ALLOWED
+              for lines in [lookup_bind_mentions(path.read_text(encoding="utf-8-sig"), path.name)] if lines}
+    assert not misuse, f"only {sorted(LOOKUP_BIND_ALLOWED)} may call workspace_paths.{LOOKUP_BIND}; a tool that writes must refuse a contradicting vault: {misuse}"
+    for stem in LOOKUP_BIND_ALLOWED:
+        assert lookup_bind_mentions((tools / f"{stem}.py").read_text(encoding="utf-8-sig")), f"allow-list names a tool that does not use {LOOKUP_BIND}: {stem}"
     stale = sorted(set(NO_BIND_ALLOWED) - set(guarded))
     assert not stale, f"allow-list names tools that have no __main__ guard: {stale}"
     # The guard must not be vacuous.
@@ -186,6 +256,28 @@ def check_entry_binding(tools: Path) -> dict[str, object]:
     assert entry_binding_issues(good.replace(bind, "    x = args.vault\n" + bind).replace("return args.vault", "return x"))[1], "bind after .vault must fail"
     assert entry_binding_issues(good.replace(bind, "    try:\n    " + bind + "    except ValueError:\n        return 2\n")) == (True, [])
     assert entry_binding_issues("def main():\n    return 0\n") == (False, [])
+    # A refused binding must stop the tool: a handler that swallows it, or lets the code after it run, fails.
+    tried = lambda handler: good.replace(bind, "    try:\n    " + bind + handler)
+    for handler in ("    except ValueError:\n        return 2\n", "    except ValueError as exc:\n        raise SystemExit(str(exc)) from exc\n",
+                    "    except ValueError as exc:\n        parser.error(str(exc))\n", "    except ValueError as exc:\n        print(exc)\n        sys.exit(2)\n",
+                    "    except KeyError:\n        return 3\n    except ValueError:\n        raise\n"):
+        assert entry_binding_issues(tried(handler)) == (True, []), handler
+    for handler in ("    except ValueError:\n        pass\n", "    except Exception:\n        pass\n", "    except:\n        pass\n",
+                    "    except ValueError as exc:\n        print(exc)\n", "    except ValueError as exc:\n        log.error(str(exc))\n",
+                    "    except ValueError as exc:\n        result = {'status': 'error'}\n", "    except ValueError:\n        ...\n",
+                    "    except KeyError:\n        return 3\n    except ValueError:\n        pass\n",
+                    "    except ValueError:\n        if strict:\n            raise\n", "    except* ValueError:\n        pass\n"):
+        problems = entry_binding_issues(tried(handler))[1]
+        assert problems and "carry on" in problems[0], ("a swallowed bind error must fail", handler, problems)
+    nested = good.replace(bind, "    try:\n        try:\n        " + bind + "        except ValueError as exc:\n            raise Stop(str(exc)) from exc\n    except Stop:\n        OUTER\n")
+    assert entry_binding_issues(nested.replace("OUTER", "return 1")) == (True, [])
+    assert "carry on" in entry_binding_issues(nested.replace("OUTER", "pass"))[1][0], "an outer handler that swallows the stop must fail"
+    assert entry_binding_issues(good.replace(bind, "    with contextlib.suppress(ValueError):\n    " + bind))[1], "a suppressed bind must fail"
+    assert entry_binding_issues(good.replace("bind_process_vault", LOOKUP_BIND)) == (True, [])
+    for snippet in (f"from workspace_paths import {LOOKUP_BIND}\n", f"from workspace_paths import {LOOKUP_BIND} as bind\n",
+                    f"import workspace_paths as w\nw.{LOOKUP_BIND}(root)\n", f"x = {LOOKUP_BIND}\n"):
+        assert lookup_bind_mentions(snippet), snippet
+    assert not lookup_bind_mentions(f'''"""Mentions {LOOKUP_BIND} in prose."""\nfrom workspace_paths import bind_process_vault\n''')
     for snippet in ("from workspace_paths import _ENV_VAULT\n", "from workspace_paths import _ENV_VAULT as name\n",
                     "import workspace_paths as w\nx = w._ENV_VAULT\n", "x = ENV_VAULT\n", "import workspace_paths as w\nx = w.ENV_VAULT\n"):
         assert constant_mentions(snippet), snippet
@@ -289,8 +381,25 @@ def check_bind_process_vault(tools: Path, scratch: Path) -> dict[str, object]:
     with environment(**{VARIABLE: None}):
         expect_error(paths, lambda: paths.bind_process_vault(broken))
         assert VARIABLE not in os.environ and child_value() == "<unset>"
+    # The read-only lookup binding: an inherited vault and root (another workspace's) are replaced by the named root's own.
+    with environment(**{VARIABLE: "Other Notes", ROOT_VARIABLE: str(other)}):
+        assert paths.bind_lookup_process_vault(custom) == Path(declared)
+        assert os.environ[VARIABLE] == declared and child_value() == declared
+        assert Path(os.environ[ROOT_VARIABLE]) == custom.resolve()
+        # ... and every other tool's rule is untouched: this process now refuses a second installed root.
+        expect_error(paths, lambda: paths.bind_process_vault(other), VARIABLE, "Other Notes")
+    for inherited in ("../outside", "/absolute", "Other Notes"):
+        with environment(**{VARIABLE: inherited, ROOT_VARIABLE: None}):
+            assert paths.bind_lookup_process_vault(custom) == Path(declared) and os.environ[VARIABLE] == declared
+    # An unusable brain.json is refused before anything is replaced; a root without brain.json is no lookup target.
+    with environment(**{VARIABLE: "Elsewhere", ROOT_VARIABLE: str(other)}):
+        expect_error(paths, lambda: paths.bind_lookup_process_vault(broken))
+        assert os.environ[VARIABLE] == "Elsewhere" and os.environ[ROOT_VARIABLE] == str(other)
+        assert paths.bind_lookup_process_vault(bare) == Path("Elsewhere")
+        assert os.environ[VARIABLE] == "Elsewhere" and os.environ[ROOT_VARIABLE] == str(other)
     return {"cases": ["installed root exported to child process", "refused bind changes nothing", "no brain.json leaves environment alone",
-                      "conflicting environment refused", "second installed root with another vault refused"]}
+                      "conflicting environment refused", "second installed root with another vault refused",
+                      "read-only lookup replaces an inherited vault and root", "lookup binding leaves the writers' rule intact"]}
 
 
 def check_rule(tools: Path, scratch: Path) -> dict[str, object]:

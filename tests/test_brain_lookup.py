@@ -300,5 +300,87 @@ class BrainLookupTests(unittest.TestCase):
         self.assertTrue(result["answer_rules"])
 
 
+VAULT_VARIABLE = "CREATIVE_SECOND_BRAIN_VAULT"
+ROOT_VARIABLE = "CREATIVE_SECOND_BRAIN_ROOT"
+# Runs the lookup entry in this process, then reports what the process ended up bound to.
+BINDING_PROBE = """
+import contextlib, io, json, os, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from tools import brain_lookup
+from tools.knowledge_material_selector import SelectionIndex
+out = io.StringIO()
+with contextlib.redirect_stdout(out):
+    code = brain_lookup.main(["--workspace", sys.argv[2], "--question", sys.argv[3], "--json"])
+result = json.loads(out.getvalue())
+selector_root = str(SelectionIndex(Path(result["vault"])).root) if result.get("vault") else ""
+print(json.dumps({"code": code, "result": result, "selector_root": selector_root,
+                  "vault_variable": os.environ.get(sys.argv[4]), "root_variable": os.environ.get(sys.argv[5])}, ensure_ascii=False))
+"""
+
+
+class CrossWorkspaceLookupTests(unittest.TestCase):
+    """A lookup started by a program that works on another workspace (a background AI started from workspace A carries A's
+    vault and root in its environment) must read the workspace it was asked about, by that workspace's own brain.json."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.base = SCRATCH / ("brain-lookup-cross-" + uuid4().hex)
+        cls.asked = write_workspace(cls.base / "asked")
+        cls.launcher = cls.base / "launcher"                      # workspace A: another vault name
+        (cls.launcher / "Vault A").mkdir(parents=True)
+        (cls.launcher / "brain.json").write_text(json.dumps({"vault": "Vault A"}), encoding="utf-8")
+        cls.twin = write_workspace(cls.base / "twin")             # workspace A with the same vault name as the asked one
+        cls.elsewhere = cls.base / "unrelated-project"
+        cls.elsewhere.mkdir(parents=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.base, ignore_errors=True)
+
+    def run_with(self, launcher: Path, vault_name: str, *command: str) -> subprocess.CompletedProcess:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("CREATIVE_SECOND_BRAIN")}
+        env.update({VAULT_VARIABLE: vault_name, ROOT_VARIABLE: str(launcher)})
+        return subprocess.run([sys.executable, "-B", *command], cwd=self.elsewhere, capture_output=True, text=True, encoding="utf-8", env=env)
+
+    def assert_reads_only_the_asked_workspace(self, result: dict, text: str, launcher: Path):
+        self.assertEqual(result["status"], "ready", result.get("message"))
+        self.assertEqual(Path(result["workspace_root"]), self.asked.resolve())
+        self.assertEqual(Path(result["vault"]), (self.asked / "vault").resolve())
+        self.assertGreater(result["candidate_count"], 0)
+        for candidate in result["candidates"]:
+            for key in ("source_note_path", "application_note_path", "outcome_page_path"):
+                if candidate.get(key):
+                    self.assertTrue(Path(candidate[key]).is_relative_to(self.asked.resolve()), (key, candidate[key]))
+        self.assertNotIn(json.dumps(str(launcher.resolve()), ensure_ascii=False)[1:-1], text)
+
+    def test_a_vault_inherited_from_another_workspace_is_not_used_and_does_not_block_the_lookup(self):
+        before = tree_hash(self.asked)
+        done = self.run_with(self.launcher, "Vault A", str(LOOKUP), "--workspace", str(self.asked), "--question", "AI 瓶頸 判斷 驗證", "--json")
+        self.assertEqual(done.returncode, 0, done.stdout[-600:] + done.stderr[-600:])
+        self.assert_reads_only_the_asked_workspace(json.loads(done.stdout), done.stdout, self.launcher)
+        self.assertEqual(tree_hash(self.asked), before)
+
+    def test_a_root_inherited_from_another_workspace_is_not_used_even_when_the_vault_names_match(self):
+        done = self.run_with(self.twin, "vault", "-c", BINDING_PROBE, str(REPO_ROOT), str(self.asked), "AI 瓶頸 判斷 驗證", VAULT_VARIABLE, ROOT_VARIABLE)
+        self.assertEqual(done.returncode, 0, done.stderr[-1200:])
+        probe = json.loads(done.stdout.strip().splitlines()[-1])
+        self.assertEqual(probe["code"], 0)
+        self.assert_reads_only_the_asked_workspace(probe["result"], json.dumps(probe["result"], ensure_ascii=False), self.twin)
+        # What the lookup process and the selector it calls were bound to: the asked workspace, not the launcher's.
+        self.assertEqual(Path(probe["selector_root"]), self.asked.resolve())
+        self.assertEqual(Path(probe["root_variable"]), self.asked.resolve())
+        self.assertEqual(probe["vault_variable"], "vault")
+
+    def test_a_broken_setting_of_the_asked_workspace_is_still_an_error(self):
+        broken = self.base / "broken"
+        broken.mkdir(exist_ok=True)
+        (broken / "brain.json").write_text("{bad", encoding="utf-8")
+        done = self.run_with(self.launcher, "Vault A", str(LOOKUP), "--workspace", str(broken), "--question", "判斷", "--json")
+        self.assertEqual(done.returncode, 1)
+        self.assertNotIn("Traceback", done.stderr)
+        self.assertEqual(json.loads(done.stdout)["status"], "error")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1224,5 +1224,37 @@ class ReaderLineTests(unittest.TestCase):
         self.assertFalse(item_schema["additionalProperties"])
 
 
+class RegistryRoundTripTests(unittest.TestCase):
+    """A later registry rewrite (next ingest, duplicate review, source removal) must keep other sources'
+    attribution objects intact instead of turning them into Python-repr strings."""
+
+    def setUp(self):
+        CACHE.mkdir(parents=True, exist_ok=True)
+        self.vault = CACHE / f"registry-roundtrip-{uuid.uuid4().hex}"
+        self.addCleanup(shutil.rmtree, self.vault, True)
+        attribution = {"cited_work": "1", "label": "心態", "origin": "cited_named", "relay": "restates", "verified_name": "致富心態"}
+        rows = [{"kp_uid": "KS-VS-0001:KP-001", "kp_id": "KP-001", "attribution": attribution, "count": 3,
+                 "tags": ["a", "b"], "empty": None},
+                {"kp_uid": "KS-VS-0002:KP-001", "kp_id": "KP-001"}]
+        path = adapter.knowledge_point_registry_file(self.vault)
+        path.parent.mkdir(parents=True)
+        path.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+        self.attribution = attribution
+
+    def test_rewriting_the_registry_keeps_other_sources_attribution_objects(self):
+        existing = adapter.read_knowledge_point_registry(self.vault)
+        self.assertEqual(existing["KS-VS-0001:KP-001"]["attribution"], self.attribution)
+        self.assertEqual(existing["KS-VS-0001:KP-001"]["tags"], ["a", "b"])
+        self.assertEqual(existing["KS-VS-0001:KP-001"]["count"], "3")  # scalars keep their old text form
+        self.assertEqual(existing["KS-VS-0001:KP-001"]["empty"], "None")
+        self.assertEqual(existing["KS-VS-0002:KP-001"]["kp_id"], "KP-001")
+        adapter.write_knowledge_point_registry_rows(self.vault, existing)
+        lines = adapter.knowledge_point_registry_file(self.vault).read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(json.loads(lines[0])["attribution"], self.attribution)
+        self.assertEqual(json.loads(lines[0])["tags"], ["a", "b"])
+        self.assertNotIn("attribution", json.loads(lines[1]))
+
+
 if __name__ == "__main__":
     unittest.main()

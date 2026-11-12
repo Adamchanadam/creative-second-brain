@@ -430,7 +430,7 @@ def end_tree_by_pid(pid):
     Callers that must be sure the process is gone check for it afterwards: a refused command (e.g. "Access denied") is not an exit."""
     if os.name == "nt":
         try:
-            done = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
+            done = subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW)
         except (OSError, subprocess.SubprocessError):
             return False
         return done.returncode == 0
